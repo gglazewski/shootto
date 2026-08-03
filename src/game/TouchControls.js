@@ -47,7 +47,9 @@ export class TouchControls {
     this._crouch = false;
     this._joy = null;          // { px, py, dx, dy } | null
     this._active = new Map();  // pointerId -> { kind: 'joy'|'look', x, y }
-    this._lookMult = (walk?.sensitivity ?? 0.0022) * LOOK_MULT;
+    // walk.look() already applies walk.sensitivity, so scale raw pixel drags
+    // by LOOK_MULT alone (a touch swipe is shorter than a mouse sweep).
+    this._lookMult = LOOK_MULT;
 
     this.root = doc.getElementById('touch-layer');
     if (!this.root) return;
@@ -120,7 +122,7 @@ export class TouchControls {
       if (e.target.closest('button')) return; // button handlers own these
       if (this._active.has(e.pointerId)) return;
       e.preventDefault();
-      root.setPointerCapture?.(e.pointerId);
+      this._capture(root, e.pointerId);
       const x = e.clientX;
       const y = e.clientY;
       if (!this._joy && x < this._joyBoundary()) {
@@ -168,7 +170,7 @@ export class TouchControls {
     const down = (e) => {
       if (e.pointerType === 'mouse') return;
       e.preventDefault();
-      el.setPointerCapture?.(e.pointerId);
+      this._capture(el, e.pointerId);
       onDown?.(e);
     };
     const up = () => onUp?.();
@@ -209,6 +211,15 @@ export class TouchControls {
       e.preventDefault();
       this.cb.selectSlot?.(Number(btn.dataset.index));
     });
+  }
+
+  /** setPointerCapture guarded for synthetic events (tests). */
+  _capture(el, pointerId) {
+    try {
+      el.setPointerCapture?.(pointerId);
+    } catch {
+      /* pointerId not active (synthetic dispatch) — ignore */
+    }
   }
 
   _toggleClass(id, cls, on) {

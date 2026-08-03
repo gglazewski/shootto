@@ -67,6 +67,7 @@ before(async () => {
 });
 
 after(async () => {
+  if (mobile) await mobile.close();
   if (browser) await browser.close();
 });
 
@@ -836,7 +837,6 @@ T('mobs aggro, chase, attack and die to the player', async () => {
     for (let i = 0; i < 40; i++) mob.update(0.1, player);
     const d1 = Math.hypot(player.x - mob.pos.x, player.z - mob.pos.z);
     const aggro = mob.aggro;
-    const healthAfterChase = g.stats.health;
 
     // Step in front of the mob (0.6 m north, camera facing -z toward it) and
     // fight it with fists.
@@ -860,22 +860,154 @@ T('mobs aggro, chase, attack and die to the player', async () => {
       dead: mob.dead,
       startHealth,
       health: g.stats.health,
-      healthAfterChase,
-      dbg: {
-        mobPos: [mob.pos.x, mob.pos.y, mob.pos.z],
-        mobState: mob.state,
-        atkTimer: mob.attackTimer,
-        time: (typeof performance !== 'undefined' ? performance.now() : 0),
-      },
     };
   });
-  if (out.healthAfterChase >= out.startHealth - 1) console.log('DBG no hurt during chase:', JSON.stringify(out));
   assert.equal(out.aggro, true, 'mob must aggro on sight');
   assert.ok(out.d1 < out.d0 - 0.1, `mob must chase the player (${out.d0} -> ${out.d1})`);
   assert.equal(out.kills, 1, 'player must kill the mob');
   assert.equal(out.alive, 0, 'the dead mob is removed from the manager');
   assert.equal(out.dead, true);
   assert.ok(out.health < out.startHealth, 'the mob must have hurt the player');
+});
+
+// --- mobile touch controls (emulated coarse-pointer device) ---
+
+let mobile;
+
+async function loadMobileGame() {
+  if (!mobile || mobile.isClosed()) {
+    mobile = await browser.newPage({
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+    });
+  }
+  await mobile.addInitScript(({ map, items }) => {
+    localStorage.setItem('voxelmap.save', map);
+    localStorage.setItem('voxelitem.items', items);
+  }, { map: MAP, items: ITEMS });
+  await mobile.goto(GAME);
+  await mobile.waitForFunction(() => !!window.__voxelgame, { timeout: 15000 });
+  await mobile.waitForTimeout(300);
+}
+
+T('mobile: coarse pointer enables the touch layer and controls', async () => {
+  await loadMobileGame();
+  const info = await mobile.evaluate(() => ({
+    coarse: matchMedia('(pointer: coarse)').matches,
+    fine: matchMedia('(pointer: fine)').matches,
+    isTouch: window.__voxelgame.isTouch,
+    hasTouchControls: !!window.__voxelgame.touch,
+    layerExists: !!document.getElementById('touch-layer'),
+  }));
+  assert.equal(info.coarse, true);
+  assert.equal(info.fine, false);
+  assert.equal(info.isTouch, true, 'must detect the touch device');
+  assert.equal(info.hasTouchControls, true, 'TouchControls must be wired');
+
+  const inMenu = await mobile.evaluate(() =>
+    document.getElementById('touch-layer').classList.contains('hidden'));
+  assert.equal(inMenu, true, 'touch layer hidden in the menu');
+
+  await mobile.evaluate(() => window.__voxelgame.newGame());
+  await mobile.waitForTimeout(150);
+  const inPlay = await mobile.evaluate(() => ({
+    hidden: document.getElementById('touch-layer').classList.contains('hidden'),
+    mode: window.__voxelgame.mode,
+    buttons: ['#btn-attack', '#btn-reload', '#btn-pickup', '#btn-inject', '#btn-sprint', '#btn-crouch', '#btn-pause']
+      .map((s) => !!document.querySelector(s)),
+    slots: document.querySelectorAll('#slots-mobile .slot-btn').length,
+  }));
+  assert.equal(inPlay.mode, 'playing');
+  assert.equal(inPlay.hidden, false, 'touch layer visible while playing');
+  assert.equal(inPlay.buttons.every(Boolean), true, 'all action buttons present');
+  assert.equal(inPlay.slots, 4, 'four mobile slot buttons');
+});
+
+T('mobile: joystick moves the player and look drag rotates the camera', async () => {
+  await loadMobileGame();
+  await mobile.evaluate(() => window.__voxelgame.newGame());
+  await mobile.waitForTimeout(150);
+  const moved = await mobile.evaluate(() => {
+    const g = window.__voxelgame;
+    const layer = document.getElementById('touch-layer');
+    const st = (target, type, x, y, id) => target.dispatchEvent(new PointerEvent(type, {
+      pointerId: id, pointerType: 'touch', clientX: x, clientY: y, bubbles: true, cancelable: true,
+    }));
+    // Stand on the floor facing -z, clear any held keys.
+    g.walk.position.set(3.5, 1.0, 3.5);
+    g.walk.velocity.set(0, 0, 0);
+    g.walk.yaw = 0;
+    g.walk.keys.clear();
+    // Joystick on the left, drag straight up = forward.
+    st(layer, 'pointerdown', 50, 600, 1);
+    st(layer, 'pointermove', 50, 530, 1);
+    const startZ = g.walk.position.z;
+    for (let i = 0; i < 20; i++) g.walk.update(1 / 60);
+    const forwardZ = g.walk.position.z;
+    const keyed = g.walk.keys.has('KeyW');
+    // Look drag on the right side of the screen while the joystick is held.
+    st(layer, 'pointerdown', 300, 400, 2);
+    const yaw0 = g.walk.yaw;
+    st(layer, 'pointermove', 340, 400, 2);
+    const yaw1 = g.walk.yaw;
+    st(layer, 'pointerup', 340, 400, 2);
+    st(layer, 'pointerup', 50, 530, 1);
+    return { keyed, forwardZ, startZ, yaw0, yaw1, keys: [...g.walk.keys] };
+  });
+  assert.equal(moved.keyed, true, 'joystick up must press W');
+  assert.ok(moved.forwardZ < moved.startZ - 0.05,
+    `joystick must move the player forward (${moved.startZ} -> ${moved.forwardZ})`);
+  assert.ok(Math.abs(moved.yaw1 - moved.yaw0) > 0.001,
+    `look drag must rotate the camera (${moved.yaw0} -> ${moved.yaw1})`);
+  assert.equal(moved.keys.length, 0, 'releasing clears the movement keys');
+});
+
+T('mobile: attack holds to fire, slots select, sprint/crouch toggle, pause works', async () => {
+  await loadMobileGame();
+  await mobile.evaluate(() => window.__voxelgame.newGame());
+  await mobile.waitForTimeout(150);
+  const out = await mobile.evaluate(() => {
+    const g = window.__voxelgame;
+    const q = (s) => document.querySelector(s);
+    const st = (target, type, id) => target.dispatchEvent(new PointerEvent(type, {
+      pointerId: id, pointerType: 'touch', clientX: 0, clientY: 0, bubbles: true, cancelable: true,
+    }));
+    // Hold fire: auto-repeat inside _frame.
+    st(q('#btn-attack'), 'pointerdown', 11);
+    const holding = g.touch.attacking;
+    g._attackCooldown = 0;
+    g._frame(1 / 60);
+    const fired = g._attackCooldown > 0;
+    st(q('#btn-attack'), 'pointerup', 11);
+    const released = !g.touch.attacking;
+    // Slot 3 (index 2).
+    const slot3 = q('#slots-mobile .slot-btn[data-index="2"]');
+    st(slot3, 'pointerdown', 12);
+    const activeSlot = g.stats.activeSlot;
+    const activeClass = slot3.classList.contains('active');
+    // Sprint toggle on/off.
+    st(q('#btn-sprint'), 'pointerdown', 13);
+    const sprintOn = g.walk.keys.has('ShiftLeft');
+    st(q('#btn-sprint'), 'pointerdown', 14);
+    const sprintOff = !g.walk.keys.has('ShiftLeft');
+    // Crouch toggle.
+    st(q('#btn-crouch'), 'pointerdown', 15);
+    const crouchOn = g.walk.keys.has('KeyC');
+    // Pause.
+    st(q('#btn-pause'), 'pointerdown', 16);
+    const paused = g.mode === 'paused';
+    return { holding, fired, released, activeSlot, activeClass, sprintOn, sprintOff, crouchOn, paused };
+  });
+  assert.equal(out.holding, true, 'fire button held');
+  assert.equal(out.fired, true, 'holding fire must attack');
+  assert.equal(out.released, true, 'releasing stops the attack');
+  assert.equal(out.activeSlot, 2, 'tapping slot 3 must select it');
+  assert.equal(out.activeClass, true, 'selected slot is highlighted');
+  assert.equal(out.sprintOn, true, 'sprint toggles on');
+  assert.equal(out.sprintOff, true, 'sprint toggles off');
+  assert.equal(out.crouchOn, true, 'crouch toggles on');
+  assert.equal(out.paused, true, 'pause button pauses the game');
 });
 
 
