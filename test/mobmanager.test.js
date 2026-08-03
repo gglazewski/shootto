@@ -10,6 +10,7 @@ import { World } from '../src/engine/World.js';
 import { SIZE } from '../src/engine/VoxelTypes.js';
 import { MobManager } from '../src/game/MobManager.js';
 import { deserializeBundle } from '../src/persistence/WorldBundle.js';
+import { collides } from '../src/engine/Physics.js';
 
 const stubRenderer = { update() {}, addMob() {}, removeMob() {}, clear() {} };
 
@@ -91,6 +92,86 @@ test('one LOS ray is cast per bucket, not per mob', () => {
   const verdicts = new Set(mgr.mobs.map((m) => m.sharedVisible));
   assert.equal(verdicts.size, 1, 'mobs in one bucket share a verdict');
   assert.ok(mgr.mobs.every((m) => m.aggro), 'and that verdict makes them all aggro');
+});
+
+test('a chasing pack spreads out instead of stacking into one spot', () => {
+  const world = new World();
+  for (let x = 0; x < 48; x += 2) {
+    for (let z = 0; z < 48; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
+  }
+  world.addMobSpawn('imp', 10, 2, 5);
+  world.addMobSpawn('imp', 11, 2, 5);
+
+  const hits = [];
+  const mgr = new MobManager({ THREE, scene: {}, world, renderer: stubRenderer, onDamagePlayer: (d) => hits.push(d) });
+  mgr.rebuild();
+  assert.equal(mgr.mobs.length, 2);
+  // Force opposing flank directions so the two mobs approach from different sides.
+  mgr.mobs[0].spreadAngle = 0;
+  mgr.mobs[1].spreadAngle = Math.PI;
+
+  const player = { x: 12.25, y: 1.0, z: 12.25 };
+  for (let i = 0; i < 600; i++) mgr.update(1 / 60, player);
+
+  const [a, b] = mgr.mobs;
+  const dist = Math.hypot(a.pos.x - b.pos.x, a.pos.z - b.pos.z);
+  assert.ok(dist > 1.0, `mobs must not stack into one spot (distance ${dist.toFixed(2)}m)`);
+
+  // Both should be engaged around the player, not hugging its exact cell.
+  const da = Math.hypot(a.pos.x - player.x, a.pos.z - player.z);
+  const db = Math.hypot(b.pos.x - player.x, b.pos.z - player.z);
+  assert.ok(da > 0.4 && db > 0.4, 'mobs should keep off the player\'s body');
+  assert.ok(da < 2.2 && db < 2.2, `mobs should close in on the player (${da.toFixed(2)}m, ${db.toFixed(2)}m)`);
+  assert.ok(hits.length >= 1, 'the pack should actually strike the player');
+});
+
+test('a large clustered pack never clips into walls or teleports', () => {
+  // A floor with an enclosed room (1-cell stone walls, y=2..6) that has a
+  // 2-cell door on the east. 12 mobs outside must funnel through the door and
+  // pile up — the tightest case for the separation pass.
+  const world = new World();
+  for (let x = 0; x < 48; x += 2) {
+    for (let z = 0; z < 48; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
+  }
+  for (let y = 2; y <= 6; y++) {
+    for (let x = 16; x <= 30; x++) {
+      world.place('stone', SIZE.SMALL, x, y, 16);
+      world.place('stone', SIZE.SMALL, x, y, 30);
+    }
+    for (let z = 16; z <= 30; z++) {
+      world.place('stone', SIZE.SMALL, 16, y, z);
+      if (z !== 21 && z !== 22) world.place('stone', SIZE.SMALL, 30, y, z);
+    }
+  }
+  for (let i = 0; i < 12; i++) world.addMobSpawn('imp', 8 + (i % 3) * 2, 2, 24 + Math.floor(i / 3) * 2);
+
+  const mgr = makeManager(world);
+  mgr.rebuild();
+  assert.equal(mgr.mobs.length, 12);
+
+  const player = { x: 12.25, y: 1.0, z: 12.25 }; // inside the room
+  let walled = false;
+  let maxStep = 0;
+  for (let f = 0; f < 900; f++) {
+    for (const m of mgr.mobs) {
+      if (collides(world, m._box())) { walled = true; break; }
+    }
+    for (const m of mgr.mobs) {
+      if (m.prevX !== undefined) {
+        const step = Math.hypot(m.pos.x - m.prevX, m.pos.z - m.prevZ);
+        maxStep = Math.max(maxStep, step);
+      }
+      m.prevX = m.pos.x;
+      m.prevZ = m.pos.z;
+    }
+    mgr.update(1 / 60, player);
+    if (walled) break;
+  }
+  assert.equal(walled, false, 'no mob may ever overlap a solid cell (wall entry)');
+  assert.ok(maxStep < 0.35, `no mob may teleport (max per-frame move ${maxStep.toFixed(2)}m)`);
+  // And the pack still funnels in: at least one mob should reach the room.
+  const inside = mgr.mobs.filter((m) => m.pos.x > 8 && m.pos.x < 14 && m.pos.z > 8 && m.pos.z < 14).length;
+  assert.ok(inside >= 1, `the pack should still reach the player (${inside} inside)`);
 });
 
 test('mobs chase the player down the bundled-world staircase without disappearing', () => {

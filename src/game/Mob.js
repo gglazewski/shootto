@@ -338,6 +338,22 @@ export class Mob {
   }
 
   /**
+   * Push the mob horizontally by (nx, nz) meters, resolving against solid cells
+   * so it slides along walls instead of clipping into them. No speed cap and no
+   * step-up (separation pushes shouldn't climb). Y/grounded are left alone — a
+   * nudge that leaves a ledge is caught by gravity on the next frame. Used by
+   * the manager's separation pass, which clamps the per-frame displacement.
+   */
+  nudge(nx, nz) {
+    const box = this._box();
+    moveAxis(this.world, box, 'x', nx);
+    moveAxis(this.world, box, 'z', nz);
+    this.pos.x = box.minX + this.halfWidth;
+    this.pos.y = box.minY;
+    this.pos.z = box.minZ + this.halfWidth;
+  }
+
+  /**
    * Apply gravity: when airborne, accelerate downward and move the AABB down,
    * stopping at the first solid below. The fall is capped so one frame (even a
    * lag spike with a large clamped dt) can never skip past a full block, which

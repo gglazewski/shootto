@@ -19,7 +19,6 @@ import { MobRenderer } from './MobRenderer.js';
 import { NavMesh, hasLineOfSight } from '../engine/NavMesh.js';
 import { getMob } from '../engine/mobTypes.js';
 import { collisionWorld } from '../editor/itemPick.js';
-import { CELL_SIZE } from '../engine/Space.js';
 
 /** Edge length of a shared-LOS bucket in meters (kept small so walls split
  *  buckets instead of being straddled). */
@@ -28,6 +27,10 @@ const LOS_BUCKET = 1.5;
 const LOS_REFRESH = 0.2;
 /** Cap on cached LOS entries (drops stale ones past this). */
 const LOS_CACHE_MAX = 256;
+/** Max meters a mob may be pushed by separation in a single frame, so a large
+ *  cluster eases apart over a few frames instead of teleporting a mob clear
+ *  across a room. */
+const MAX_SEPARATION = 0.2;
 
 /** Ray vs AABB intersection (slab method). @returns distance t or Infinity. */
 function rayAabb(ox, oy, oz, dx, dy, dz, box) {
@@ -131,62 +134,59 @@ export class MobManager {
   /**
    * Push overlapping mobs apart so a pack doesn't stack into one sprite, and
    * nudge mobs off the player's own body. Horizontal only (mobs on different
-   * floors may legitimately share x/z), and each nudge is gated on the target
-   * column still being walkable so a mob is never shoved into a wall. Cheap
-   * O(n²) — mob counts are small.
+   * floors may legitimately share x/z).
+   *
+   * Each mob accumulates ONE separation vector from every overlapping neighbor
+   * plus the player, clamps it to a small per-frame maximum, then applies it
+   * through Mob.nudge — which resolves against solid cells, so a mob slides
+   * along walls instead of clipping into them. Clamping keeps a big cluster
+   * from shoving any single mob several meters in one frame (no teleports).
    */
   _separate(player) {
     const mobs = this.mobs;
     for (let i = 0; i < mobs.length; i++) {
       const a = mobs[i];
       if (a.dead) continue;
-      // Off the player's body.
-      this._pushAway(a, player.x, player.z, a.halfWidth + 0.28);
+      let dx = 0;
+      let dz = 0;
+
+      // Off the player's body (the player doesn't move, so the mob takes the
+      // full overlap).
+      const pdx = a.pos.x - player.x;
+      const pdz = a.pos.z - player.z;
+      const pd = Math.hypot(pdx, pdz);
+      const minP = a.halfWidth + 0.28;
+      if (pd > 1e-4 && pd < minP) {
+        const push = minP - pd;
+        dx += (pdx / pd) * push;
+        dz += (pdz / pd) * push;
+      }
+
+      // Away from every overlapping mob on the same floor.
       for (let j = i + 1; j < mobs.length; j++) {
         const b = mobs[j];
         if (b.dead) continue;
         if (Math.abs(a.pos.y - b.pos.y) > 0.4) continue;
-        const dx = b.pos.x - a.pos.x;
-        const dz = b.pos.z - a.pos.z;
+        const ox = a.pos.x - b.pos.x;
+        const oz = a.pos.z - b.pos.z;
+        const d = Math.hypot(ox, oz);
         const min = (a.halfWidth + b.halfWidth) * 2 + 0.05;
-        const d2 = dx * dx + dz * dz;
-        if (d2 >= min * min) continue;
-        if (d2 === 0) {
-          this._nudge(a, 0.06, 0.06);
-          this._nudge(b, -0.06, -0.06);
+        if (d >= min) continue;
+        if (d < 1e-4) {
+          dx += 0.06;
+          dz += 0.06;
           continue;
         }
-        const d = Math.sqrt(d2);
-        const push = (min - d) * 0.5;
-        const ux = dx / d;
-        const uz = dz / d;
-        this._nudge(a, -ux * push, -uz * push);
-        this._nudge(b, ux * push, uz * push);
+        const push = (min - d) * 0.5; // each mob takes half the overlap
+        dx += (ox / d) * push;
+        dz += (oz / d) * push;
       }
+
+      const len = Math.hypot(dx, dz);
+      if (len < 1e-4) continue;
+      const s = Math.min(len, MAX_SEPARATION);
+      a.nudge((dx / len) * s, (dz / len) * s);
     }
-  }
-
-  /** Move a mob by (nx, nz) meters only when its new column is still walkable
-   *  at its current floor level (keeps separation from shoving it into walls). */
-  _nudge(mob, nx, nz) {
-    const cx = Math.floor((mob.pos.x + nx) / CELL_SIZE);
-    const cz = Math.floor((mob.pos.z + nz) / CELL_SIZE);
-    const cy = Math.floor(mob.pos.y / CELL_SIZE);
-    if (!mob.nav.nearestNodeAtCell(cx, cz, cy)) return;
-    mob.pos.x += nx;
-    mob.pos.z += nz;
-  }
-
-  /** Push `mob` away from the point (px, pz) when it overlaps by more than
-   *  `minDist` meters. Used to keep mobs off the player's body. */
-  _pushAway(mob, px, pz, minDist) {
-    const dx = mob.pos.x - px;
-    const dz = mob.pos.z - pz;
-    const d2 = dx * dx + dz * dz;
-    if (d2 >= minDist * minDist || d2 === 0) return;
-    const d = Math.sqrt(d2);
-    const push = (minDist - d) * 0.5 + 0.02;
-    this._nudge(mob, (dx / d) * push, (dz / d) * push);
   }
 
   /** Coarse 3D bucket a mob belongs to (x, z, and floor all matter). */

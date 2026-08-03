@@ -111,7 +111,22 @@ test('climbs a 0.5 m step to reach a higher level', () => {
   assert.ok(maxY >= 3 * CELL_SIZE - 0.2, `mob should step up onto the block (max y=${maxY})`);
 });
 
+test('a delayed-aggro mob wakes only after its delay elapses', () => {
+  const world = floorWorld();
+  const type = getMob('imp');
+  const nav = new NavMesh(world, { halfWidth: type.halfWidth, height: type.height });
+  const mob = new Mob({ type, spawnCell: [2, 2, 2], world, nav, aggroDelay: 0.3, onDamagePlayer: () => {} });
+  const player = { x: 6 * CELL_SIZE, y: 2 * CELL_SIZE, z: 2 * CELL_SIZE };
+  for (let i = 0; i < 2; i++) {
+    mob.update(0.1, player);
+    assert.equal(mob.aggro, false, 'must not aggro before the delay elapses');
+  }
+  mob.update(0.1, player); // 0.3s elapsed = the delay
+  assert.equal(mob.aggro, true);
+});
+
 // --- corner navigation (the "stuck on corners" regression) ---
+
 
 /** 16x16 floor with an L-wall: a wall along x=7 (z=8..14) turning east at
  *  z=8. The mob must round the corner to reach the far side. */
