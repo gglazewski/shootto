@@ -104,6 +104,61 @@
       display: inline-block; min-width: 20px; padding: 0 5px; border: 1px solid #555;
       border-bottom-width: 2px; border-radius: 4px; background: #1a1c20; font-family: inherit; font-size: 12px;
     }
+
+    /* --- touch controls (mobile only) ---
+       Minecraft-style: floating joystick on the left, drag-to-look on the
+       right, action cluster bottom-right. Hidden on desktop (fine pointer). */
+    #touch-layer {
+      position: fixed; inset: 0; z-index: 5; display: none;
+      touch-action: none; -webkit-tap-highlight-color: transparent;
+    }
+    @media (pointer: coarse) { #touch-layer { display: block; } }
+    #touch-layer.hidden { display: none !important; }
+
+    .tc-btn {
+      position: absolute; border: 1px solid rgba(255,255,255,0.28); border-radius: 50%;
+      background: rgba(20,26,32,0.6); color: #fff; display: flex; align-items: center;
+      justify-content: center; text-align: center; line-height: 1.1; font-weight: 600;
+      font-family: inherit; font-size: 13px; letter-spacing: 0.02em;
+      user-select: none; -webkit-user-select: none; -webkit-tap-highlight-color: transparent;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+    }
+    .tc-btn:active, .tc-btn.on { background: rgba(90,140,190,0.75); border-color: rgba(255,255,255,0.6); }
+
+    #btn-pause { right: 14px; top: 12px; width: 46px; height: 46px; font-size: 20px; }
+    #btn-attack { right: 16px; bottom: 132px; width: 84px; height: 84px; font-size: 16px;
+      border-color: rgba(255,120,120,0.55); }
+    #btn-inject { right: 84px; bottom: 132px; width: 56px; height: 56px; }
+    #btn-pickup { right: 152px; bottom: 132px; width: 56px; height: 56px; }
+    #btn-reload { right: 16px; bottom: 228px; width: 56px; height: 56px; }
+    #btn-sprint { right: 84px; bottom: 12px; width: 56px; height: 56px; }
+    #btn-crouch { right: 16px; bottom: 12px; width: 56px; height: 56px; }
+
+    #slots-mobile { position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px;
+      display: flex; gap: 8px; }
+    .slot-btn {
+      width: 52px; height: 52px; border-radius: 10px; border: 1px solid rgba(255,255,255,0.28);
+      background: rgba(20,26,32,0.6); color: #fff; font-size: 16px; font-weight: 700;
+      -webkit-tap-highlight-color: transparent; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+    }
+    .slot-btn.active { border-color: #6cf; box-shadow: 0 0 8px rgba(102,204,255,0.5); background: rgba(60,90,130,0.7); }
+
+    #joy-base {
+      position: absolute; width: 76px; height: 76px; margin: -38px 0 0 -38px; display: none;
+      border-radius: 50%; border: 2px solid rgba(255,255,255,0.4); background: rgba(255,255,255,0.07);
+    }
+    #joy-base.visible { display: block; }
+    #joy-knob {
+      position: absolute; left: 50%; top: 50%; width: 42px; height: 42px; margin: -21px 0 0 -21px;
+      border-radius: 50%; background: rgba(255,255,255,0.4);
+    }
+
+    /* portrait phones: raise sprint/crouch above the hotbar to avoid overlap */
+    @media (orientation: portrait) {
+      #btn-sprint { right: 84px; bottom: 76px; }
+      #btn-crouch { right: 16px; bottom: 76px; }
+      #btn-reload { right: 16px; bottom: 228px; }
+    }
   </style>
 </head>
 <body>
@@ -166,6 +221,26 @@
       <button id="btn-respawn" class="primary">Respawn (New Game)</button>
       <button id="btn-death-menu">Main Menu</button>
     </div>
+  </div>
+
+  <!-- Mobile touch controls (Minecraft-style): joystick left, look right,
+       action cluster bottom-right. Wired by TouchControls.js; hidden on
+       desktop by the (pointer: coarse) media query. -->
+  <div id="touch-layer">
+    <button id="btn-pause" class="tc-btn">PAUSE</button>
+    <button id="btn-attack" class="tc-btn">FIRE</button>
+    <button id="btn-inject" class="tc-btn">INJ</button>
+    <button id="btn-pickup" class="tc-btn">PICK</button>
+    <button id="btn-reload" class="tc-btn">RELOAD</button>
+    <button id="btn-sprint" class="tc-btn">SPRINT</button>
+    <button id="btn-crouch" class="tc-btn">CROUCH</button>
+    <div id="slots-mobile">
+      <button class="slot-btn" data-index="0">1</button>
+      <button class="slot-btn" data-index="1">2</button>
+      <button class="slot-btn" data-index="2">3</button>
+      <button class="slot-btn" data-index="3">4</button>
+    </div>
+    <div id="joy-base"><div id="joy-knob"></div></div>
   </div>
 
   <script src="build/game-play.js"></script>

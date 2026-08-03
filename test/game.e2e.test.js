@@ -836,6 +836,7 @@ T('mobs aggro, chase, attack and die to the player', async () => {
     for (let i = 0; i < 40; i++) mob.update(0.1, player);
     const d1 = Math.hypot(player.x - mob.pos.x, player.z - mob.pos.z);
     const aggro = mob.aggro;
+    const healthAfterChase = g.stats.health;
 
     // Step in front of the mob (0.6 m north, camera facing -z toward it) and
     // fight it with fists.
@@ -859,8 +860,16 @@ T('mobs aggro, chase, attack and die to the player', async () => {
       dead: mob.dead,
       startHealth,
       health: g.stats.health,
+      healthAfterChase,
+      dbg: {
+        mobPos: [mob.pos.x, mob.pos.y, mob.pos.z],
+        mobState: mob.state,
+        atkTimer: mob.attackTimer,
+        time: (typeof performance !== 'undefined' ? performance.now() : 0),
+      },
     };
   });
+  if (out.healthAfterChase >= out.startHealth - 1) console.log('DBG no hurt during chase:', JSON.stringify(out));
   assert.equal(out.aggro, true, 'mob must aggro on sight');
   assert.ok(out.d1 < out.d0 - 0.1, `mob must chase the player (${out.d0} -> ${out.d1})`);
   assert.equal(out.kills, 1, 'player must kill the mob');

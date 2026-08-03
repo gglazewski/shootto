@@ -126,30 +126,28 @@ test('a chasing pack spreads out instead of stacking into one spot', () => {
 });
 
 test('a large clustered pack never clips into walls or teleports', () => {
-  // A floor with an enclosed room (1-cell stone walls, y=2..6) that has a
-  // 2-cell door on the east. 12 mobs outside must funnel through the door and
-  // pile up — the tightest case for the separation pass.
+  // The player is pinned in an L-corner (west + north walls). 20 mobs spawn in
+  // a tight block to the south-east, all with line of sight, so the whole pack
+  // charges and piles into the corner around the player — the tightest case
+  // for the separation pass. Invariants: no mob may ever overlap a solid cell,
+  // and no mob may move more than a step in a single frame.
   const world = new World();
   for (let x = 0; x < 48; x += 2) {
     for (let z = 0; z < 48; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
   }
-  for (let y = 2; y <= 6; y++) {
-    for (let x = 16; x <= 30; x++) {
-      world.place('stone', SIZE.SMALL, x, y, 16);
-      world.place('stone', SIZE.SMALL, x, y, 30);
-    }
-    for (let z = 16; z <= 30; z++) {
-      world.place('stone', SIZE.SMALL, 16, y, z);
-      if (z !== 21 && z !== 22) world.place('stone', SIZE.SMALL, 30, y, z);
-    }
+  for (let x = 0; x <= 36; x++) {
+    for (let y = 2; y <= 6; y++) world.place('stone', SIZE.SMALL, x, y, 4);
   }
-  for (let i = 0; i < 12; i++) world.addMobSpawn('imp', 8 + (i % 3) * 2, 2, 24 + Math.floor(i / 3) * 2);
+  for (let z = 4; z <= 36; z++) {
+    for (let y = 2; y <= 6; y++) world.place('stone', SIZE.SMALL, 4, y, z);
+  }
+  for (let i = 0; i < 20; i++) world.addMobSpawn('imp', 14 + (i % 5) * 2, 2, 14 + Math.floor(i / 5) * 2);
 
   const mgr = makeManager(world);
   mgr.rebuild();
-  assert.equal(mgr.mobs.length, 12);
+  assert.equal(mgr.mobs.length, 20);
 
-  const player = { x: 12.25, y: 1.0, z: 12.25 }; // inside the room
+  const player = { x: 8.25, y: 1.0, z: 8.25 }; // just inside the corner
   let walled = false;
   let maxStep = 0;
   for (let f = 0; f < 900; f++) {
@@ -169,9 +167,9 @@ test('a large clustered pack never clips into walls or teleports', () => {
   }
   assert.equal(walled, false, 'no mob may ever overlap a solid cell (wall entry)');
   assert.ok(maxStep < 0.35, `no mob may teleport (max per-frame move ${maxStep.toFixed(2)}m)`);
-  // And the pack still funnels in: at least one mob should reach the room.
-  const inside = mgr.mobs.filter((m) => m.pos.x > 8 && m.pos.x < 14 && m.pos.z > 8 && m.pos.z < 14).length;
-  assert.ok(inside >= 1, `the pack should still reach the player (${inside} inside)`);
+  // And the pack still closes in instead of being held at bay.
+  const engaged = mgr.mobs.filter((m) => Math.hypot(m.pos.x - player.x, m.pos.z - player.z) < 2.0).length;
+  assert.ok(engaged >= 1, `the pack should still reach the player (${engaged} within 2m)`);
 });
 
 test('mobs chase the player down the bundled-world staircase without disappearing', () => {

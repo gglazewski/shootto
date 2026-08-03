@@ -36,6 +36,7 @@ import { SmokeParticles } from './SmokeParticles.js';
 import { MuzzleFX } from './MuzzleFX.js';
 import { MobManager } from './MobManager.js';
 import { itemAwarePick } from '../editor/itemPick.js';
+import { TouchControls } from './TouchControls.js';
 
 /** Fallback reload time (seconds) when a weapon profile has none set. */
 const RELOAD_TIME = 1.4;
@@ -52,10 +53,14 @@ export class GameApp {
     this.container = container ?? doc.querySelector('#game');
     this.storage = storage ?? (typeof localStorage !== 'undefined' ? localStorage : null);
     this.mode = 'menu'; // 'menu' | 'playing' | 'paused'
+    // Touch devices get the on-screen touch layer and skip pointer lock (and
+    // render a bit cheaper: no MSAA, capped pixel ratio).
+    this.isTouch = TouchControls.isTouch();
 
     // --- engine (same render pipeline as the editor) ---
     this.world = new World();
-    this.webgl = new THREE.WebGLRenderer({ antialias: true });
+    this.webgl = new THREE.WebGLRenderer({ antialias: !this.isTouch });
+    if (this.isTouch) this.webgl.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.container.appendChild(this.webgl.domElement);
     const { texture, tileIndexFor, atlas } = createAtlasTexture(THREE);
     this.renderer = new Renderer({ THREE, webgl: this.webgl, world: this.world, atlasTexture: texture, tileIndexFor, atlas });
@@ -65,8 +70,22 @@ export class GameApp {
       camera: this.renderer.camera,
       domElement: this.webgl.domElement,
       world: collisionWorld(this.world),
-      opts: { sensitivity: CONFIG.controls.sensitivity, ...CONFIG.player },
+      opts: { sensitivity: CONFIG.controls.sensitivity, ...CONFIG.player, touchMode: this.isTouch },
     });
+
+    if (this.isTouch) {
+      this.touch = new TouchControls({
+        doc: this.doc,
+        walk: this.walk,
+        callbacks: {
+          reload: () => this._reload(),
+          pickup: () => this._pickup(),
+          inject: () => this._useInjection(),
+          selectSlot: (i) => this._selectSlot(i),
+          pause: () => this.pauseGame(),
+        },
+      });
+    }
 
     this.itemRenderer = new ItemRenderer({
       THREE,
@@ -176,12 +195,15 @@ export class GameApp {
   dispose() {
     this.loop?.stop();
     this.walk.disconnect();
+    this.touch?.dispose();
     window.removeEventListener('resize', this._onResize);
   }
 
   _frame(dt) {
     if (this.mode === 'playing') {
       this.walk.update(dt);
+      // Touch fire button held: attack every frame (cooldown throttles it).
+      if (this.touch?.attacking) this._attack();
       this._updatePickup();
       this.mobs.update(dt, this.walk.position);
     } else {
@@ -299,6 +321,7 @@ export class GameApp {
       this.ui.armorText.textContent = String(Math.round(s.armor));
     }
     if (this.ui.kills) this.ui.kills.textContent = String(this.mobs.kills);
+    this.touch?.setActiveSlot(this.stats.activeSlot);
     this._updateHeldItem();
     this._renderEquipment();
     this._updateAmmoHud();
@@ -431,6 +454,7 @@ export class GameApp {
   gameOver() {
     if (this.mode === 'dead') return;
     this.mode = 'dead';
+    this.touch?.setEnabled(false);
     this.walk.enabled = false;
     this.walk.keys.clear();
     this.walk.velocity.set(0, 0, 0);
@@ -680,6 +704,7 @@ export class GameApp {
 
   showMenu() {
     this.mode = 'menu';
+    this.touch?.setEnabled(false);
     this.ui.menu.classList.remove('hidden');
     this.ui.pause.classList.add('hidden');
     this.ui.death.classList.add('hidden');
@@ -692,18 +717,20 @@ export class GameApp {
 
   startPlaying() {
     this.mode = 'playing';
+    this.touch?.setEnabled(true);
     this.ui.menu.classList.add('hidden');
     this.ui.pause.classList.add('hidden');
     this.ui.death.classList.add('hidden');
     this.ui.hud.classList.remove('hidden');
     this.walk.enabled = true;
     this._updateHud();
-    if (this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
+    if (!this.isTouch && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
   }
 
   pauseGame() {
     if (this.mode !== 'playing') return;
     this.mode = 'paused';
+    this.touch?.setEnabled(false);
     this.walk.enabled = false;
     this.walk.keys.clear();
     this.walk.velocity.set(0, 0, 0);
@@ -714,9 +741,10 @@ export class GameApp {
 
   resumeGame() {
     this.mode = 'playing';
+    this.touch?.setEnabled(true);
     this.ui.pause.classList.add('hidden');
     this.walk.enabled = true;
-    if (this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
+    if (!this.isTouch && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
   }
 
   /** Start a fresh game from the current editor world. */
@@ -867,10 +895,16 @@ export class GameApp {
       this._attack();
     });
     // Losing pointer lock while playing (e.g. browser-requested exit) opens
-    // the pause menu instead of leaving the player stuck.
+    // the pause menu instead of leaving the player stuck. Touch devices never
+    // enter pointer lock, so they pause on backgrounding instead (below).
     on(this.doc, 'pointerlockchange', () => {
       const locked = document.pointerLockElement === this.webgl.domElement;
-      if (this.mode === 'playing' && !locked) this.pauseGame();
+      if (!this.isTouch && this.mode === 'playing' && !locked) this.pauseGame();
+    });
+    // Mobile: when the app is backgrounded, auto-pause (there's no Esc and
+    // pointer-lock loss never fires) so the player isn't killed while away.
+    on(this.doc, 'visibilitychange', () => {
+      if (this.isTouch && document.hidden && this.mode === 'playing') this.pauseGame();
     });
   }
 

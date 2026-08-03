@@ -9,6 +9,7 @@ import { NavMesh } from '../src/engine/NavMesh.js';
 import { Mob } from '../src/game/Mob.js';
 import { getMob } from '../src/engine/mobTypes.js';
 import { CELL_SIZE } from '../src/engine/Space.js';
+import { collides } from '../src/engine/Physics.js';
 
 /** Floor of BIG voxels spanning cells 0..7 at y=0 (top surface = cell y=2). */
 function floorWorld() {
@@ -123,6 +124,27 @@ test('a delayed-aggro mob wakes only after its delay elapses', () => {
   }
   mob.update(0.1, player); // 0.3s elapsed = the delay
   assert.equal(mob.aggro, true);
+});
+
+test('separation nudges slide along walls instead of clipping in', () => {
+  // Floor with a wall cell at x=8 (world x 4.0..4.5). A mob pushed a partial
+  // cell into the wall must stop flush at its face, not embed itself — the
+  // coarse "is the target cell walkable" check alone would let a sub-cell push
+  // slide the AABB into the solid cell.
+  const world = new World();
+  for (let x = 0; x < 16; x += 2) {
+    for (let z = 0; z < 16; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
+  }
+  for (let y = 2; y <= 4; y++) world.place('stone', SIZE.SMALL, 8, y, 6);
+  const { mob } = makeMob(world, 6, 6, 2);
+  // Flush against the wall's west face (box maxX = 4.0).
+  mob.pos.x = 3.75;
+  assert.ok(Math.abs(mob._box().maxX - 4.0) < 1e-6, 'setup: mob is flush with the wall');
+  mob.nudge(0.2, 0); // a sub-cell push INTO the wall
+  assert.ok(!collides(world, mob._box()), 'mob must not overlap the wall after the push');
+  assert.ok(mob.pos.x <= 3.75 + 1e-6, 'mob must not move through the wall');
+  mob.nudge(-0.2, 0); // a push away is free
+  assert.ok(mob.pos.x < 3.75, 'mob should move away from the wall when there is room');
 });
 
 // --- corner navigation (the "stuck on corners" regression) ---

@@ -285,16 +285,13 @@ export class Mob {
 
   _repath(player) {
     const start = this.nav.nearestNode(this.pos.x, this.pos.y, this.pos.z);
-    // Close in: aim at a point on a ring around the player (this mob's own
-    // flank angle) instead of the player's exact cell, so a pack surrounds the
-    // player instead of stacking. Fall back to the player node when the ring
-    // point isn't on the nav mesh (e.g. it lands inside a wall).
     const playerNode = this.nav.nearestNode(player.x, player.y, player.z);
     if (!start || !playerNode) {
       this.path = [];
       return;
     }
     let goal = playerNode;
+    let path = null;
     // Flank only when already on the player's level (within a step) — a mob on
     // a staircase or ledge must descend to the player's floor first, otherwise
     // it would stop mid-stairs to surround instead of pressing into a basement.
@@ -303,21 +300,27 @@ export class Mob {
       const r = this.type.attackRange * SURROUND_FACTOR;
       const gx = player.x + Math.cos(this.spreadAngle) * r;
       const gz = player.z + Math.sin(this.spreadAngle) * r;
-      const flank = this.nav.nearestNode(gx, player.y, gz) ?? playerNode;
-      // A flank point can sit in a different nav region (across a wall); when
-      // there's no route to it, keep approaching the player's own node instead
-      // of re-pathing to an unreachable point forever.
-      this.path = this.nav.findPath(start, flank) ?? [];
-      if (this.path.length) {
-        goal = flank;
-      } else {
-        this.path = this.nav.findPath(start, playerNode) ?? [];
+      const flank = this.nav.nearestNode(gx, player.y, gz);
+      // A cell-snapped flank node can land just OUTSIDE attack range, which
+      // leaves a mob parked and helpless a step away from the player — so only
+      // flank to a node the mob can strike from; otherwise press to the player
+      // node (or anywhere a path to it exists).
+      if (flank && flank !== playerNode && this._nodeInReach(flank, player)) {
+        path = this.nav.findPath(start, flank);
+        if (path && path.length) goal = flank;
       }
-    } else {
-      this.path = this.nav.findPath(start, playerNode) ?? [];
     }
+    this.path = path && path.length ? path : (this.nav.findPath(start, playerNode) ?? []);
     this.pathIndex = 0;
     this._lastGoal = { x: player.x, z: player.z };
+  }
+
+  /** True when a mob standing at `node`'s cell centre can reach the player
+   *  horizontally within its attack range (flank positions must be attackable). */
+  _nodeInReach(node, player) {
+    const x = node.x * CELL_SIZE + CELL_SIZE / 2;
+    const z = node.z * CELL_SIZE + CELL_SIZE / 2;
+    return Math.hypot(x - player.x, z - player.z) <= this.type.attackRange;
   }
 
   /**
@@ -340,7 +343,7 @@ export class Mob {
   /**
    * Push the mob horizontally by (nx, nz) meters, resolving against solid cells
    * so it slides along walls instead of clipping into them. No speed cap and no
-   * step-up (separation pushes shouldn't climb). Y/grounded are left alone — a
+   * step-up (separation pushes shouldn't climb). Grounded is re-checked so a
    * nudge that leaves a ledge is caught by gravity on the next frame. Used by
    * the manager's separation pass, which clamps the per-frame displacement.
    */
@@ -351,6 +354,7 @@ export class Mob {
     this.pos.x = box.minX + this.halfWidth;
     this.pos.y = box.minY;
     this.pos.z = box.minZ + this.halfWidth;
+    this.grounded = groundedAt(this.world, box);
   }
 
   /**

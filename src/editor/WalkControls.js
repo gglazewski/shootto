@@ -29,6 +29,7 @@ export class WalkControls {
     this.domElement = domElement;
     this.world = world;
 
+    this.touchMode = !!opts.touchMode; // touch devices: never use pointer lock
     this.sensitivity = opts.sensitivity ?? 0.0022;
     this.halfWidth = opts.halfWidth ?? 0.25;
     this.height = opts.height ?? 1.8;
@@ -61,6 +62,7 @@ export class WalkControls {
   }
 
   connect() {
+    if (this.touchMode) return;
     document.addEventListener('pointerlockchange', this._bound);
     this.domElement.addEventListener('mousedown', this._requestLock);
   }
@@ -71,7 +73,7 @@ export class WalkControls {
   }
 
   _requestLock = () => {
-    if (!this.enabled) return;
+    if (this.touchMode || !this.enabled) return;
     if (!this.locked && this.domElement.requestPointerLock) {
       this.domElement.requestPointerLock();
     }
@@ -229,6 +231,11 @@ export class WalkControls {
   /** @param {number} dy raw mousemove deltaY */
   onMouseMove(dx, dy) {
     if (!this.locked) return;
+    this.look(dx, dy);
+  }
+
+  /** Apply a look delta (touch drag or mouse) regardless of pointer lock. */
+  look(dx, dy) {
     const l = applyLook(this.yaw, this.pitch, dx, dy, this.sensitivity);
     this.yaw = l.yaw;
     this.pitch = l.pitch;
