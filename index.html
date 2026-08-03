@@ -1,0 +1,554 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Voxel Editor</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0d10; }
+    body { font-family: 'Segoe UI', system-ui, sans-serif; color: #e8e8e8; user-select: none; }
+
+    #game { position: fixed; inset: 0; }
+    #game canvas { display: block; }
+
+    /* --- overlay --- */
+    .overlay { position: fixed; pointer-events: none; z-index: 10; }
+
+    #ui-crosshair {
+      left: 50%; top: 50%; width: 18px; height: 18px;
+      transform: translate(-50%, -50%);
+    }
+    #ui-crosshair::before, #ui-crosshair::after {
+      content: ''; position: absolute; background: rgba(255,255,255,0.85);
+      box-shadow: 0 0 2px rgba(0,0,0,0.8);
+    }
+    #ui-crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+    #ui-crosshair::after  { left: 0; top: 8px; width: 18px; height: 2px; }
+
+    #ui-hud {
+      top: 12px; left: 12px; padding: 10px 14px; border-radius: 8px;
+      background: rgba(0,0,0,0.45); font-size: 13px; line-height: 1.5;
+      min-width: 190px; pointer-events: none;
+    }
+    #ui-hud .row { display: flex; justify-content: space-between; gap: 14px; }
+    #ui-hud .label { opacity: 0.7; }
+    #ui-hud .value { font-variant-numeric: tabular-nums; }
+
+    /* --- test-run mode (F5) --- */
+    body.test-mode #ui-buttons,
+    body.test-mode #toolbar,
+    body.test-mode #ui-hud .editor-row { display: none; }
+    #ui-testmode { display: none; }
+    body.test-mode #ui-testmode {
+      display: block; top: 12px; left: 50%; transform: translateX(-50%);
+      padding: 5px 16px; border-radius: 20px; border: 1px solid rgba(0,229,255,0.55);
+      background: rgba(0,0,0,0.55); color: #8ff; font-size: 13px; letter-spacing: 1px;
+      white-space: nowrap; pointer-events: none;
+    }
+    #ui-testmode kbd {
+      display: inline-block; padding: 0 5px; border: 1px solid rgba(0,229,255,0.5);
+      border-bottom-width: 2px; border-radius: 4px; background: rgba(0,0,0,0.4);
+      font-family: inherit; font-size: 12px;
+    }
+
+    #ui-action {
+      left: 50%; top: calc(50% + 26px); transform: translateX(-50%);
+      padding: 6px 14px; border-radius: 20px; background: rgba(0,0,0,0.5);
+      font-size: 14px; opacity: 0; transition: opacity 0.15s;
+    }
+    #ui-action.show { opacity: 1; }
+
+    #ui-hint {
+      inset: 0; display: flex; align-items: center; justify-content: center;
+      background: rgba(0,0,0,0.55); pointer-events: auto; text-align: center;
+      cursor: pointer;
+    }
+    #ui-hint.hidden { display: none; }
+    #ui-hint .box {
+      background: rgba(10,12,16,0.92); border: 1px solid #333; border-radius: 10px;
+      padding: 26px 34px; font-size: 15px; line-height: 1.7;
+    }
+    #ui-hint h1 { font-size: 20px; margin-bottom: 10px; }
+    #ui-hint kbd {
+      display: inline-block; min-width: 22px; padding: 1px 6px; margin: 0 2px;
+      border: 1px solid #555; border-bottom-width: 2px; border-radius: 4px;
+      background: #1a1c20; font-family: inherit; font-size: 13px; text-align: center;
+    }
+
+    #ui-buttons { top: 12px; right: 12px; display: flex; gap: 8px; pointer-events: auto; }
+    #ui-buttons button {
+      padding: 6px 12px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.85); color: #e8e8e8; cursor: pointer; font-size: 13px;
+    }
+    #ui-buttons button:hover { background: rgba(40,46,56,0.95); }
+    #ui-buttons button.danger:hover { background: rgba(90,30,30,0.9); border-color: #a44; }
+
+    /* --- tool ring (hold Tab) --- */
+    #tool-ring { left: 50%; top: 50%; width: 0; height: 0; }
+    #tool-ring.hidden { display: none; }
+    .tool-ring-item {
+      position: absolute; transform: translate(-50%, -50%);
+      min-width: 52px; padding: 6px 8px; text-align: center;
+      border: 2px solid rgba(255,255,255,0.25); border-radius: 8px;
+      background: rgba(20,24,30,0.92); color: #e8e8e8; font-size: 12px;
+    }
+    .tool-ring-item.highlight {
+      border-color: #00e5ff; color: #fff;
+      box-shadow: 0 0 10px rgba(0,229,255,0.6);
+    }
+    #tool-ring-center {
+      position: absolute; transform: translate(-50%, -50%);
+      font-size: 14px; color: #e8e8e8; white-space: nowrap;
+      text-shadow: 0 1px 3px #000;
+    }
+
+    /* --- toolbar --- */
+    #toolbar {
+      bottom: 18px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 8px; padding: 8px 10px; border-radius: 10px;
+      background: rgba(0,0,0,0.5); pointer-events: auto;
+    }
+    .slot {
+      position: relative;
+      width: 52px; height: 52px; padding: 4px; border: 2px solid rgba(255,255,255,0.15);
+      border-radius: 8px; background: rgba(30,34,40,0.9); cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+    }
+    .slot canvas { image-rendering: pixelated; width: 100%; height: 100%; }
+    .slot .slot-label {
+      position: absolute; top: 2px; right: 4px; z-index: 1;
+      font-size: 10px; font-weight: 600; color: rgba(255,255,255,0.55);
+      pointer-events: none; text-shadow: 0 1px 2px #000;
+    }
+    .slot:hover { border-color: rgba(255,255,255,0.4); }
+    .slot.empty {
+      background: rgba(20,24,30,0.5);
+      border-style: dashed; border-color: rgba(255,255,255,0.18);
+    }
+    .slot.empty .slot-label { color: rgba(255,255,255,0.35); }
+    .slot.active { border-color: #6c9; box-shadow: 0 0 8px rgba(102,204,153,0.5); }
+
+    /* --- inventory --- */
+    #inventory {
+      position: fixed; z-index: 20; inset: 0; display: none;
+      align-items: center; justify-content: center; background: rgba(0,0,0,0.6);
+      cursor: pointer;
+    }
+    #inventory.open { display: flex; }
+    #inventory .panel {
+      background: rgba(14,17,22,0.97); border: 1px solid #333; border-radius: 12px;
+      padding: 20px 24px; width: min(92vw, 620px); max-height: 82vh; overflow-y: auto;
+      cursor: default;
+    }
+    #inventory h2 { margin-bottom: 12px; font-size: 17px; }
+    .inventory-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+      gap: 10px;
+    }
+    .inv-item {
+      border: 1px solid #333; border-radius: 8px; background: #1a1c22;
+      padding: 8px; cursor: pointer; display: flex; flex-direction: column;
+      align-items: center; gap: 6px; color: #ddd; font-size: 12px;
+    }
+    .inv-item:hover { border-color: #6c9; }
+    .inv-item.hovered {
+      border-color: #6cf; background: #222a36;
+      box-shadow: 0 0 8px rgba(102,204,255,0.45);
+    }
+    .inv-item canvas { image-rendering: pixelated; width: 48px; height: 48px; }
+    .inv-hint {
+      margin-top: 14px; padding: 8px 12px; border-radius: 8px;
+      background: rgba(0,0,0,0.35); border: 1px solid rgba(255,255,255,0.1);
+      color: #9cf; font-size: 12px; text-align: center;
+    }
+    .inv-hint kbd { color: #fff; font-weight: 600; }
+    .inv-section { margin-top: 18px; margin-bottom: 8px; font-size: 13px; color: #fcb; }
+
+    /* --- item editor (F2) --- */
+    #item-editor { position: fixed; inset: 0; z-index: 15; pointer-events: none; display: none; }
+    body.item-mode #item-editor { display: block; }
+    body.item-mode #ui-buttons,
+    body.item-mode #toolbar,
+    body.item-mode #ui-hud .editor-row,
+    body.item-mode #ui-crosshair { display: none; }
+    #ie-badge {
+      position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+      padding: 5px 16px; border-radius: 20px; border: 1px solid rgba(255,190,80,0.6);
+      background: rgba(0,0,0,0.55); color: #fcb; font-size: 13px; letter-spacing: 1px;
+      white-space: nowrap;
+    }
+    #ie-badge kbd {
+      display: inline-block; padding: 0 5px; border: 1px solid rgba(255,190,80,0.5);
+      border-bottom-width: 2px; border-radius: 4px; background: rgba(0,0,0,0.4);
+      font-family: inherit; font-size: 12px;
+    }
+    #ie-panel, #ep-panel {
+      position: absolute; top: 64px; left: 12px; width: 250px;
+      background: rgba(14,17,22,0.94); border: 1px solid #333; border-radius: 12px;
+      padding: 14px; pointer-events: auto; font-size: 13px;
+    }
+    #ie-panel .ie-title, #ep-panel .ie-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+    #ie-panel .ie-row, #ep-panel .ie-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+    #ie-panel .label, #ep-panel .label { opacity: 0.7; }
+    #ie-panel input[type=text], #ep-panel input[type=text], #ep-panel input[type=number] {
+      width: 118px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
+      color: #eee; padding: 3px 6px;
+    }
+    #ie-size, #ie-collision, #ep-kind, #ep-hands, #ep-cat { display: flex; gap: 4px; }
+    #ie-size button, #ie-collision button, #ie-buttons button, #ep-buttons button, #ep-muzzle, #ep-cat button {
+      padding: 5px 10px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #e8e8e8; cursor: pointer; font-size: 12px;
+    }
+    #ie-collision button { padding: 5px 6px; white-space: nowrap; }
+    #ie-size button:hover, #ie-collision button:hover, #ie-buttons button:hover, #ep-buttons button:hover, #ep-muzzle:hover, #ep-cat button:hover { background: rgba(40,46,56,0.95); }
+    #ie-size button.active, #ie-collision button.active, #ep-grip.active, #ep-muzzle.active, #ep-kind button.active, #ep-hands button.active, #ep-cat button.active { border-color: #6c9; background: rgba(102,204,153,0.2); color: #fff; }
+    #ep-muzzle.active { border-color: #fc3; background: rgba(255,204,60,0.2); }
+    #ep-cat button.active[data-kind="ammo"] { border-color: #fc3; background: rgba(255,204,60,0.2); }
+    #ep-weapon-fields, #ep-ammo-fields { margin: 0; }
+    #ep-weapon-fields.hidden, #ep-ammo-fields.hidden { display: none; }
+    #ep-anim {
+      width: 118px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
+      color: #eee; padding: 3px 6px;
+    }
+    #ep-magazine-row { display: flex; }
+    #ep-magazine-row.hidden-row { display: none; }
+    #ep-ammo-row { display: flex; }
+    #ep-ammo-row.hidden-row { display: none; }
+    #ep-reload-row { display: flex; }
+    #ep-reload-row.hidden-row { display: none; }
+    #ep-ammo, #ep-ammo-type {
+      width: 118px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
+      color: #eee; padding: 3px 6px;
+    }
+    #ie-color { width: 30px; height: 30px; border: 1px solid #444; border-radius: 6px; image-rendering: pixelated; }
+    #ie-color-name { max-width: 90px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #ie-buttons, #ep-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
+    .ie-modal {
+      position: fixed; inset: 0; z-index: 30; display: none;
+      align-items: center; justify-content: center; background: rgba(0,0,0,0.6);
+    }
+    .ie-modal.open { display: flex; }
+    .ie-modal-box {
+      background: rgba(14,17,22,0.97); border: 1px solid #333; border-radius: 12px;
+      padding: 18px 22px; min-width: 320px; max-height: 84vh; overflow-y: auto;
+    }
+    .ie-modal-box h2 { font-size: 16px; margin-bottom: 8px; }
+    .ie-palette-grid { display: grid; grid-template-columns: repeat(auto-fill, 30px); gap: 6px; margin: 10px 0; }
+    .ie-color-swatch {
+      width: 30px; height: 30px; padding: 0; border: 2px solid rgba(255,255,255,0.2);
+      border-radius: 6px; cursor: pointer; background: transparent;
+    }
+    .ie-color-swatch canvas { width: 100%; height: 100%; border-radius: 4px; display: block; }
+    .ie-color-swatch:hover { border-color: #fff; }
+    .ie-close {
+      margin-top: 8px; padding: 5px 14px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #e8e8e8; cursor: pointer;
+    }
+    .ie-check { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
+    .ie-check input { accent-color: #6c9; }
+    #ie-light-strength { width: 170px; }
+    #ie-light-strength-val { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
+
+    /* --- items editor (F3) --- */
+    #equip-editor { position: fixed; inset: 0; z-index: 15; pointer-events: none; display: none; }
+    body.equip-mode #equip-editor { display: block; }
+    body.equip-mode #ui-buttons,
+    body.equip-mode #toolbar,
+    body.equip-mode #ui-hud .editor-row,
+    body.equip-mode #ui-crosshair { display: none; }
+    #ep-badge {
+      position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
+      padding: 5px 16px; border-radius: 20px; border: 1px solid rgba(80,220,255,0.6);
+      background: rgba(0,0,0,0.55); color: #8ef; font-size: 13px; letter-spacing: 1px;
+      white-space: nowrap;
+    }
+    #ep-badge kbd {
+      display: inline-block; padding: 0 5px; border: 1px solid rgba(80,220,255,0.5);
+      border-bottom-width: 2px; border-radius: 4px; background: rgba(0,0,0,0.4);
+      font-family: inherit; font-size: 12px;
+    }
+
+    /* --- item / equipment catalogue --- */
+    #item-catalogue, #equip-catalogue {
+      position: fixed; z-index: 25; inset: 0; display: none;
+      align-items: center; justify-content: center; background: rgba(0,0,0,0.6);
+    }
+    #item-catalogue.open, #equip-catalogue.open { display: flex; }
+    #item-catalogue .panel, #equip-catalogue .panel {
+      background: rgba(14,17,22,0.97); border: 1px solid #333; border-radius: 12px;
+      padding: 20px 24px; width: min(92vw, 760px); max-height: 84vh; overflow-y: auto;
+      cursor: default; display: flex; flex-direction: column;
+    }
+    #item-catalogue h2, #equip-catalogue h2 { margin-bottom: 12px; font-size: 17px; }
+    .cat-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+    .cat-btn {
+      padding: 5px 10px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #e8e8e8; cursor: pointer; font-size: 12px;
+    }
+    .cat-btn:hover { background: rgba(40,46,56,0.95); }
+    .cat-btn.danger:hover { background: rgba(90,30,30,0.9); border-color: #a44; }
+    .cat-grid {
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+      gap: 10px;
+    }
+    .cat-item {
+      border: 1px solid #333; border-radius: 8px; background: #1a1c22;
+      padding: 8px; cursor: pointer; display: flex; flex-direction: column;
+      align-items: center; gap: 4px;
+    }
+    .cat-item:hover { border-color: #6c9; }
+    .cat-item canvas { image-rendering: pixelated; }
+    .cat-name { font-size: 12px; color: #eee; text-align: center; max-width: 100%;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cat-meta { font-size: 10px; color: #9aa; text-align: center; }
+    .cat-actions { display: flex; gap: 4px; margin-top: 4px; }
+    .cat-close { margin-top: 14px; align-self: center; }
+  </style>
+</head>
+<body>
+  <div id="game"></div>
+
+  <div id="ui-crosshair" class="overlay"></div>
+  <div id="ui-action" class="overlay"></div>
+  <div id="ui-testmode" class="overlay">TEST MODE — <kbd>F5</kbd> to exit</div>
+
+  <div id="ui-hud" class="overlay">
+    <div class="row editor-row"><span class="label">Block</span><span class="value" id="hud-type">-</span></div>
+    <div class="row editor-row"><span class="label">Size</span><span class="value" id="hud-size">-</span></div>
+    <div class="row editor-row"><span class="label">Tool</span><span class="value" id="hud-tool">-</span></div>
+    <div class="row"><span class="label">Pos</span><span class="value" id="hud-pos">-</span></div>
+    <div class="row editor-row"><span class="label">Speed</span><span class="value" id="hud-speed">-</span></div>
+    <div class="row"><span class="label">FPS</span><span class="value" id="hud-fps">-</span></div>
+  </div>
+
+  <div id="ui-hint" class="overlay hidden">
+    <div class="box">
+      <h1>Voxel Editor — Help</h1>
+      Click anywhere to close (or press F1).<br />
+      <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;·&nbsp;
+      <kbd>Space</kbd>/<kbd>C</kbd> up/down &nbsp;·&nbsp; <kbd>Shift</kbd> sprint<br />
+      Click the world to lock the pointer, then:
+      <kbd>LMB</kbd> place &nbsp;·&nbsp; <kbd>RMB</kbd> remove &nbsp;·&nbsp;
+      <kbd>Middle click</kbd> pick the block you're looking at &nbsp;·&nbsp;
+      <kbd>Shift</kbd>+<kbd>LMB</kbd> draw a line from the last placed voxel<br />
+      <kbd>Tab</kbd> hold for the radial tool selector &nbsp;·&nbsp; tap to cycle<br />
+      Spawn tool: <kbd>LMB</kbd> place / move the spawn &nbsp;·&nbsp; <kbd>RMB</kbd> clear it &nbsp;·&nbsp;
+      <kbd>R</kbd> rotate the facing arrow (the arrow shows where the player looks)<br />
+      <kbd>1</kbd>-<kbd>9</kbd>,<kbd>0</kbd> hotbar slots &nbsp;·&nbsp; <kbd>B</kbd> 0.5m/1m &nbsp;·&nbsp;
+      <kbd>R</kbd> rotate selected object 90° &nbsp;·&nbsp;
+      <kbd>E</kbd> inventory — hover a block, press a number to put it in that hotbar slot<br />
+      <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> redo<br />
+      <kbd>F2</kbd> item editor — build a placeable object from colored micro voxels,<br />
+      then place it from the inventory (<kbd>E</kbd>, "Placeable Objects" section)<br />
+      <kbd>F3</kbd> items editor — build an equippable item (e.g. a club): paint the shape,<br />
+      <kbd>G</kbd> set the grip voxel, <kbd>R</kbd> aim the direction arrow, set damage/reach/cooldown<br />
+      <kbd>F5</kbd> test run — walk at the spawn (<kbd>C</kbd> crouch, <kbd>Shift</kbd> sprint) &nbsp;·&nbsp;
+      <kbd>F1</kbd> help &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>S</kbd> save to browser &nbsp;·&nbsp;
+      <kbd>Esc</kbd> release pointer<br />
+      <strong>Save File</strong> writes the map + objects straight to
+      <code>map/voxelbundle.json</code> (no download) — run <code>npm run server</code>
+      and open <code>http://localhost:4173</code> so your world ships with the build
+    </div>
+  </div>
+
+  <div id="ui-buttons" class="overlay">
+    <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
+    <button id="btn-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
+    <button id="btn-items" title="Browse the item catalogue">Items</button>
+    <button id="btn-save" title="Save to browser (Ctrl+S)">Save</button>
+    <button id="btn-load" title="Load a .json map or bundle">Load</button>
+    <button id="btn-save-file" title="Download map + objects as voxelbundle.json">Save File</button>
+    <button id="btn-export" title="Download map as .json">Export</button>
+    <button id="btn-clear" class="danger" title="Remove all blocks">Clear</button>
+  </div>
+  <input id="file-load" type="file" accept=".json,application/json" style="display:none" />
+
+  <div id="tool-ring" class="overlay hidden">
+    <div id="tool-ring-center"></div>
+  </div>
+
+  <div id="toolbar" class="overlay"></div>
+
+  <div id="inventory">
+    <div class="panel"></div>
+  </div>
+
+  <div id="item-catalogue">
+    <div class="panel"></div>
+  </div>
+
+  <div id="equip-editor">
+    <div id="ep-badge">ITEMS EDITOR — <kbd>F3</kbd> to exit</div>
+    <div id="ep-panel">
+      <div class="ie-title" id="ep-title">Weapon Item</div>
+      <div class="ie-row"><span class="label">Name</span><input id="ep-name" type="text" value="New Item" /></div>
+      <div class="ie-row">
+        <span class="label" title="What this item is: a held weapon or an ammo type a weapon consumes">Kind</span>
+        <span id="ep-cat">
+          <button id="ep-cat-weapon" data-kind="weapon" title="A weapon the player holds and fights with">Weapon</button>
+          <button id="ep-cat-ammo" data-kind="ammo" title="Defines an ammo type that weapons consume and the player carries">Ammo</button>
+        </span>
+      </div>
+      <div class="ie-row">
+        <span class="label">Color</span>
+        <canvas id="ep-color" width="30" height="30"></canvas>
+        <span id="ep-color-name"></span>
+      </div>
+      <div id="ep-weapon-fields">
+        <div class="ie-row">
+          <span class="label" title="Voxel cell where the hand grips the item">Grip</span>
+          <span id="ep-grip-label">unset</span>
+        </div>
+        <div class="ie-row">
+          <span class="label" title="Forward direction of the item, shown as the cyan arrow">Direction</span>
+          <span id="ep-yaw-label">+Z (0°)</span>
+        </div>
+        <div class="ie-row"><span class="label">Damage</span><input id="ep-damage" type="number" min="1" max="100" step="1" value="10" /></div>
+        <div class="ie-row"><span class="label">Reach</span><input id="ep-reach" type="number" min="0.5" max="1000" step="0.5" value="2" /></div>
+        <div class="ie-row"><span class="label">Cooldown</span><input id="ep-cooldown" type="number" min="0.1" max="3" step="0.05" value="0.35" /></div>
+        <div class="ie-row">
+          <span class="label">Type</span>
+          <span id="ep-kind">
+            <button id="ep-kind-melee" title="Swing attack in melee reach">Melee</button>
+            <button id="ep-kind-ranged" title="Shoots a projectile along the crosshair">Ranged</button>
+          </span>
+        </div>
+        <div class="ie-row">
+          <span class="label">Hands</span>
+          <span id="ep-hands">
+            <button id="ep-hands-one" title="Held in one hand">1-hand</button>
+            <button id="ep-hands-two" title="Held in both hands (pose planned)">2-hand</button>
+          </span>
+        </div>
+        <div class="ie-row">
+          <span class="label" title="Barrel end of a ranged weapon — where shots come from (M)">Muzzle</span>
+          <button id="ep-muzzle" title="Toggle muzzle mode — click a voxel to set the barrel end (M)">Muzzle (M)</button>
+        </div>
+        <div class="ie-row" id="ep-magazine-row">
+          <span class="label" title="Rounds per magazine; 0 = no magazine">Magazine</span>
+          <input id="ep-magazine" type="number" min="0" max="500" step="1" value="0" />
+        </div>
+        <div class="ie-row" id="ep-ammo-row">
+          <span class="label" title="Ammo type this gun consumes">Ammo</span>
+          <select id="ep-ammo">
+            <option value="">None</option>
+          </select>
+        </div>
+        <div class="ie-row" id="ep-reload-row">
+          <span class="label" title="Seconds a reload takes (R in the game)">Reload</span>
+          <input id="ep-reload" type="number" min="0.2" max="10" step="0.05" value="1.4" />
+        </div>
+        <div class="ie-row">
+          <span class="label">Attack</span>
+          <select id="ep-anim" title="Animation used when attacking"></select>
+        </div>
+      </div>
+      <div id="ep-ammo-fields" class="hidden">
+        <div class="ie-row">
+          <span class="label" title="Ammo type this pack provides when picked up">Ammo Type</span>
+          <select id="ep-ammo-type">
+            <option value="">None</option>
+          </select>
+        </div>
+        <div class="ie-row">
+          <span class="label" title="How many rounds the pack grants when picked up">Grants</span>
+          <input id="ep-grant" type="number" min="1" max="9999" step="1" value="6" />
+        </div>
+      </div>
+      <div class="ie-row"><span class="label">Voxels</span><span id="ep-count">0</span></div>
+      <div id="ep-buttons">
+        <button id="ep-new" title="Start a fresh blank item (Ctrl+Z restores the previous one)">New</button>
+        <button id="ep-palette" title="Choose a color (E or 1-0)">Palette (E)</button>
+        <button id="ep-grip" title="Toggle grip mode — click a voxel to set the grip (G)">Grip (G)</button>
+        <button id="ep-rotate" title="Rotate the direction arrow 90° (R)">Direction (R)</button>
+        <button id="ep-undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="ep-save" title="Save to the items catalogue (Ctrl+S)">Save</button>
+        <button id="ep-catalogue" title="Browse saved items">Catalogue</button>
+        <button id="ep-back" title="Back to world editor (F3)">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ep-palette-modal" class="ie-modal">
+    <div class="ie-modal-box">
+      <h2>Voxel Color</h2>
+      <div class="ie-row"><span class="label">Tip</span><span>LMB paints, RMB erases, MMB picks · G sets the grip</span></div>
+      <div id="ep-palette-grid" class="ie-palette-grid"></div>
+      <button id="ep-palette-close" class="ie-close">Close</button>
+    </div>
+  </div>
+
+  <div id="equip-catalogue">
+    <div class="panel"></div>
+  </div>
+
+  <input id="file-equip-load" type="file" accept=".json,application/json" style="display:none" />
+
+  <div id="item-editor">
+    <div id="ie-badge">ITEM EDITOR — <kbd>F2</kbd> to exit</div>
+    <div id="ie-panel">
+      <div class="ie-title">Placeable Object</div>
+      <div class="ie-row"><span class="label">Name</span><input id="ie-name" type="text" value="New Item" /></div>
+      <div class="ie-row">
+        <span class="label">Size</span>
+        <span id="ie-size">
+          <button id="ie-size-small" data-size="small">0.5 m</button>
+          <button id="ie-size-big" data-size="big">1 m</button>
+        </span>
+      </div>
+      <div class="ie-row">
+        <span class="label">Collision</span>
+        <span id="ie-collision">
+          <button id="ie-solid-blocking" title="The player collides with this object in test run">Blocking</button>
+          <button id="ie-solid-traversable" title="The player can walk through this object">Traversable</button>
+        </span>
+      </div>
+      <div class="ie-row">
+        <span class="label">Color</span>
+        <canvas id="ie-color" width="30" height="30"></canvas>
+        <span id="ie-color-name"></span>
+      </div>
+      <div class="ie-row"><span class="label">Light</span><span id="ie-light-label">off</span></div>
+      <div class="ie-row"><span class="label">Voxels</span><span id="ie-count">0</span></div>
+      <div id="ie-buttons">
+        <button id="ie-new" title="Start a fresh blank item (Ctrl+Z restores the previous one)">New</button>
+        <button id="ie-palette" title="Choose a color (E or 1-0)">Palette (E)</button>
+        <button id="ie-light" title="Light settings (L)">Light (L)</button>
+        <button id="ie-undo" title="Undo (Ctrl+Z)">Undo</button>
+        <button id="ie-load" title="Load an item file">Load</button>
+        <button id="ie-save" title="Save to the catalogue (Ctrl+S)">Save</button>
+        <button id="ie-catalogue" title="Browse saved items">Catalogue</button>
+        <button id="ie-back" title="Back to world editor (F2)">Back</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="ie-palette-modal" class="ie-modal">
+    <div class="ie-modal-box">
+      <h2>Voxel Color</h2>
+      <div class="ie-row"><span class="label">Tip</span><span>LMB paints, RMB erases, MMB picks</span></div>
+      <div id="ie-palette-grid" class="ie-palette-grid"></div>
+      <button id="ie-palette-close" class="ie-close">Close</button>
+    </div>
+  </div>
+
+  <div id="ie-light-modal" class="ie-modal">
+    <div class="ie-modal-box">
+      <h2>Light Source</h2>
+      <label class="ie-check"><input type="checkbox" id="ie-light-on" /> This item emits light</label>
+      <div class="ie-row"><span class="label">Color</span><div id="ie-light-colors" class="ie-palette-grid"></div></div>
+      <div class="ie-row">
+        <span class="label">Strength</span>
+        <input type="range" id="ie-light-strength" min="0.5" max="7.5" step="0.5" value="3" />
+        <span id="ie-light-strength-val">3.0 m</span>
+      </div>
+      <button id="ie-light-close" class="ie-close">Close</button>
+    </div>
+  </div>
+
+  <input id="file-item-load" type="file" accept=".json,application/json" style="display:none" />
+
+  <script src="build/game.js"></script>
+</body>
+</html>
