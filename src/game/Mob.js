@@ -295,7 +295,11 @@ export class Mob {
       return;
     }
     let goal = playerNode;
-    if (this._distTo(player) <= SURROUND_DIST) {
+    // Flank only when already on the player's level (within a step) — a mob on
+    // a staircase or ledge must descend to the player's floor first, otherwise
+    // it would stop mid-stairs to surround instead of pressing into a basement.
+    const sameLevel = Math.abs(player.y - this.pos.y) <= this.stepHeight;
+    if (this._distTo(player) <= SURROUND_DIST && sameLevel) {
       const r = this.type.attackRange * SURROUND_FACTOR;
       const gx = player.x + Math.cos(this.spreadAngle) * r;
       const gz = player.z + Math.sin(this.spreadAngle) * r;
