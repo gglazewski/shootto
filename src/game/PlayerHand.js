@@ -112,6 +112,7 @@ export class PlayerHand {
       this._heldLightAttr = null;
       this._heldMuzzleLocal = null;
       this._heldFlash = null;
+      this._flashLight = null;
       this._flashStarMat = null;
       this._flashGlowMat = null;
       this._flashT = 0;
@@ -168,7 +169,9 @@ export class PlayerHand {
   }
 
   /** A small additive star+glow at the barrel, parented to the held weapon so
-   *  it sticks to the muzzle while the player moves. Animated by _updateFlash. */
+   *  it sticks to the muzzle while the player moves. A warm PointLight rides
+   *  along, so firing actually sheds light on the area (the muzzle smoke and
+   *  any standard-lit geometry nearby catch it). Animated by _updateFlash. */
   _buildMuzzleFlash(group) {
     const T = this.THREE;
     this._heldFlash = new T.Group();
@@ -177,6 +180,11 @@ export class PlayerHand {
     // Sit at the muzzle voxel (or just ahead of the grip when unset).
     if (this._heldMuzzleLocal) this._heldFlash.position.copy(this._heldMuzzleLocal);
     else this._heldFlash.position.set(0, 0, -0.08);
+
+    // The light emitting from the flash (off until a shot fires).
+    this._flashLight = new T.PointLight(0xffbb55, 0, 8, 2);
+    this._heldFlash.add(this._flashLight);
+    this._flashPeak = 6;
 
     // Crossed star planes facing the camera (held -Z) + a soft glow core.
     this._flashStarMat = new T.MeshBasicMaterial({
@@ -206,7 +214,8 @@ export class PlayerHand {
     this._flashT = this._flashDur;
   }
 
-  /** Advance the attached muzzle flash: pop big + bright, then shrink + fade. */
+  /** Advance the attached muzzle flash: pop big + bright, then shrink + fade.
+   *  The light rides the same curve, ramping off as the flash dies. */
   _updateFlash(dt) {
     if (!this._heldFlash || this._flashT <= 0) return;
     this._flashT -= dt;
@@ -216,6 +225,7 @@ export class PlayerHand {
     const o = u * u;
     this._flashStarMat.opacity = o;
     this._flashGlowMat.opacity = o * 0.85;
+    if (this._flashLight) this._flashLight.intensity = u > 0 ? this._flashPeak * u : 0;
   }
 
   /** World position of the held weapon's muzzle voxel (null when unset).
@@ -226,6 +236,20 @@ export class PlayerHand {
     this.group.updateMatrixWorld(true);
     out.copy(this._heldMuzzleLocal);
     return this._heldGroup.localToWorld(out);
+  }
+
+  /** Current muzzle flash as a world-space light, or null when off. The
+   *  intensity is 0..1 matching the flash's remaining life, so callers can push
+   *  it into the light engine (Renderer.setFlashLight) and light the scene.
+   *  @param {Vector3} [out] scratch vector to fill (allocates when omitted)
+   *  @returns {{pos: Vector3, intensity: number}|null} */
+  flashWorld(out = new this.THREE.Vector3()) {
+    if (!this._heldFlash || this._flashT <= 0) return null;
+    this.camera.updateMatrixWorld(true);
+    this.group.updateMatrixWorld(true);
+    this._heldFlash.updateMatrixWorld(true);
+    out.setFromMatrixPosition(this._heldFlash.matrixWorld);
+    return { pos: out, intensity: this._flashT / this._flashDur };
   }
 
   /** Build one arm. @param {number} side +1 right, -1 left */

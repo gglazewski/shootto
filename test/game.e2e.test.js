@@ -342,6 +342,56 @@ T('attack pops smoke on a wall hit but not on empty air', async () => {
   assert.ok(Array.isArray(result.puffPos), 'puff meshes must have a position');
 });
 
+T('smoke is lit by the world — dark in a sealed room, bright in open sky', async () => {
+  await loadGame();
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    g.newGame();
+    g.world.clear();
+    g.renderer.clearChunks();
+
+    // Sealed room: floor + ceiling + four walls of opaque big blocks, so the
+    // interior has no sky light and no block light.
+    for (let x = 0; x < 8; x += 2) {
+      for (let z = 0; z < 8; z += 2) {
+        g.world.place('grass', 'big', x, 0, z);
+        g.world.place('grass', 'big', x, 12, z);
+      }
+    }
+    for (let y = 2; y <= 11; y += 2) {
+      for (let z = 0; z < 8; z += 2) {
+        g.world.place('grass', 'big', 0, y, z);
+        g.world.place('grass', 'big', 6, y, z);
+      }
+      for (let x = 0; x < 8; x += 2) {
+        g.world.place('grass', 'big', x, y, 0);
+        g.world.place('grass', 'big', x, y, 6);
+      }
+    }
+    g.renderer.loadWorldBounds();
+    g.smoke.clear();
+    g.smoke.puff([1.5, 3, 1.5]); // interior cell (3, 6, 3)
+    const dark = g.smoke._mesh.find((p) => p.alive).mesh.material.color.toArray();
+
+    // Open sky: a floor only, smoke above it.
+    g.world.clear();
+    g.renderer.clearChunks();
+    for (let x = 0; x < 8; x += 2) {
+      for (let z = 0; z < 8; z += 2) g.world.place('grass', 'big', x, 0, z);
+    }
+    g.renderer.loadWorldBounds();
+    g.smoke.clear();
+    g.smoke.puff([1.5, 3, 1.5]);
+    const bright = g.smoke._mesh.find((p) => p.alive).mesh.material.color.toArray();
+    return { dark, bright };
+  });
+  // Sealed-room smoke must be much dimmer than open-sky smoke.
+  const darkLum = out.dark[0] + out.dark[1] + out.dark[2];
+  const brightLum = out.bright[0] + out.bright[1] + out.bright[2];
+  assert.ok(brightLum > 1, `open-sky smoke must be bright (lum ${brightLum})`);
+  assert.ok(darkLum < brightLum * 0.35, `sealed-room smoke must be dark (dark ${darkLum} vs bright ${brightLum})`);
+});
+
 T('a placed equippable item renders in the game', async () => {
   await loadGame();
   // Simulate a pistol made in the F3 editor: seed the equipment registry and a
@@ -586,6 +636,57 @@ T('a ranged weapon recoils, flashes at the muzzle and smokes at the range-limite
   assert.equal(result.hit.muzzleSmokeAlive, true, 'a shot must leave gentle muzzle smoke');
   assert.equal(result.miss.anim, 'gun', 'a miss still recoils');
   assert.equal(result.miss.smoke, 12, 'a shot past range must not add impact smoke');
+});
+
+T('firing lights the barrel and the surrounding scene', async () => {
+  await loadGame();
+  await page.evaluate(() => {
+    localStorage.setItem('voxelequip.items', JSON.stringify([
+      {
+        id: 'pistol', name: 'Pistol',
+        microVoxels: [{ x: 3, y: 3, z: 4, color: [70, 70, 75] }],
+        grip: { x: 3, y: 3, z: 4 }, yaw: 90,
+        stats: { damage: 20, reach: 3, cooldown: 0.2 },
+        weapon: { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 3, z: 5 }, anim: 'gun', recoil: 0.08 },
+      },
+    ]));
+  });
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    g.stats.equip('primary', 'pistol');
+    g._updateHud();
+    document.pointerLockElement = g.webgl.domElement;
+    g.renderer.camera.lookAt(5, 6, 5);
+    const hasPointLight = !!g.hand._flashLight;
+    const hasFlashWorld = typeof g.hand.flashWorld === 'function';
+    const uniforms = () => {
+      const m = g.renderer.material.uniforms;
+      return { intensity: m.uFlashIntensity.value, pos: m.uFlashPos.value.toArray() };
+    };
+    const before = uniforms();
+    g._attackCooldown = 0;
+    g._attack();
+    g.hand.update(1 / 60);
+    g._updateFlashLight();
+    const during = uniforms();
+    const pointLight = g.hand._flashLight?.intensity ?? 0;
+    const flash = g.hand.flashWorld(new g.hand.THREE.Vector3());
+    const flashDist = flash ? flash.pos.distanceTo(g.renderer.camera.position) : null;
+    g.hand.update(0.2); // past the 0.08 s flash
+    g._updateFlashLight();
+    const after = uniforms();
+    document.pointerLockElement = null;
+    return { hasPointLight, hasFlashWorld, before, during, after, pointLight, flashDist };
+  });
+  assert.equal(out.hasPointLight, true, 'a muzzle flash PointLight must ride the held weapon');
+  assert.equal(out.hasFlashWorld, true, 'PlayerHand must expose flashWorld()');
+  assert.equal(out.before.intensity, 0, 'the scene flash light starts off');
+  assert.ok(out.during.intensity > 0, `firing must light the scene (uniform ${out.during.intensity})`);
+  assert.equal(out.pointLight > 0, true, 'the PointLight switches on while firing');
+  assert.ok(out.flashDist !== null && out.flashDist < 2, `the flash must sit at the muzzle (${out.flashDist} m from camera)`);
+  assert.equal(out.after.intensity, 0, 'the scene light must switch off once the flash dies');
 });
 
 T('a long-range weapon can hit far past melee reach', async () => {

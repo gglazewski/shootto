@@ -107,7 +107,12 @@ export class GameApp {
         return hit ? hit.dist * CELL_SIZE : Infinity;
       },
     });
-    this.smoke = new SmokeParticles({ THREE, scene: this.renderer.scene });
+    this.smoke = new SmokeParticles({
+      THREE,
+      scene: this.renderer.scene,
+      lightField: this.renderer.light,
+      material: this.renderer.itemMaterial,
+    });
     this.mobs = new MobManager({
       THREE,
       scene: this.renderer.scene,
@@ -135,8 +140,14 @@ export class GameApp {
     // Muzzle by-products: sparks + smoke when a ranged weapon fires. The flash
     // itself lives on the held weapon (PlayerHand.muzzleFlash) so it sticks to
     // the barrel while the player moves.
-    this.muzzleFX = new MuzzleFX({ THREE, scene: this.renderer.scene });
+    this.muzzleFX = new MuzzleFX({
+      THREE,
+      scene: this.renderer.scene,
+      lightField: this.renderer.light,
+      material: this.renderer.itemMaterial,
+    });
     this._muzzlePos = new THREE.Vector3();
+    this._flashLightVec = new THREE.Vector3();
 
     // Ammo per weapon id + reload state.
     this._ammo = new Map(); // itemId -> { current, max }
@@ -215,7 +226,15 @@ export class GameApp {
     this.smoke.update(dt);
     this.muzzleFX.update(dt);
     this.itemRenderer.update();
+    this._updateFlashLight();
     this.renderer.render(dt);
+  }
+
+  /** Push the muzzle flash (if any) into the light engine so the world around
+   *  the barrel lights up while a gun fires, then fades as the flash dies. */
+  _updateFlashLight() {
+    const state = this.hand.flashWorld(this._flashLightVec);
+    this.renderer.setFlashLight(state ? state.pos : this._flashLightVec, state ? state.intensity : 0);
   }
 
   // --- world loading (shares the editor's localStorage) ---

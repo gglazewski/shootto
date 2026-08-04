@@ -6,6 +6,11 @@
 // have no effect on this material; the directional sun term here is driven by
 // the vertex normal and is gated on sky exposure, so a sealed basement gets no
 // sun gradient while an open field does.
+//
+// A dynamic muzzle-flash light (uFlashPos / uFlashIntensity / uFlashColor /
+// uFlashRange) is added on top of the baked field. It's a soft point light in
+// world space, so firing a gun briefly lights the chunks, placed items and the
+// player's own hands/weapon near the barrel without touching the light field.
 
 import { CONFIG } from '../config.js';
 
@@ -33,6 +38,10 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       uAmbientMin: { value: L.ambientMin },
       uLightScale: { value: L.lightScale },
       uSunStrength: { value: L.sunStrength },
+      uFlashPos: { value: new THREE.Vector3() },
+      uFlashColor: { value: new THREE.Color(1.0, 0.72, 0.38) },
+      uFlashIntensity: { value: 0 },
+      uFlashRange: { value: 6 },
     },
     transparent,
     depthWrite: !transparent,
@@ -45,13 +54,16 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       varying vec3 vColor;
       varying vec2 vLight;
       varying float vSun;
+      varying vec3 vWorldPos;
 
       void main() {
         vUv = uv;
         vColor = color;
         vLight = light;
         vSun = max(0.0, dot(normalize(normal), normalize(uSunDir)));
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vWorldPos = worldPos.xyz;
+        gl_Position = projectionMatrix * viewMatrix * worldPos;
       }
     `,
     fragmentShader: `
@@ -63,10 +75,15 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       uniform float uAmbientMin;
       uniform float uLightScale;
       uniform float uSunStrength;
+      uniform vec3 uFlashPos;
+      uniform vec3 uFlashColor;
+      uniform float uFlashIntensity;
+      uniform float uFlashRange;
       ${hasMap ? 'varying vec2 vUv;' : ''}
       varying vec3 vColor;
       varying vec2 vLight;
       varying float vSun;
+      varying vec3 vWorldPos;
 
       void main() {
         ${hasMap ? 'vec4 tex = texture2D(map, vUv);' : 'vec4 tex = vec4(1.0);'}
@@ -78,6 +95,10 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
         vec3 lit = tex.rgb * vColor * (uAmbientMin + tint * base * uLightScale);
         // Directional sun shading only where the surface is sky-exposed.
         lit += uSunColor * tex.rgb * vColor * vSun * sky * uSunStrength;
+        // Dynamic muzzle flash: soft warm point light fading with distance.
+        float dist = length(vWorldPos - uFlashPos);
+        float flash = uFlashIntensity * pow(max(0.0, 1.0 - dist / uFlashRange), 2.0);
+        lit += uFlashColor * tex.rgb * vColor * flash;
         gl_FragColor = vec4(lit, tex.a);
       }
     `,

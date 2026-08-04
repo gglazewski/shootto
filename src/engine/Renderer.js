@@ -83,6 +83,17 @@ export class Renderer {
     this.webgl.setSize(w, h, true);
   }
 
+  /** Push a dynamic muzzle-flash light (world position + 0..1 intensity) into
+   *  every material driven by the light engine, so chunks, placed items and
+   *  the player's own hands/weapon briefly light up near the barrel when a gun
+   *  fires. Call every frame with the current flash state (intensity 0 = off). */
+  setFlashLight(pos, intensity) {
+    for (const mat of [this.material, this.materialTransparent, this.itemMaterial]) {
+      mat.uniforms.uFlashIntensity.value = intensity;
+      mat.uniforms.uFlashPos.value.copy(pos);
+    }
+  }
+
   /**
    * Rebuild chunks flagged dirty since the last drain, and keep light in sync.
    *

@@ -4,6 +4,12 @@
 // that expand, drift and fade over ~0.5s. Meshes are pooled and reused so
 // repeated attacks never leak geometry; the pool is capped and the oldest
 // puff is recycled when it overflows.
+//
+// Lighting: each puff samples the world's baked LightField at its spawn cell
+// and tints its (unlit) material with that color, so smoke is dark in caves,
+// warm near torchlight and dimmed at night — never a bright blob in darkness.
+
+import { lightColorAt } from './lightColor.js';
 
 const PUFF_COUNT = 12; // particles per hit
 const POOL_MAX = 240; // total pooled meshes
@@ -14,10 +20,15 @@ export class SmokeParticles {
    * @param {object} deps
    * @param {object} deps.THREE
    * @param {import('three').Scene} deps.scene
+   * @param {object} [deps.lightField]  LightField to shade the puffs with
+   * @param {import('three').Material} [deps.material]  map-less lit material
+   *   whose uniforms drive the shading (Renderer.itemMaterial)
    */
-  constructor({ THREE, scene }) {
+  constructor({ THREE, scene, lightField = null, material = null }) {
     this.THREE = THREE;
     this.scene = scene;
+    this.lightField = lightField;
+    this.material = material;
 
     const geo = new THREE.SphereGeometry(0.04, 6, 5);
     const mat = new THREE.MeshBasicMaterial({ color: 0xcccccc, transparent: true, opacity: 0.85, depthWrite: false });
@@ -35,6 +46,8 @@ export class SmokeParticles {
   /** Spawn a smoke burst at a world position. @param {[number,number,number]} pos */
   puff(pos) {
     const T = this.THREE;
+    // Shade by the light at the spawn point (one lookup for the whole burst).
+    const lit = lightColorAt(this.lightField, this.material, pos[0], pos[1], pos[2]);
     for (let i = 0; i < PUFF_COUNT; i++) {
       const p = this._mesh[this._next];
       this._next = (this._next + 1) % POOL_MAX;
@@ -45,6 +58,7 @@ export class SmokeParticles {
       p.mesh.visible = true;
       p.mesh.position.set(pos[0], pos[1], pos[2]);
       p.mesh.material.opacity = 0.85;
+      p.mesh.material.color.setRGB(lit.r, lit.g, lit.b);
       p.mesh.scale.setScalar(1);
       p.baseScale = 0.6 + Math.random() * 0.8;
       p.vel.set(
