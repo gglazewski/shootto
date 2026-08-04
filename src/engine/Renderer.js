@@ -76,7 +76,11 @@ export class Renderer {
   resize(w, h) {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
-    this.webgl.setSize(w, h, false);
+    // updateStyle=true styles the canvas to the viewport size. Without it the
+    // canvas keeps its drawing-buffer dimensions as CSS size, so on high-DPI
+    // screens (pixelRatio > 1) it renders 2x too large and the world is cropped
+    // to the top-left corner instead of filling the screen.
+    this.webgl.setSize(w, h, true);
   }
 
   /**

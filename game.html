@@ -107,7 +107,8 @@
 
     /* --- touch controls (mobile only) ---
        Minecraft-style: floating joystick on the left, drag-to-look on the
-       right, action cluster bottom-right. Hidden on desktop (fine pointer). */
+       right, fire/pickup bottom-right, crouch bottom-left. Hidden on desktop
+       (fine pointer). */
     #touch-layer {
       position: fixed; inset: 0; z-index: 5; display: none;
       touch-action: none; -webkit-tap-highlight-color: transparent;
@@ -125,14 +126,10 @@
     }
     .tc-btn:active, .tc-btn.on { background: rgba(90,140,190,0.75); border-color: rgba(255,255,255,0.6); }
 
-    #btn-pause { right: 14px; top: 12px; width: 46px; height: 46px; font-size: 20px; }
-    #btn-attack { right: 16px; bottom: 132px; width: 84px; height: 84px; font-size: 16px;
+    #btn-attack { right: 14px; bottom: 16px; width: 84px; height: 84px; font-size: 16px;
       border-color: rgba(255,120,120,0.55); }
-    #btn-inject { right: 84px; bottom: 132px; width: 56px; height: 56px; }
-    #btn-pickup { right: 152px; bottom: 132px; width: 56px; height: 56px; }
-    #btn-reload { right: 16px; bottom: 228px; width: 56px; height: 56px; }
-    #btn-sprint { right: 84px; bottom: 12px; width: 56px; height: 56px; }
-    #btn-crouch { right: 16px; bottom: 12px; width: 56px; height: 56px; }
+    #btn-pickup { right: 106px; bottom: 24px; width: 60px; height: 60px; }
+    #btn-crouch { left: 14px; bottom: 24px; width: 60px; height: 60px; }
 
     #slots-mobile { position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px;
       display: flex; gap: 8px; }
@@ -153,11 +150,11 @@
       border-radius: 50%; background: rgba(255,255,255,0.4);
     }
 
-    /* portrait phones: raise sprint/crouch above the hotbar to avoid overlap */
+    /* portrait phones: raise fire/pickup above the hotbar so they never
+       overlap the slot bar (crouch stays bottom-left, clear of it) */
     @media (orientation: portrait) {
-      #btn-sprint { right: 84px; bottom: 76px; }
-      #btn-crouch { right: 16px; bottom: 76px; }
-      #btn-reload { right: 16px; bottom: 228px; }
+      #btn-attack { right: 12px; bottom: 96px; }
+      #btn-pickup { right: 100px; bottom: 104px; }
     }
   </style>
 </head>
@@ -224,15 +221,12 @@
   </div>
 
   <!-- Mobile touch controls (Minecraft-style): joystick left, look right,
-       action cluster bottom-right. Wired by TouchControls.js; hidden on
-       desktop by the (pointer: coarse) media query. -->
+       fire/pickup bottom-right, crouch bottom-left, hotbar bottom-center.
+       Wired by TouchControls.js; hidden on desktop by the (pointer: coarse)
+       media query. -->
   <div id="touch-layer">
-    <button id="btn-pause" class="tc-btn">PAUSE</button>
     <button id="btn-attack" class="tc-btn">FIRE</button>
-    <button id="btn-inject" class="tc-btn">INJ</button>
     <button id="btn-pickup" class="tc-btn">PICK</button>
-    <button id="btn-reload" class="tc-btn">RELOAD</button>
-    <button id="btn-sprint" class="tc-btn">SPRINT</button>
     <button id="btn-crouch" class="tc-btn">CROUCH</button>
     <div id="slots-mobile">
       <button class="slot-btn" data-index="0">1</button>

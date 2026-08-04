@@ -914,13 +914,16 @@ T('mobile: coarse pointer enables the touch layer and controls', async () => {
   const inPlay = await mobile.evaluate(() => ({
     hidden: document.getElementById('touch-layer').classList.contains('hidden'),
     mode: window.__voxelgame.mode,
-    buttons: ['#btn-attack', '#btn-reload', '#btn-pickup', '#btn-inject', '#btn-sprint', '#btn-crouch', '#btn-pause']
+    buttons: ['#btn-attack', '#btn-pickup', '#btn-crouch']
       .map((s) => !!document.querySelector(s)),
+    dropped: ['#btn-pause', '#btn-reload', '#btn-inject', '#btn-sprint']
+      .map((s) => !document.querySelector(s)),
     slots: document.querySelectorAll('#slots-mobile .slot-btn').length,
   }));
   assert.equal(inPlay.mode, 'playing');
   assert.equal(inPlay.hidden, false, 'touch layer visible while playing');
   assert.equal(inPlay.buttons.every(Boolean), true, 'all action buttons present');
+  assert.equal(inPlay.dropped.every(Boolean), true, 'reload/inject/sprint/pause buttons removed');
   assert.equal(inPlay.slots, 4, 'four mobile slot buttons');
 });
 
@@ -963,7 +966,7 @@ T('mobile: joystick moves the player and look drag rotates the camera', async ()
   assert.equal(moved.keys.length, 0, 'releasing clears the movement keys');
 });
 
-T('mobile: attack holds to fire, slots select, sprint/crouch toggle, pause works', async () => {
+T('mobile: attack holds to fire, slots select and crouch toggles', async () => {
   await loadMobileGame();
   await mobile.evaluate(() => window.__voxelgame.newGame());
   await mobile.waitForTimeout(150);
@@ -986,28 +989,25 @@ T('mobile: attack holds to fire, slots select, sprint/crouch toggle, pause works
     st(slot3, 'pointerdown', 12);
     const activeSlot = g.stats.activeSlot;
     const activeClass = slot3.classList.contains('active');
-    // Sprint toggle on/off.
-    st(q('#btn-sprint'), 'pointerdown', 13);
-    const sprintOn = g.walk.keys.has('ShiftLeft');
-    st(q('#btn-sprint'), 'pointerdown', 14);
-    const sprintOff = !g.walk.keys.has('ShiftLeft');
-    // Crouch toggle.
+    // Crouch toggle on/off.
     st(q('#btn-crouch'), 'pointerdown', 15);
     const crouchOn = g.walk.keys.has('KeyC');
-    // Pause.
-    st(q('#btn-pause'), 'pointerdown', 16);
-    const paused = g.mode === 'paused';
-    return { holding, fired, released, activeSlot, activeClass, sprintOn, sprintOff, crouchOn, paused };
+    const crouchLit = q('#btn-crouch').classList.contains('on');
+    st(q('#btn-crouch'), 'pointerdown', 16);
+    const crouchOff = !g.walk.keys.has('KeyC');
+    // Pickup button is wired (no target -> no-op without an aimed item).
+    const pickupWired = g.touch.cb.pickup !== null;
+    return { holding, fired, released, activeSlot, activeClass, crouchOn, crouchLit, crouchOff, pickupWired };
   });
   assert.equal(out.holding, true, 'fire button held');
   assert.equal(out.fired, true, 'holding fire must attack');
   assert.equal(out.released, true, 'releasing stops the attack');
   assert.equal(out.activeSlot, 2, 'tapping slot 3 must select it');
   assert.equal(out.activeClass, true, 'selected slot is highlighted');
-  assert.equal(out.sprintOn, true, 'sprint toggles on');
-  assert.equal(out.sprintOff, true, 'sprint toggles off');
   assert.equal(out.crouchOn, true, 'crouch toggles on');
-  assert.equal(out.paused, true, 'pause button pauses the game');
+  assert.equal(out.crouchLit, true, 'crouch button lights while active');
+  assert.equal(out.crouchOff, true, 'crouch toggles off');
+  assert.equal(out.pickupWired, true, 'pickup button is wired');
 });
 
 

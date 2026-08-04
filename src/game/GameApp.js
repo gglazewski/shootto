@@ -78,11 +78,8 @@ export class GameApp {
         doc: this.doc,
         walk: this.walk,
         callbacks: {
-          reload: () => this._reload(),
           pickup: () => this._pickup(),
-          inject: () => this._useInjection(),
           selectSlot: (i) => this._selectSlot(i),
-          pause: () => this.pauseGame(),
         },
       });
     }

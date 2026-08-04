@@ -1,11 +1,12 @@
 // TouchControls.js — mobile touch layer for the playable game.
 //
 // Mirrors the Minecraft mobile scheme: a floating joystick on the left half of
-// the screen (digital, feeds WASD), drag-to-look on the right half, and an
-// on-screen button cluster (attack/reload/pickup/inject/sprint/crouch/slots/
-// pause) that maps onto the game's existing actions. Uses Pointer Events with
-// capture so joystick + look + buttons all work under multi-touch. The widgets
-// themselves live in game.html (#touch-layer); this class only wires them up.
+// the screen (digital, feeds WASD), drag-to-look on the right half, and three
+// on-screen buttons — FIRE (hold to attack), PICK (pick up the aimed item),
+// CROUCH (toggle) — plus the hotbar slot bar, that map onto the game's
+// existing actions. Uses Pointer Events with capture so joystick + look +
+// buttons all work under multi-touch. The widgets themselves live in
+// game.html (#touch-layer); this class only wires them up.
 
 const JOY_ZONE = 0.4;        // left fraction of the screen that starts the joystick
 const JOY_MAX_RADIUS = 64;   // px the knob can travel before clamping
@@ -33,17 +34,13 @@ export class TouchControls {
     this.walk = walk;
     this.cb = {
       attack: null,
-      reload: null,
       pickup: null,
-      inject: null,
       selectSlot: null,
-      pause: null,
       ...callbacks,
     };
 
     this.attacking = false; // set while the fire button is held (auto-repeat)
     this.enabled = true;
-    this._sprint = false;
     this._crouch = false;
     this._joy = null;          // { px, py, dx, dy } | null
     this._active = new Map();  // pointerId -> { kind: 'joy'|'look', x, y }
@@ -186,15 +183,7 @@ export class TouchControls {
 
   _bindButtons() {
     this._bindButton('btn-attack', () => { this.attacking = true; }, () => { this.attacking = false; });
-    this._bindButton('btn-reload', () => this.cb.reload?.());
     this._bindButton('btn-pickup', () => this.cb.pickup?.());
-    this._bindButton('btn-inject', () => this.cb.inject?.());
-    this._bindButton('btn-pause', () => this.cb.pause?.());
-    this._bindButton('btn-sprint', () => {
-      this._sprint = !this._sprint;
-      this._toggleClass('btn-sprint', 'on', this._sprint);
-      this._setKey('ShiftLeft', this._sprint);
-    });
     this._bindButton('btn-crouch', () => {
       this._crouch = !this._crouch;
       this._toggleClass('btn-crouch', 'on', this._crouch);
@@ -245,7 +234,6 @@ export class TouchControls {
       this._endJoy();
       this._active.clear();
     } else {
-      this._setKey('ShiftLeft', this._sprint);
       this._setKey('KeyC', this._crouch);
     }
   }
