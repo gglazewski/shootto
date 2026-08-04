@@ -158,6 +158,13 @@ export class Mob {
    * @param {{x:number,y:number,z:number}} player  player feet position (m)
    */
   update(dt, player) {
+    this._update(dt, player);
+    // A hurt flash overrides the walk/attack/idle pose for its duration, so a
+    // wounded mob visibly flinches instead of keeping its normal animation.
+    if (this.hurtTimer > 0 && !this.dead) this.animName = 'hurt';
+  }
+
+  _update(dt, player) {
     this.animTime += dt;
 
     if (this.dead) {
@@ -491,6 +498,8 @@ export class Mob {
       this.animTime = 0;
       return true;
     }
+    // Flinch immediately; update() keeps the hurt pose while hurtTimer runs.
+    this.animName = 'hurt';
     if (this.state !== 'attack') this.state = 'chase';
     return false;
   }

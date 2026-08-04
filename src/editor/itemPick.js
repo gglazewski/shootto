@@ -38,11 +38,13 @@ export function collisionWorld(world) {
 
 /**
  * Pick the first voxel or item under the camera's aim ray.
+ * @param {import('three').Vector3} [dir]  aim direction; defaults to the
+ *   camera's forward so callers (weapon spread) can nudge the ray.
  * @returns {{cell:[number,number,number], normal:[number,number,number], dist:number}|null}
  *   when the hit cell is an item, the returned object's `item` flag is set.
  */
-export function itemAwarePick(world, THREE, camera, maxCells) {
+export function itemAwarePick(world, THREE, camera, maxCells, dir) {
   const origin = worldToCell(camera.position.toArray());
-  const dir = camera.getWorldDirection(new THREE.Vector3());
-  return raycastVoxel(itemAwareWorld(world), origin, [dir.x, dir.y, dir.z], maxCells);
+  const d = dir ?? camera.getWorldDirection(new THREE.Vector3());
+  return raycastVoxel(itemAwareWorld(world), origin, [d.x, d.y, d.z], maxCells);
 }

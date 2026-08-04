@@ -217,6 +217,8 @@
     #ep-ammo-row.hidden-row { display: none; }
     #ep-reload-row { display: flex; }
     #ep-reload-row.hidden-row { display: none; }
+    #ep-spread-row { display: flex; }
+    #ep-spread-row.hidden-row { display: none; }
     #ep-ammo, #ep-ammo-type {
       width: 118px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
       color: #eee; padding: 3px 6px;
@@ -343,7 +345,7 @@
       then place it from the inventory (<kbd>E</kbd>, "Placeable Objects" section)<br />
       <kbd>F3</kbd> items editor — build an equippable item (e.g. a club): paint the shape,<br />
       <kbd>G</kbd> set the grip voxel, <kbd>R</kbd> aim the direction arrow, set damage/reach/cooldown<br />
-      <kbd>F5</kbd> test run — walk at the spawn (<kbd>C</kbd> crouch, <kbd>Shift</kbd> sprint) &nbsp;·&nbsp;
+      <kbd>F5</kbd> test run — walk at the spawn (<kbd>C</kbd> crouch) &nbsp;·&nbsp;
       <kbd>F1</kbd> help &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>S</kbd> save to browser &nbsp;·&nbsp;
       <kbd>Esc</kbd> release pointer<br />
       <strong>Save File</strong> writes the map + objects straight to
@@ -438,6 +440,10 @@
         <div class="ie-row" id="ep-reload-row">
           <span class="label" title="Seconds a reload takes (R in the game)">Reload</span>
           <input id="ep-reload" type="number" min="0.2" max="10" step="0.05" value="1.4" />
+        </div>
+        <div class="ie-row" id="ep-spread-row">
+          <span class="label" title="Aim spread in degrees — how far shots can drift from the crosshair. 0 = perfectly accurate, 1.1° is the default pistol wobble">Spread</span>
+          <input id="ep-spread" type="number" min="0" max="11.5" step="0.1" value="0" />
         </div>
         <div class="ie-row">
           <span class="label">Attack</span>

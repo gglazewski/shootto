@@ -27,7 +27,7 @@
 //   F3 / Esc  back to the world editor
 
 import { MICRO_GRID, ITEM_PALETTE, microCellSizeFor, slugifyName } from '../../engine/ItemTypes.js';
-import { emptyEquipItem, deserializeEquipItem, isEquipId, DEFAULT_WEAPON, DEFAULT_AMMO, ATTACK_ANIMS } from '../../engine/EquipmentRegistry.js';
+import { emptyEquipItem, deserializeEquipItem, isEquipId, DEFAULT_WEAPON, DEFAULT_AMMO, ATTACK_ANIMS, RANGED_SPREAD } from '../../engine/EquipmentRegistry.js';
 import { listAmmoTypes } from '../../engine/AmmoTypes.js';
 import { createItemGeometry } from '../ItemGeometry.three.js';
 import { raycastVoxel } from '../../engine/VoxelRaycaster.js';
@@ -796,6 +796,8 @@ export class EquipmentEditor {
       ammoRow: $('#ep-ammo-row'),
       reload: $('#ep-reload'),
       reloadRow: $('#ep-reload-row'),
+      spread: $('#ep-spread'),
+      spreadRow: $('#ep-spread-row'),
       ammoType: $('#ep-ammo-type'),
       grant: $('#ep-grant'),
       paletteModal: $('#ep-palette-modal'),
@@ -867,6 +869,14 @@ export class EquipmentEditor {
       this.item.weapon.reload = Number.isFinite(v) ? Math.max(0.2, Math.min(10, v)) : 1.4;
       this._renderUI();
     });
+    ui.spread.addEventListener('change', () => {
+      this._pushSnapshot();
+      const v = Number(ui.spread.value);
+      const deg = Number.isFinite(v) ? Math.max(0, Math.min(11.5, v)) : 0;
+      this.item.weapon.spread = (deg * Math.PI) / 180;
+      this._renderUI();
+      Notice.info(`Aim spread: ${deg.toFixed(1)}°`, 700);
+    });
     ui.undo.addEventListener('click', () => this.undo());
     ui.newBtn.addEventListener('click', () => this.newItem());
     ui.save.addEventListener('click', () => this.save());
@@ -887,13 +897,19 @@ export class EquipmentEditor {
     Notice.info(kind === 'ammo' ? 'Ammo item — defines an ammo type' : 'Weapon item — held and fought with', 1100);
   }
 
-  /** Switch the weapon kind and snap the attack animation to a valid default. */
+  /** Switch the weapon kind and snap the attack animation to a valid default.
+   *  Ranged weapons get the standard aim spread unless one is already set, so a
+   *  freshly-made gun drifts like the game's default instead of being laser
+   *  accurate until the user tunes the Spread field. */
   _setKind(kind) {
     if (this.item.weapon.kind === kind) return;
     this._pushSnapshot();
     this.item.weapon.kind = kind;
     if (!ATTACK_ANIMS[kind].includes(this.item.weapon.anim)) {
       this.item.weapon.anim = kind === 'ranged' ? 'gun' : 'punch';
+    }
+    if (kind === 'ranged' && this.item.weapon.spread === 0) {
+      this.item.weapon.spread = RANGED_SPREAD;
     }
     this._rebuild();
     Notice.info(kind === 'ranged' ? 'Ranged weapon — set the muzzle (M)' : 'Melee weapon', 1000);
@@ -1028,6 +1044,8 @@ export class EquipmentEditor {
     ui.ammo.value = w.ammo ?? '';
     ui.reloadRow.classList.toggle('hidden-row', w.kind !== 'ranged');
     ui.reload.value = String(w.reload ?? 1.4);
+    ui.spreadRow.classList.toggle('hidden-row', w.kind !== 'ranged');
+    ui.spread.value = String(Math.round(((w.spread ?? 0) * 180) / Math.PI * 100) / 100);
     // Rebuild the ammo dropdown (None + every built-in/custom ammo type).
     const ammoChoices = listAmmoTypes();
     const ammoSelect = ui.ammo;

@@ -7,6 +7,7 @@ import { World } from '../src/engine/World.js';
 import { SIZE } from '../src/engine/VoxelTypes.js';
 import { NavMesh } from '../src/engine/NavMesh.js';
 import { Mob } from '../src/game/Mob.js';
+import { frameFor } from '../src/game/MobRenderer.js';
 import { getMob } from '../src/engine/mobTypes.js';
 import { CELL_SIZE } from '../src/engine/Space.js';
 import { collides } from '../src/engine/Physics.js';
@@ -93,6 +94,29 @@ test('a dead mob stops dealing damage', () => {
   const player = { x: mob.pos.x + 0.5, y: 2 * CELL_SIZE, z: mob.pos.z };
   for (let i = 0; i < 30; i++) mob.update(0.1, player);
   assert.equal(hits.length, 0);
+});
+
+test('a hit plays the hurt pose until the flash fades', () => {
+  const world = floorWorld();
+  const { mob } = makeMob(world, 2, 2, 2);
+  const player = { x: 10 * CELL_SIZE, y: 2 * CELL_SIZE, z: 2 * CELL_SIZE };
+  mob.update(0.1, player); // aggro + chase, so it has a normal animation
+  assert.notEqual(mob.animName, 'hurt');
+  mob.takeDamage(5);
+  assert.equal(mob.animName, 'hurt', 'takeDamage must flinch into the hurt pose');
+  // While the flash is active the update loop keeps the hurt pose overriding
+  // whatever the state machine would have set.
+  mob.update(0.05, player);
+  assert.equal(mob.animName, 'hurt');
+  // Once the flash expires, the mob returns to its normal animation.
+  mob.hurtTimer = 0;
+  mob.update(0.05, player);
+  assert.notEqual(mob.animName, 'hurt');
+});
+
+test('the hurt pose maps to the dedicated hurt sprite frame', () => {
+  assert.equal(frameFor('hurt', 0), 8, 'hurt must select the hurt frame strip');
+  assert.equal(frameFor('hurt', 1.7), 8, 'hurt is a static frame regardless of time');
 });
 
 test('climbs a 0.5 m step to reach a higher level', () => {

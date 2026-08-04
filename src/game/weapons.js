@@ -7,7 +7,7 @@
 // animation / recoil); other item ids fall back to a generic melee profile.
 
 import { getItem } from '../engine/ItemRegistry.js';
-import { getEquipItem } from '../engine/EquipmentRegistry.js';
+import { getEquipItem, RANGED_SPREAD } from '../engine/EquipmentRegistry.js';
 import { CELL_SIZE } from '../engine/Space.js';
 
 export const FISTS = Object.freeze({
@@ -24,6 +24,7 @@ export const FISTS = Object.freeze({
   magazine: 0,
   ammo: '',
   reload: 0, // fists cannot reload
+  spread: 0, // radians of aim wobble (melee swings are exact)
 });
 
 /** Weapon profile for an equipped item (equipment profile when available). */
@@ -46,6 +47,8 @@ export function weaponFor(itemId) {
       magazine: w.magazine ?? 0,
       ammo: w.ammo ?? '',
       reload: typeof w.reload === 'number' ? Math.max(0.2, Math.min(10, w.reload)) : 1.4,
+      // Ranged weapons wobble by default; melee stays exact.
+      spread: w.spread ?? (w.kind === 'ranged' ? RANGED_SPREAD : 0),
     };
   }
   return {
@@ -62,6 +65,7 @@ export function weaponFor(itemId) {
     magazine: 0,
     ammo: '',
     reload: 1.4,
+    spread: 0,
   };
 }
 

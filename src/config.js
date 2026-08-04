@@ -47,8 +47,7 @@ export const CONFIG = Object.freeze({
     stepHeight: 0.5, // meters climbed automatically onto small (0.5m) blocks
     stepClimbTime: 0.18, // seconds to smoothly rise one step (vs snapping instantly)
     gravity: 24, // m/s^2
-    walkSpeed: 4.5, // m/s
-    sprintMult: 1.7,
+    walkSpeed: 4.5, // m/s (no sprint)
     crouchSpeed: 1.6,
     groundAccel: 12,
     airAccel: 4,

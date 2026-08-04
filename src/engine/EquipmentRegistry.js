@@ -10,7 +10,7 @@
 //            axis; the F3 editor shows this as an arrow, default +Z).
 //   - stats: damage / reach (m) / cooldown (s) used when attacking (weapons).
 //   - weapon: a composable attack profile (kind / hands / muzzle / anim /
-//            recoil) — see normalizeWeapon (weapons).
+//            recoil / spread) — see normalizeWeapon (weapons).
 //   - ammo:  the ammo type a pack grants + the amount per pickup (ammo kind).
 //
 // Separate from the placeable-object ItemRegistry: objects decorate the world,
@@ -43,7 +43,11 @@ export const DEFAULT_WEAPON = Object.freeze({
   magazine: 0, // rounds per mag; 0 = no magazine (melee / infinite)
   ammo: '', // ammo type id the gun consumes ('' = none / melee)
   reload: 1.4, // seconds a magazine reload takes (R in the game)
+  spread: 0, // radians of random aim wobble (ranged weapons get their own default)
 });
+
+/** Default aim spread (radians) for ranged weapons when the profile omits it. */
+export const RANGED_SPREAD = 0.02;
 
 const REGISTRY = new Map();
 
@@ -124,6 +128,8 @@ export function normalizeWeapon(w = {}) {
     magazine: clampNum(w.magazine, 0, 500, DEFAULT_WEAPON.magazine),
     ammo: isAmmoId(w.ammo) ? w.ammo : DEFAULT_WEAPON.ammo,
     reload: clampNum(w.reload, 0.2, 10, DEFAULT_WEAPON.reload),
+    // Ranged weapons wobble by default; melee swings stay exact.
+    spread: clampNum(w.spread, 0, 0.2, kind === 'ranged' ? RANGED_SPREAD : 0),
   };
 }
 

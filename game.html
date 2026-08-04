@@ -16,34 +16,69 @@
     .overlay { position: fixed; pointer-events: none; z-index: 10; }
     .hidden { display: none !important; }
 
-    #hud { top: 12px; left: 12px; }
-    #hud .panel { padding: 8px 10px; border-radius: 8px; background: rgba(0,0,0,0.45); font-size: 13px; margin-bottom: 8px; }
-    #hud .row { display: flex; justify-content: space-between; gap: 14px; font-size: 13px; }
+    /* --- HUD ---
+       Minecraft-style bottom bar: stats (HP/AP bars + hand) in a pill above a
+       row holding the equipment hotbar and the big ammo readout to its right,
+       centered at the bottom like the editor's toolbar. On touch screens the
+       touch layer owns the hotbar, so the HUD drops back to a compact top-left
+       readout without the slots. */
+    #hud { top: auto; left: 50%; bottom: 14px; transform: translateX(-50%);
+      display: flex; flex-direction: column; align-items: center; gap: 8px; }
+    #hud .stats {
+      display: flex; align-items: center; gap: 14px;
+      padding: 7px 12px; border-radius: 10px;
+      background: rgba(0,0,0,0.45);
+    }
+    #hud .row { display: flex; align-items: center; gap: 5px; font-size: 12px; }
     #hud .label { opacity: 0.7; }
     #hud .value { font-variant-numeric: tabular-nums; }
 
     /* stats bars */
-    .bar { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; }
-    .bar .bar-label { width: 18px; opacity: 0.8; }
-    .bar .bar-track { flex: 1; height: 12px; border-radius: 6px; background: rgba(255,255,255,0.12); overflow: hidden; }
-    .bar .bar-fill { display: block; height: 100%; width: 100%; border-radius: 6px; transition: width 0.15s; }
+    .bar { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+    .bar .bar-label { width: 20px; opacity: 0.8; }
+    .bar .bar-track { width: 120px; height: 14px; border-radius: 7px; background: rgba(255,255,255,0.12); overflow: hidden; }
+    .bar .bar-fill { display: block; height: 100%; width: 100%; border-radius: 7px; transition: width 0.15s; }
     .bar .bar-fill.health { background: linear-gradient(90deg, #c33, #e66); }
     .bar .bar-fill.health.low { background: linear-gradient(90deg, #711, #c33); }
     .bar .bar-fill.armor { background: linear-gradient(90deg, #36a, #6ae); }
     .bar .bar-num { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; opacity: 0.9; }
 
-    /* equipment slots */
-    #equipment { display: flex; gap: 6px; margin-top: 8px; }
+    /* bottom row: hotbar + ammo */
+    #hud-row { display: flex; align-items: center; gap: 14px; }
+
+    /* equipment slots (bottom hotbar, styled like the editor's toolbar) */
+    #equipment { display: flex; gap: 8px; }
     .eq-slot {
-      position: relative; width: 64px; padding: 6px 4px; border: 1px solid rgba(255,255,255,0.18);
-      border-radius: 6px; background: rgba(20,26,32,0.85); text-align: center; cursor: pointer;
+      position: relative; width: 56px; height: 56px; padding: 4px;
+      border: 2px solid rgba(255,255,255,0.15); border-radius: 8px;
+      background: rgba(30,34,40,0.9);
+      display: flex; align-items: center; justify-content: center;
+      text-align: center; cursor: pointer; pointer-events: auto;
     }
     .eq-slot:hover { border-color: rgba(255,255,255,0.4); }
     .eq-slot.active { border-color: #6cf; box-shadow: 0 0 8px rgba(102,204,255,0.5); }
-    .eq-slot-name { display: block; font-size: 11px; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .eq-slot-label { position: absolute; top: 2px; right: 4px; font-size: 10px; opacity: 0.55; }
-    #hand { margin-top: 6px; font-size: 12px; opacity: 0.85; }
-    #ammo { margin-top: 4px; font-size: 13px; font-variant-numeric: tabular-nums; color: #fdd; }
+    .eq-slot canvas { image-rendering: pixelated; width: 100%; height: 100%; }
+    .eq-slot-name { font-size: 11px; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; padding: 0 2px; }
+    .eq-slot-label { position: absolute; top: 2px; right: 5px; font-size: 10px; opacity: 0.55; }
+    #hand { font-size: 12px; opacity: 0.85; }
+
+    /* ammo readout: big, next to the hotbar, outside the dark stats pill */
+    #ammo {
+      font-size: 30px; font-weight: 700; color: #ffd9d9;
+      font-variant-numeric: tabular-nums; line-height: 1.1;
+      min-width: 140px; text-align: center;
+      text-shadow: 0 2px 8px rgba(0,0,0,0.85);
+    }
+
+    /* touch screens: touch layer owns the hotbar, so keep only a small
+       top-left stats readout (health/armor/ammo) — no duplicate slots */
+    @media (pointer: coarse) {
+      #hud { top: 12px; left: 12px; bottom: auto; transform: none; align-items: flex-start; }
+      #hud #equipment { display: none; }
+      #hud .stats { flex-wrap: wrap; gap: 6px 14px; max-width: 46vw; }
+      .bar .bar-track { width: 90px; }
+      #ammo { font-size: 20px; min-width: 0; }
+    }
 
     #crosshair { left: 50%; top: 50%; width: 18px; height: 18px; transform: translate(-50%, -50%); }
     #crosshair::before, #crosshair::after {
@@ -59,6 +94,28 @@
       font-size: 14px; opacity: 0; transition: opacity 0.15s;
     }
     #toast.show { opacity: 1; }
+
+    /* hit feedback: a red vignette + slight blur that flashes on every hit the
+       player takes (wired in GameApp._mobHitsPlayer via body.hurt). Intensity
+       scales with missing health: the CSS variables --hit-int / --hit-blur /
+       --hit-stop (set by _hitFlash) peak higher, blur harder and cover more of
+       the screen the lower your HP is. Both decay to nothing over half a
+       second; the hurt class is cleared when the animation ends. */
+    #hit-feedback {
+      position: fixed; inset: 0; z-index: 8; pointer-events: none;
+      opacity: 0;
+      background: radial-gradient(ellipse at center, transparent var(--hit-stop, 55%), rgba(200,10,10,0.5) 100%);
+    }
+    body.hurt #hit-feedback { animation: hit-vignette 0.5s ease-out forwards; }
+    body.hurt #game canvas { animation: hit-blur 0.5s ease-out forwards; }
+    @keyframes hit-vignette {
+      from { opacity: var(--hit-int, 0.7); }
+      to { opacity: 0; }
+    }
+    @keyframes hit-blur {
+      from { filter: blur(var(--hit-blur, 2px)); }
+      to { filter: blur(0px); }
+    }
 
     /* pickup prompt (aiming at a placed equippable item) */
     #pickup {
@@ -138,6 +195,7 @@
       background: rgba(20,26,32,0.6); color: #fff; font-size: 16px; font-weight: 700;
       -webkit-tap-highlight-color: transparent; box-shadow: 0 2px 8px rgba(0,0,0,0.35);
     }
+    .slot-btn canvas { image-rendering: pixelated; width: 100%; height: 100%; }
     .slot-btn.active { border-color: #6cf; box-shadow: 0 0 8px rgba(102,204,255,0.5); background: rgba(60,90,130,0.7); }
 
     #joy-base {
@@ -162,11 +220,12 @@
   <div id="game"></div>
 
   <div id="crosshair" class="overlay"></div>
+  <div id="hit-feedback"></div>
   <div id="toast" class="overlay"></div>
   <div id="pickup" class="overlay hidden"></div>
 
   <div id="hud" class="overlay">
-    <div class="panel">
+    <div class="stats">
       <div class="bar">
         <span class="bar-label">HP</span>
         <span class="bar-track"><span class="bar-fill health" id="health-fill"></span></span>
@@ -177,10 +236,11 @@
         <span class="bar-track"><span class="bar-fill armor" id="armor-fill"></span></span>
         <span class="bar-num" id="armor-text">100</span>
       </div>
-      <div id="equipment"></div>
       <div id="hand"></div>
-      <div id="ammo" class="hidden"></div>
-      <div class="row" style="margin-top:6px"><span class="label">Kills</span><span id="kills" class="value">0</span></div>
+    </div>
+    <div id="hud-row">
+      <div id="equipment"></div>
+      <div id="ammo"></div>
     </div>
   </div>
 
@@ -193,7 +253,7 @@
       <div id="slots-menu"></div>
       <div class="hint">
         <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;·&nbsp;
-        <kbd>Shift</kbd> sprint &nbsp;·&nbsp; <kbd>C</kbd> crouch &nbsp;·&nbsp;
+        <kbd>C</kbd> crouch &nbsp;·&nbsp;
         <kbd>LMB</kbd> attack &nbsp;·&nbsp; <kbd>1</kbd>-<kbd>4</kbd> select equipment &nbsp;·&nbsp;
         <kbd>R</kbd> reload &nbsp;·&nbsp; <kbd>F</kbd> use injection &nbsp;·&nbsp; <kbd>Esc</kbd> pause / save
       </div>

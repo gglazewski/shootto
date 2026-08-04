@@ -3,8 +3,8 @@
 // The player is an AABB (configurable width/height) moved against the voxel
 // grid via Physics.moveAxis / moveWithStep so it slides along walls, lands on
 // tops, and automatically steps up onto 0.5 m blocks. WASD moves on the
-// camera-yaw plane (you walk flat), Shift sprints, C crouches (stand-up is
-// gated on headroom), Space is intentionally inert (no jump). Mouse look
+// camera-yaw plane (you walk flat), C crouches (stand-up is gated on
+// headroom), Space is intentionally inert (no jump, no sprint). Mouse look
 // reuses the pure applyLook/clampPitch math from FlyControls.
 //
 // Mirrors FlyControls' public surface (update/onMouseMove/onKeyDown/onKeyUp)
@@ -40,7 +40,6 @@ export class WalkControls {
     this.stepClimbTime = opts.stepClimbTime ?? 0.18;
     this.gravity = opts.gravity ?? 24;
     this.walkSpeed = opts.walkSpeed ?? 4.5;
-    this.sprintMult = opts.sprintMult ?? 1.7;
     this.crouchSpeed = opts.crouchSpeed ?? 1.6;
     this.groundAccel = opts.groundAccel ?? 12;
     this.airAccel = opts.airAccel ?? 4;
@@ -124,7 +123,6 @@ export class WalkControls {
     const wantCrouch = k.has('KeyC');
     // A player that couldn't stand up last frame stays crouched until it can.
     const crouched = wantCrouch || this.crouching;
-    const sprint = !crouched && (k.has('ShiftLeft') || k.has('ShiftRight'));
     const height = crouched ? this.crouchHeight : this.height;
 
     if (!this.grounded && !this.climb) this.velocity.y -= this.gravity * dt;
@@ -138,7 +136,7 @@ export class WalkControls {
     if (k.has('KeyD') || k.has('ArrowRight')) wish.add(right);
     if (k.has('KeyA') || k.has('ArrowLeft')) wish.sub(right);
 
-    const maxSpeed = crouched ? this.crouchSpeed : sprint ? this.walkSpeed * this.sprintMult : this.walkSpeed;
+    const maxSpeed = crouched ? this.crouchSpeed : this.walkSpeed;
     const accel = this.grounded || this.climb ? this.groundAccel : this.airAccel;
     const t = Math.min(1, dt * accel);
     if (wish.lengthSq() > 0) {

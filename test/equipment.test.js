@@ -53,7 +53,7 @@ test('normalizeWeapon builds a canonical composable profile', () => {
   assert.deepEqual(normalizeWeapon({}), DEFAULT_WEAPON);
   assert.deepEqual(
     normalizeWeapon({ kind: 'ranged', hands: 'two', muzzle: { x: 3, y: 4, z: 7 }, anim: 'gun', recoil: 0.12, magazine: 30, ammo: 'rifle' }),
-    { kind: 'ranged', hands: 'two', muzzle: { x: 3, y: 4, z: 7 }, anim: 'gun', recoil: 0.12, magazine: 30, ammo: 'rifle', reload: 1.4 },
+    { kind: 'ranged', hands: 'two', muzzle: { x: 3, y: 4, z: 7 }, anim: 'gun', recoil: 0.12, magazine: 30, ammo: 'rifle', reload: 1.4, spread: 0.02 },
   );
   // invalid anims fall back per kind; muzzle is validated as integer cells.
   assert.equal(normalizeWeapon({ kind: 'ranged', anim: 'slash' }).anim, 'gun');
@@ -68,6 +68,10 @@ test('normalizeWeapon builds a canonical composable profile', () => {
   assert.equal(normalizeWeapon({ reload: 99 }).reload, 10, 'reload clamps at 10 s');
   assert.equal(normalizeWeapon({ reload: 0.05 }).reload, 0.2, 'reload clamps at 0.2 s');
   assert.equal(normalizeWeapon({ reload: 2.5 }).reload, 2.5, 'a custom reload time survives');
+  assert.equal(normalizeWeapon({ kind: 'ranged' }).spread, 0.02, 'ranged weapons get default spread');
+  assert.equal(normalizeWeapon({ kind: 'melee' }).spread, 0, 'melee weapons have no spread');
+  assert.equal(normalizeWeapon({ kind: 'ranged', spread: 0.5 }).spread, 0.2, 'spread clamps at 0.2 rad');
+  assert.equal(normalizeWeapon({ kind: 'ranged', spread: 0 }).spread, 0, 'spread can be set to zero');
   assert.deepEqual(ATTACK_ANIMS.ranged, ['gun']);
 });
 
@@ -117,7 +121,7 @@ test('single item serialize/deserialize round-trips grip, yaw and stats', () => 
   item.grip = { x: 1, y: 1, z: 1 };
   item.yaw = 270;
   item.stats = { damage: 34, reach: 1.5, cooldown: 0.6 };
-  item.weapon = { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 4, z: 5 }, anim: 'gun', recoil: 0.1, magazine: 12, ammo: 'pistol', reload: 0.8 };
+  item.weapon = { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 4, z: 5 }, anim: 'gun', recoil: 0.1, magazine: 12, ammo: 'pistol', reload: 0.8, spread: 0.02 };
 
   const text = serializeEquipItem(item);
   const parsed = JSON.parse(text);

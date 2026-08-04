@@ -29,13 +29,14 @@ import { microCellSizeFor, lightLevelForMeters, rotateMicroPoint } from '../engi
 import { spanFor } from '../engine/VoxelShape.js';
 import { BUNDLED_WORLD } from '../bundledWorld.js';
 import { SLOT_COUNT, readSlot, writeSlot, makeSlot } from './SaveSlots.js';
-import { PlayerStats, EQUIPMENT_SLOTS } from './PlayerStats.js';
+import { PlayerStats, MAX_HEALTH, EQUIPMENT_SLOTS } from './PlayerStats.js';
 import { weaponFor, FISTS } from './weapons.js';
 import { PlayerHand } from './PlayerHand.js';
 import { SmokeParticles } from './SmokeParticles.js';
 import { MuzzleFX } from './MuzzleFX.js';
 import { MobManager } from './MobManager.js';
 import { itemAwarePick } from '../editor/itemPick.js';
+import { buildItemSwatch } from '../editor/items/itemSwatch.js';
 import { TouchControls } from './TouchControls.js';
 
 /** Fallback reload time (seconds) when a weapon profile has none set. */
@@ -159,7 +160,6 @@ export class GameApp {
       equipment: this.doc.querySelector('#equipment'),
       hand: this.doc.querySelector('#hand'),
       ammo: this.doc.querySelector('#ammo'),
-      kills: this.doc.querySelector('#kills'),
       death: this.doc.querySelector('#death'),
       btnNew: this.doc.querySelector('#btn-new'),
       btnResume: this.doc.querySelector('#btn-resume'),
@@ -317,29 +317,31 @@ export class GameApp {
       this.ui.armorFill.style.width = `${s.armor}%`;
       this.ui.armorText.textContent = String(Math.round(s.armor));
     }
-    if (this.ui.kills) this.ui.kills.textContent = String(this.mobs.kills);
+    // Kill count is still tracked (this.mobs.kills) but not displayed.
     this.touch?.setActiveSlot(this.stats.activeSlot);
+    this._renderMobileSlots();
     this._updateHeldItem();
     this._renderEquipment();
     this._updateAmmoHud();
   }
 
-  /** Show magazine ammo for ranged weapons as `in-mag / carried` (hidden for
-   *  melee/fists and for guns without a magazine). */
+  /** Show magazine ammo for ranged weapons as `in-mag / carried`. Weapons
+   *  without a magazine (fists/melee) show infinite ammo (`∞/∞`) so the
+   *  counter is always present. */
   _updateAmmoHud() {
     const el = this.ui.ammo;
     if (!el) return;
     const weapon = this.stats.activeItemId ? weaponFor(this.stats.activeItemId) : FISTS;
     const max = weapon.magazine ?? 0;
     if (weapon.kind !== 'ranged' || max <= 0) {
-      el.classList.add('hidden');
-      el.textContent = '';
+      el.classList.remove('hidden');
+      el.textContent = '∞/∞';
       return;
     }
     const ammo = this._ammoFor(weapon);
     const carried = this._carriedAmmo(ammo);
     el.classList.remove('hidden');
-    el.textContent = `${ammo.current} / ${carried}`;
+    el.textContent = `${ammo.current}/${carried}`;
   }
 
   /** Show the equipped item in the hand (empty slot = fists). Called whenever
@@ -350,25 +352,30 @@ export class GameApp {
     this.hand.setHeldItem(def);
   }
 
-  /** Render the four equipment slots and the current "hand". */
+  /** Render the four equipment slots (bottom hotbar) with item icons like the
+   *  editor's inventory, and the current "hand". */
   _renderEquipment() {
     const el = this.ui.equipment;
     if (!el) return;
     el.innerHTML = '';
     EQUIPMENT_SLOTS.forEach((slot, i) => {
       const id = this.stats.equipment[slot];
-      const item = id ? getItem(id) : null;
+      const item = id ? getItem(id) ?? getEquipItem(id) : null;
       const div = document.createElement('div');
       div.className = `eq-slot${i === this.stats.activeSlot ? ' active' : ''}`;
-      div.title = slot;
-      const name = document.createElement('span');
-      name.className = 'eq-slot-name';
-      name.textContent = item?.name ?? '—';
+      div.title = item ? `${item.name} (${i + 1})` : `Empty slot (${i + 1})`;
       const slotLabel = document.createElement('span');
       slotLabel.className = 'eq-slot-label';
       slotLabel.textContent = String(i + 1);
-      div.appendChild(name);
       div.appendChild(slotLabel);
+      if (item) {
+        div.appendChild(buildItemSwatch(item, 48));
+      } else {
+        const name = document.createElement('span');
+        name.className = 'eq-slot-name';
+        name.textContent = '—';
+        div.appendChild(name);
+      }
       div.addEventListener('click', () => this._selectSlot(i));
       el.appendChild(div);
     });
@@ -376,6 +383,26 @@ export class GameApp {
       const weapon = this.stats.activeItemId ? weaponFor(this.stats.activeItemId) : FISTS;
       this.ui.hand.textContent = weapon.name;
     }
+  }
+
+  /** Mirror the equipment icons into the mobile hotbar slots (they show the
+   *  slot number while empty, the item icon once something is equipped). */
+  _renderMobileSlots() {
+    if (!this.isTouch) return;
+    const wrap = this.doc.querySelector('#slots-mobile');
+    if (!wrap) return;
+    wrap.querySelectorAll('.slot-btn').forEach((btn, i) => {
+      const id = this.stats.equipment[EQUIPMENT_SLOTS[i]];
+      const item = id ? getItem(id) ?? getEquipItem(id) : null;
+      const old = btn.querySelector('canvas');
+      if (old) btn.removeChild(old);
+      if (item) {
+        btn.textContent = '';
+        btn.appendChild(buildItemSwatch(item, 36));
+      } else if (!btn.textContent.trim()) {
+        btn.textContent = String(i + 1);
+      }
+    });
   }
 
   /** Select an equipment slot by index (1-4). */
@@ -405,18 +432,44 @@ export class GameApp {
   }
 
   /**
+   * Aim direction for a weapon's shot: the camera's forward vector nudged by a
+   * random angle within `weapon.spread` radians, so shots land in a cone around
+   * the crosshair instead of dead-center every time. Zero-spread weapons
+   * (fists/melee) return the exact camera direction. The same direction feeds
+   * the voxel raycast, the mob raycast and the muzzle flash, so they all agree.
+   */
+  _aimDir(weapon) {
+    const dir = this.renderer.camera.getWorldDirection(new THREE.Vector3());
+    const spread = weapon.spread ?? 0;
+    if (spread <= 0) return dir;
+    // Uniform over the disc (sqrt for area-uniform scatter).
+    const angle = Math.random() * Math.PI * 2;
+    const r = spread * Math.sqrt(Math.random());
+    const up = new THREE.Vector3(0, 1, 0);
+    const side = new THREE.Vector3().crossVectors(dir, up);
+    if (side.lengthSq() < 1e-8) side.set(1, 0, 0); // looking straight up/down
+    else side.normalize();
+    const perp = new THREE.Vector3().crossVectors(side, dir).normalize();
+    return dir
+      .addScaledVector(side, Math.cos(angle) * r)
+      .addScaledVector(perp, Math.sin(angle) * r)
+      .normalize();
+  }
+
+  /**
    * First thing the aim ray hits within the weapon's reach: a mob, the world,
    * or nothing. A mob is hit only when it lies before any voxel (bullets and
-   * swings are blocked by walls, Doom-style).
+   * swings are blocked by walls, Doom-style). `dir` is the shot direction
+   * (spread-nudged for ranged weapons).
    * @returns {{mob: object}|{pos:[number,number,number]}|null}
    */
-  _attackImpact(weapon) {
-    const voxelHit = this._aim(weapon.range);
+  _attackImpact(weapon, dir = this._aimDir(weapon)) {
+    const voxelHit = this._aim(weapon.range, dir);
     const cam = this.renderer.camera;
     const voxelDist = voxelHit
       ? Math.hypot(voxelHit[0] - cam.position.x, voxelHit[1] - cam.position.y, voxelHit[2] - cam.position.z)
       : Infinity;
-    const mobHit = this.mobs.aimHit(cam);
+    const mobHit = this.mobs.aimHit(cam, dir);
     const maxMeters = weapon.range * CELL_SIZE;
     if (mobHit && mobHit.dist < voxelDist && mobHit.dist <= maxMeters) return { mob: mobHit.mob };
     return voxelHit ? { pos: voxelHit } : null;
@@ -444,7 +497,27 @@ export class GameApp {
     this.smoke.puff([pos.x, pos.y, pos.z]);
     this.stats.damage(amount);
     this._updateHud();
+    this._hitFlash();
     if (this.stats.isDead) this.gameOver();
+  }
+
+  /** Flash the hit feedback (red vignette + slight blur) by toggling body.hurt.
+   *  The flash scales with missing health: the lower your HP, the brighter and
+   *  wider the red vignette and the stronger the blur. Restarting the class
+   *  with a reflow lets rapid successive hits keep the full-intensity flash
+   *  instead of skipping mid-animation; the hurt class is dropped when the
+   *  vignette animation ends (see _wireUI). */
+  _hitFlash() {
+    const body = this.doc.body;
+    if (!body) return;
+    // 0 at full health -> 1 at zero health; scales the flash intensity.
+    const low = 1 - Math.max(0, Math.min(1, this.stats.health / MAX_HEALTH));
+    body.style.setProperty('--hit-int', (0.7 + 0.3 * low).toFixed(2)); // 0.7..1.0 peak opacity
+    body.style.setProperty('--hit-blur', `${(2 + 4 * low).toFixed(2)}px`); // 2..6 px blur
+    body.style.setProperty('--hit-stop', `${(55 - 15 * low).toFixed(1)}%`); // 55%..40% vignette edge
+    body.classList.remove('hurt');
+    void body.offsetWidth;
+    body.classList.add('hurt');
   }
 
   /** Transition to the death screen (mobs finally can kill you). */
@@ -485,12 +558,12 @@ export class GameApp {
     if (ammo.max > 0) ammo.current = Math.max(0, ammo.current - 1);
     this.hand.attack('gun', { recoil: weapon.recoil });
     this.hand.muzzleFlash();
+    const dir = this._aimDir(weapon);
     const muzzle = this.hand.heldMuzzleWorld(this._muzzlePos);
     if (muzzle) {
-      const dir = this.renderer.camera.getWorldDirection(new THREE.Vector3());
       this.muzzleFX.burst(muzzle, dir);
     }
-    const impact = this._attackImpact(weapon);
+    const impact = this._attackImpact(weapon, dir);
     if (impact) this._resolveImpact(impact, weapon.damage);
     if (ammo.max > 0 && ammo.current <= 0 && this._carriedAmmo(ammo) > 0) this._startReload(weapon);
     this._updateHud();
@@ -553,19 +626,20 @@ export class GameApp {
   /** Exact world position the current aim hits within `maxCells` (in cells), or
    *  null when nothing is aimed at or it is out of reach. The walk length is
    *  capped by maxCells (defaults to the raycaster maximum), so a weapon's
-   *  range directly controls how far a shot can land. */
-  _aim(maxCells = MAX_RAY_DISTANCE) {
+   *  range directly controls how far a shot can land. `dir` overrides the aim
+   *  direction (weapon spread). */
+  _aim(maxCells = MAX_RAY_DISTANCE, dir) {
     const { camera } = this.renderer;
-    const hit = itemAwarePick(this.world, THREE, this.renderer.camera, maxCells);
+    const hit = itemAwarePick(this.world, THREE, this.renderer.camera, maxCells, dir);
     if (!hit || hit.dist > maxCells) return null;
     // The raycaster's `dist` is the cell distance along the ray to the surface
     // it entered — the exact impact point, not the middle of the voxel.
-    const dir = camera.getWorldDirection(new THREE.Vector3());
+    const dvec = dir ?? camera.getWorldDirection(new THREE.Vector3());
     const d = hit.dist * CELL_SIZE; // cell units -> world units
     return [
-      camera.position.x + dir.x * d,
-      camera.position.y + dir.y * d,
-      camera.position.z + dir.z * d,
+      camera.position.x + dvec.x * d,
+      camera.position.y + dvec.y * d,
+      camera.position.z + dvec.z * d,
     ];
   }
 
@@ -843,6 +917,10 @@ export class GameApp {
     this.ui.btnQuit?.addEventListener('click', () => this.showMenu());
     this.ui.btnRespawn?.addEventListener('click', () => this.newGame());
     this.ui.btnDeathMenu?.addEventListener('click', () => this.showMenu());
+    // Clear the hit-flash when its vignette animation completes (event-driven,
+    // so it stays in sync even if the page's timers are throttled).
+    const hitFeedback = this.doc.querySelector('#hit-feedback');
+    hitFeedback?.addEventListener('animationend', () => this.doc.body.classList.remove('hurt'));
   }
 
   _wireInput() {

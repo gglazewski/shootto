@@ -197,6 +197,38 @@ T('HUD shows health, armor, equipment slots and fists by default', async () => {
   assert.equal(hud.activeSlot, 'primary');
 });
 
+T('equipped items render their editor-style icon in the hotbar', async () => {
+  await loadGame();
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    // Empty slots show the dash label, not an icon.
+    const empty = document.querySelector('#equipment .eq-slot');
+    const emptyBefore = {
+      hasCanvas: !!empty.querySelector('canvas'),
+      label: empty.querySelector('.eq-slot-name')?.textContent,
+    };
+    g.stats.equip('primary', 'sword');
+    g._updateHud();
+    const slot0 = document.querySelector('#equipment .eq-slot');
+    const canvas = slot0.querySelector('canvas');
+    return {
+      emptyBefore,
+      hasCanvas: !!canvas,
+      canvasSize: canvas ? [canvas.width, canvas.height] : null,
+      title: slot0.title,
+      active: slot0.classList.contains('active'),
+    };
+  });
+  assert.equal(out.emptyBefore.hasCanvas, false, 'empty slot must not show an icon');
+  assert.equal(out.emptyBefore.label, '—');
+  assert.equal(out.hasCanvas, true, 'an equipped item must render an icon canvas');
+  assert.ok(out.canvasSize[0] > 0 && out.canvasSize[1] > 0, 'the icon canvas must have pixels');
+  assert.equal(out.title, 'Sword (1)', 'slot tooltip must show the item name');
+  assert.equal(out.active, true, 'the equipped slot stays selected');
+});
+
 T('equipment switching, injection use and attack work', async () => {
   await loadGame();
   await page.evaluate(() => window.__voxelgame.newGame());
@@ -565,7 +597,7 @@ T('a long-range weapon can hit far past melee reach', async () => {
         microVoxels: [{ x: 3, y: 3, z: 4, color: [30, 40, 60] }],
         grip: { x: 3, y: 3, z: 4 }, yaw: 0,
         stats: { damage: 80, reach: 1000, cooldown: 1.2 }, // 1000 m = 2000 cells
-        weapon: { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 3, z: 5 }, anim: 'gun', recoil: 0.15 },
+        weapon: { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 3, z: 5 }, anim: 'gun', recoil: 0.15, spread: 0 }, // perfectly accurate — this tests reach, not spread
       },
     ]));
   });
@@ -598,6 +630,38 @@ T('a long-range weapon can hit far past melee reach', async () => {
   assert.equal(result.hit.smoke, 12, 'a 1000 m weapon must hit a wall 60 m away');
   assert.equal(result.hit.flash, true, 'the long-range shot still flashes at the muzzle');
   assert.equal(result.hit.anim, 'gun');
+});
+
+T('ranged weapons scatter shots away from the exact crosshair', async () => {
+  await loadGame();
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    const cam = g.renderer.camera;
+    cam.rotation.set(0, 0, 0, 'YXZ'); // look straight ahead (-Z)
+    const base = cam.getWorldDirection(new g.hand.THREE.Vector3());
+    const baseArr = base.toArray();
+    const gun = { kind: 'ranged', spread: 0.2 }; // a wide cone for the test
+    const melee = { kind: 'melee', spread: 0 };
+    let maxDev = 0;
+    let diverged = false;
+    for (let i = 0; i < 60; i++) {
+      const d = g._aimDir(gun);
+      const ang = Math.acos(Math.max(-1, Math.min(1, d.dot(base))));
+      maxDev = Math.max(maxDev, ang);
+      if (ang > 0.001) diverged = true;
+    }
+    let meleeDev = 0;
+    for (let i = 0; i < 10; i++) {
+      const d = g._aimDir(melee);
+      meleeDev = Math.max(meleeDev, Math.abs(d.dot(base) - 1));
+    }
+    return { baseArr, diverged, maxDev, meleeDev };
+  });
+  assert.equal(out.diverged, true, 'a spread weapon must scatter shots off the crosshair');
+  assert.ok(out.maxDev > 0.1, `spread shots must deviate by a meaningful angle (max ${out.maxDev} rad)`);
+  assert.ok(out.meleeDev < 1e-6, 'a zero-spread weapon aims exactly at the crosshair');
 });
 
 T('a magazine gun fires, empties, and auto-reloads from carried ammo', async () => {
@@ -633,7 +697,7 @@ T('a magazine gun fires, empties, and auto-reloads from carried ammo', async () 
   assert.equal(equipped.leftVisible, false, 'one-handed weapon must lower the left hand');
   assert.equal(equipped.ammoHidden, false, 'ammo HUD must show for a magazine gun');
   assert.equal(equipped.carried, 30, 'player starts carrying pistol ammo');
-  assert.equal(equipped.ammo, '3 / 30', 'HUD must show mag / carried');
+  assert.equal(equipped.ammo, '3/30', 'HUD must show mag / carried');
 
   // Fire all three rounds → empty magazine → auto-reload with hands down.
   const emptied = await page.evaluate(() => {
@@ -656,7 +720,7 @@ T('a magazine gun fires, empties, and auto-reloads from carried ammo', async () 
   assert.equal(emptied.current, 0, 'three shots must empty the magazine');
   assert.equal(emptied.reloading, true, 'an empty magazine must auto-reload');
   assert.equal(emptied.handsDown, true, 'hands must dip down to reload');
-  assert.equal(emptied.hud, '0 / 30', 'HUD must show 0 in the mag, carried intact');
+  assert.equal(emptied.hud, '0/30', 'HUD must show 0 in the mag, carried intact');
 
   // Wait for the reload to finish → a full mag is pulled from carried ammo.
   await page.waitForTimeout(1700);
@@ -675,17 +739,42 @@ T('a magazine gun fires, empties, and auto-reloads from carried ammo', async () 
   assert.equal(ready.reloading, false, 'reload must finish');
   assert.equal(ready.handsUp, true, 'hands must come back up after reload');
   assert.equal(ready.carried, 27, 'reload must spend carried ammo (30 - 3)');
-  assert.equal(ready.hud, '3 / 27');
+  assert.equal(ready.hud, '3/27');
 
-  // Unequipping (fists) brings both hands back.
+  // Unequipping (fists) brings both hands back; the ammo counter stays and
+  // shows infinite ammo.
   const fists = await page.evaluate(() => {
     const g = window.__voxelgame;
     g.stats.unequip('primary');
     g._updateHud();
-    return { leftVisible: g.hand.left.group.visible, ammoHidden: document.querySelector('#ammo').classList.contains('hidden') };
+    return {
+      leftVisible: g.hand.left.group.visible,
+      ammoHidden: document.querySelector('#ammo').classList.contains('hidden'),
+      ammo: document.querySelector('#ammo').textContent,
+    };
   });
   assert.equal(fists.leftVisible, true, 'fists must show both hands');
-  assert.equal(fists.ammoHidden, true, 'ammo HUD must hide for fists');
+  assert.equal(fists.ammoHidden, false, 'ammo counter must stay visible');
+  assert.equal(fists.ammo, '∞/∞', 'fists/melee must show infinite ammo');
+});
+
+T('ammo counter is always visible and shows infinite for fists/melee', async () => {
+  await loadGame();
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    const ammo = document.querySelector('#ammo');
+    const read = () => ({ hidden: ammo.classList.contains('hidden'), text: ammo.textContent });
+    const fists = read();
+    // A melee item (sword) is also magazine-less.
+    g.stats.equip('primary', 'sword');
+    g._updateHud();
+    const melee = read();
+    return { fists, melee };
+  });
+  assert.deepEqual(out.fists, { hidden: false, text: '∞/∞' }, 'fresh game (fists) shows infinite ammo');
+  assert.deepEqual(out.melee, { hidden: false, text: '∞/∞' }, 'a melee weapon shows infinite ammo');
 });
 
 T('an empty gun with no carried ammo cannot reload', async () => {
@@ -720,10 +809,10 @@ T('an empty gun with no carried ammo cannot reload', async () => {
     document.pointerLockElement = null;
     return { before, after };
   });
-  assert.deepEqual(out.before, { current: 0, reloading: false, hud: '0 / 0' }, 'empty mag, no carried ammo');
+  assert.deepEqual(out.before, { current: 0, reloading: false, hud: '0/0' }, 'empty mag, no carried ammo');
   assert.equal(out.after.reloading, false, 'with no ammo to load there is no reload');
   assert.equal(out.after.handsDown, false, 'hands stay up (nothing to reload)');
-  assert.equal(out.after.hud, '0 / 0');
+  assert.equal(out.after.hud, '0/0');
 });
 
 T('R reloads the weapon in hand using the weapon reload time', async () => {
@@ -870,6 +959,70 @@ T('mobs aggro, chase, attack and die to the player', async () => {
   assert.ok(out.health < out.startHealth, 'the mob must have hurt the player');
 });
 
+T('being hit flashes the red vignette + screen blur', async () => {
+  await loadGame();
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+
+  const flashed = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    const healthBefore = g.stats.health;
+    g._mobHitsPlayer(15, { x: 0, y: 1, z: 0 });
+    return {
+      damaged: g.stats.health < healthBefore,
+      hurtClass: document.body.classList.contains('hurt'),
+      vignette: getComputedStyle(document.querySelector('#hit-feedback')).animationName,
+      blur: getComputedStyle(document.querySelector('#game canvas')).animationName,
+    };
+  });
+  assert.equal(flashed.damaged, true, 'the hit must damage the player');
+  assert.equal(flashed.hurtClass, true, 'a hit must set the hurt class');
+  assert.equal(flashed.vignette, 'hit-vignette', 'the red vignette animation must play');
+  assert.equal(flashed.blur, 'hit-blur', 'the screen blur animation must play');
+
+  // The flash decays once the vignette animation completes.
+  await page.waitForFunction(() => !document.body.classList.contains('hurt'), null, { timeout: 3000 });
+  const cleared = await page.evaluate(() => ({
+    hurtClass: document.body.classList.contains('hurt'),
+    feedbackOpacity: Number(getComputedStyle(document.querySelector('#hit-feedback')).opacity),
+  }));
+  assert.equal(cleared.hurtClass, false, 'the hurt class must clear after the flash');
+  assert.equal(cleared.feedbackOpacity, 0, 'the vignette element returns to invisible');
+});
+
+T('hit feedback grows stronger as health drops', async () => {
+  await loadGame();
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    const vars = () => {
+      const s = document.body.style;
+      return {
+        int: parseFloat(s.getPropertyValue('--hit-int')),
+        blur: parseFloat(s.getPropertyValue('--hit-blur')),
+        stop: parseFloat(s.getPropertyValue('--hit-stop')),
+      };
+    };
+    g.stats.health = 100;
+    g._hitFlash();
+    const full = vars();
+    g.stats.health = 25;
+    g._hitFlash();
+    const low = vars();
+    g.stats.health = 0;
+    g._hitFlash();
+    const empty = vars();
+    return { full, low, empty };
+  });
+  assert.ok(out.full.int < out.low.int && out.low.int < out.empty.int,
+    `vignette intensity must rise as HP falls (${out.full.int} -> ${out.low.int} -> ${out.empty.int})`);
+  assert.ok(out.full.blur < out.low.blur && out.low.blur < out.empty.blur,
+    `blur must strengthen as HP falls (${out.full.blur} -> ${out.low.blur} -> ${out.empty.blur})`);
+  assert.ok(out.full.stop > out.low.stop && out.low.stop > out.empty.stop,
+    `vignette must cover more of the screen as HP falls (${out.full.stop}% -> ${out.low.stop}% -> ${out.empty.stop}%)`);
+});
+
 // --- mobile touch controls (emulated coarse-pointer device) ---
 
 let mobile;
@@ -1008,6 +1161,29 @@ T('mobile: attack holds to fire, slots select and crouch toggles', async () => {
   assert.equal(out.crouchLit, true, 'crouch button lights while active');
   assert.equal(out.crouchOff, true, 'crouch toggles off');
   assert.equal(out.pickupWired, true, 'pickup button is wired');
+});
+
+T('mobile: equipped items render icons in the mobile hotbar', async () => {
+  await loadMobileGame();
+  const out = await mobile.evaluate(() => {
+    const g = window.__voxelgame;
+    const btn = (i) => document.querySelector(`#slots-mobile .slot-btn[data-index="${i}"]`);
+    const before = { canvas: !!btn(0).querySelector('canvas'), text: btn(0).textContent.trim() };
+    g.stats.equip('primary', 'sword');
+    g._updateHud();
+    const after = {
+      canvas: !!btn(0).querySelector('canvas'),
+      active: btn(0).classList.contains('active'),
+      emptyCanvas: !!btn(1).querySelector('canvas'),
+      emptyText: btn(1).textContent.trim(),
+    };
+    return { before, after };
+  });
+  assert.deepEqual(out.before, { canvas: false, text: '1' }, 'empty mobile slot shows its number');
+  assert.equal(out.after.canvas, true, 'equipped item must show an icon in the mobile hotbar');
+  assert.equal(out.after.active, true, 'the selected mobile slot stays highlighted');
+  assert.equal(out.after.emptyCanvas, false, 'empty mobile slot stays icon-free');
+  assert.equal(out.after.emptyText, '2', 'empty mobile slot keeps its number');
 });
 
 

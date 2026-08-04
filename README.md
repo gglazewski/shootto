@@ -23,7 +23,7 @@ your objects (`voxelitem.items`) — is picked up by the game after a refresh.
 
 - **Main menu:** **New Game** loads the current editor world (falling back to
   the bundled world) and spawns you at the map's spawn point.
-- **Walk around:** `W A S D` move, `Shift` sprint, `C` crouch, mouse to look
+- **Walk around:** `W A S D` move, `C` crouch, mouse to look
   (pointer-locked). Same physics/collision as the editor's F5 test run.
 - **Player stats:** health (0–100) and armor (0–100), shown as bars in the HUD.
   Armor absorbs 60% of incoming damage first, the rest hits health.
@@ -107,7 +107,7 @@ build or the server) to simulate the authored world.
 | `E` | Open inventory — hover a block **or placeable object** and press `1`–`9`/`0` to assign it to that hotbar slot; click to select it directly |
 | `Items` (top-right) | Open the **item catalogue** — browse, place, edit, export or delete saved objects |
 | `F2` | Item editor — build a placeable object from colored micro voxels (see below) |
-| `F5` | Toggle **test run**: walk at the player spawn (`C` crouch, `Shift` sprint, `Space` idle) |
+| `F5` | Toggle **test run**: walk at the player spawn (`C` crouch, `Space` idle) |
 | `Ctrl`+`Z` / `Ctrl`+`Shift`+`Z` | Undo / Redo (last 10 actions) |
 | `Ctrl`+`S` | Save to browser storage |
 | `Esc` | Release the pointer |
@@ -192,8 +192,8 @@ independent colored meshes (not chunk geometry), and are saved in the map file.
 `F5` drops a walk controller at the player spawn (feet at the bottom of the
 spawn cell). Gravity and AABB-vs-voxel collision come from the pure engine
 module `src/engine/Physics.js`; the player walks flat on the camera-yaw plane,
-`C` crouches (only stands back up when there is headroom), `Shift` sprints,
-there is no jump, and small 0.5 m blocks are climbed automatically — as a
+`C` crouches (only stands back up when there is headroom), there is no jump or
+sprint, and small 0.5 m blocks are climbed automatically — as a
 smooth rise over `CONFIG.player.stepClimbTime` seconds rather than an instant
 snap. The player box is exactly one cell wide (`halfWidth: 0.25`) so it fits
 flush against walls and 0.5 m steps without clipping, which keeps auto-step

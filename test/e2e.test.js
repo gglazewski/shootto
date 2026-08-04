@@ -922,6 +922,39 @@ T('F3 items editor builds, sets grip/direction and saves an equippable item', as
   assert.ok(muzzle.muzzle && muzzle.muzzle.x >= 0 && muzzle.muzzle.x < 8, 'muzzle must be set inside the grid');
   assert.equal(muzzle.markerVisible, true, 'the muzzle marker must be visible');
 
+  // Ranged weapons default to the standard aim spread, editable in degrees.
+  const spread = await page.evaluate(() => {
+    const ee = window.__voxelgame.equipmentEditor;
+    const row = document.querySelector('#ep-spread-row');
+    return {
+      value: document.querySelector('#ep-spread').value,
+      visible: getComputedStyle(row).display !== 'none',
+      radians: ee.item.weapon.spread,
+    };
+  });
+  assert.equal(spread.visible, true, 'the spread field must show for ranged weapons');
+  assert.equal(spread.value, '1.15', 'a new ranged weapon defaults to 1.15° spread');
+  assert.ok(Math.abs(spread.radians - 0.02) < 1e-6, '1.15° must equal the 0.02 rad default');
+
+  // Editing the field writes radians back into the weapon profile.
+  const edited = await page.evaluate(() => {
+    const ee = window.__voxelgame.equipmentEditor;
+    const input = document.querySelector('#ep-spread');
+    input.value = '3';
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    return { radians: ee.item.weapon.spread };
+  });
+  assert.ok(Math.abs(edited.radians - (3 * Math.PI) / 180) < 1e-6, 'spread field must round-trip to radians');
+
+  // A melee weapon hides the field.
+  await page.evaluate(() => window.__voxelgame.equipmentEditor._setKind('melee'));
+  const meleeHidden = await page.evaluate(() =>
+    getComputedStyle(document.querySelector('#ep-spread-row')).display === 'none');
+  assert.equal(meleeHidden, true, 'the spread field must hide for melee weapons');
+
+  // Back to ranged for the save below (the tuned 3° spread survives).
+  await page.evaluate(() => window.__voxelgame.equipmentEditor._setKind('ranged'));
+
   // Give it a name + stats, then save. Reach can go up to sniper range (1000 m).
   const reachMax = await page.evaluate(() => document.querySelector('#ep-reach').max);
   assert.equal(reachMax, '1000', 'the reach input must allow up to 1000 m');
@@ -947,6 +980,7 @@ T('F3 items editor builds, sets grip/direction and saves an equippable item', as
   assert.deepEqual(saved.item.stats, { damage: 22, reach: 1000, cooldown: 0.4 });
   assert.deepEqual(saved.item.weapon.muzzle, muzzle.muzzle, 'muzzle must round-trip through save');
   assert.equal(saved.item.weapon.kind, 'ranged');
+  assert.ok(Math.abs(saved.item.weapon.spread - (3 * Math.PI) / 180) < 1e-6, 'spread must round-trip through save');
 
   // The catalogue lists it.
   await page.evaluate(() => window.__voxelgame.equipCatalogue.show());

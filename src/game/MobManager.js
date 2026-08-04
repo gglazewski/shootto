@@ -263,18 +263,20 @@ export class MobManager {
   /**
    * Closest alive mob the camera ray hits, or null.
    * @param {import('three').Camera} camera
+   * @param {import('three').Vector3} [dir]  aim direction; defaults to the
+   *   camera's forward so it can match a weapon's spread ray.
    * @returns {{mob: import('./Mob.js').Mob, dist: number}|null}
    */
-  aimHit(camera) {
+  aimHit(camera, dir) {
     const origin = camera.position;
-    const dir = camera.getWorldDirection(new this.THREE.Vector3());
+    const d = dir ?? camera.getWorldDirection(new this.THREE.Vector3());
     let best = null;
     let bestT = Infinity;
     for (const mob of this.mobs) {
       if (mob.dead) continue;
       const t = rayAabb(
         origin.x, origin.y, origin.z,
-        dir.x, dir.y, dir.z,
+        d.x, d.y, d.z,
         {
           minX: mob.pos.x - mob.halfWidth,
           maxX: mob.pos.x + mob.halfWidth,
