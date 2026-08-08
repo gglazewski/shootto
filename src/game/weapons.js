@@ -32,6 +32,7 @@ export const FISTS = Object.freeze({
   ammo: '',
   reload: 0, // fists cannot reload
   spread: 0, // radians of aim wobble (melee swings are exact)
+  pellets: 1, // projectiles per attack (shotguns fire several)
   knockback: 0, // melee only flinches, never stops or shoves a mob
 });
 
@@ -57,6 +58,8 @@ export function weaponFor(itemId) {
       reload: typeof w.reload === 'number' ? Math.max(0.2, Math.min(10, w.reload)) : 1.4,
       // Ranged weapons wobble by default; melee stays exact.
       spread: w.spread ?? (w.kind === 'ranged' ? RANGED_SPREAD : 0),
+      // Projectiles per shot — stats.damage applies per pellet.
+      pellets: Math.max(1, Math.round(w.pellets ?? 1)),
       // Only guns stop/shove mobs — derived from damage so stopping power
       // grows with the punch.
       knockback: w.kind === 'ranged' ? knockbackFor(item.stats.damage) : 0,
@@ -77,6 +80,7 @@ export function weaponFor(itemId) {
     ammo: '',
     reload: 1.4,
     spread: 0,
+    pellets: 1,
     knockback: 0,
   };
 }

@@ -237,6 +237,11 @@
     #ep-reload-row.hidden-row { display: none; }
     #ep-spread-row { display: flex; }
     #ep-spread-row.hidden-row { display: none; }
+    #ep-pellets-row { display: flex; }
+    #ep-pellets-row.hidden-row { display: none; }
+    #ep-total-row { display: flex; }
+    #ep-total-row.hidden-row { display: none; }
+    #ep-total-dmg { color: #9fc76f; }
     #ep-ammo, #ep-ammo-type {
       width: 118px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
       color: #eee; padding: 3px 6px;
@@ -297,27 +302,42 @@
     #item-catalogue.open, #equip-catalogue.open { display: flex; }
     #item-catalogue .panel, #equip-catalogue .panel {
       background: rgba(14,17,22,0.97); border: 1px solid #333; border-radius: 12px;
-      padding: 20px 24px; width: min(92vw, 760px); max-height: 84vh; overflow-y: auto;
+      padding: 20px 24px; width: min(92vw, 760px); max-height: 84vh;
       cursor: default; display: flex; flex-direction: column;
     }
-    #item-catalogue h2, #equip-catalogue h2 { margin-bottom: 12px; font-size: 17px; }
-    .cat-bar { display: flex; gap: 8px; margin-bottom: 12px; }
+    #item-catalogue h2, #equip-catalogue h2 {
+      margin-bottom: 12px; font-size: 17px;
+      display: flex; align-items: baseline; gap: 8px;
+    }
+    .cat-count { font-size: 12px; font-weight: normal; color: #9aa; }
+    .cat-bar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
+    .cat-search {
+      flex: 1; min-width: 140px; padding: 5px 10px; border: 1px solid #3a3f47;
+      border-radius: 6px; background: rgba(20,24,30,0.9); color: #e8e8e8;
+      font-size: 12px; outline: none;
+    }
+    .cat-search:focus { border-color: #6c9; }
+    .cat-chip.active { border-color: #6c9; color: #cfe; background: rgba(30,60,45,0.5); }
     .cat-btn {
       padding: 5px 10px; border: 1px solid #3a3f47; border-radius: 6px;
       background: rgba(20,24,30,0.9); color: #e8e8e8; cursor: pointer; font-size: 12px;
     }
     .cat-btn:hover { background: rgba(40,46,56,0.95); }
     .cat-btn.danger:hover { background: rgba(90,30,30,0.9); border-color: #a44; }
+    .cat-btn.danger.armed { background: rgba(140,40,40,0.95); border-color: #d66; color: #fff; }
     .cat-grid {
       display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
-      gap: 10px;
+      gap: 10px; overflow-y: auto; min-height: 0; padding: 2px;
+      align-content: start;
     }
     .cat-item {
       border: 1px solid #333; border-radius: 8px; background: #1a1c22;
       padding: 8px; cursor: pointer; display: flex; flex-direction: column;
-      align-items: center; gap: 4px;
+      align-items: center; gap: 4px; outline: none;
+      transition: border-color 0.12s, background 0.12s;
     }
-    .cat-item:hover { border-color: #6c9; }
+    .cat-item:hover, .cat-item:focus-visible { border-color: #6c9; background: #1e232b; }
+    .cat-item:focus-visible { box-shadow: 0 0 0 2px rgba(102,204,153,0.35); }
     .cat-item canvas { image-rendering: pixelated; }
     .cat-name { font-size: 12px; color: #eee; text-align: center; max-width: 100%;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -362,7 +382,8 @@
       <kbd>F2</kbd> item editor — build a placeable object from colored micro voxels,<br />
       then place it from the inventory (<kbd>E</kbd>, "Placeable Objects" section)<br />
       <kbd>F3</kbd> items editor — build an equippable item (e.g. a club): paint the shape,<br />
-      <kbd>G</kbd> set the grip voxel, <kbd>R</kbd> aim the direction arrow, set damage/reach/cooldown<br />
+      <kbd>G</kbd> set the right-hand grip voxel (<kbd>H</kbd> the left-hand grip on 2-handed weapons),
+      <kbd>R</kbd> aim the direction arrow, set damage/reach/cooldown<br />
       <kbd>F5</kbd> test run — walk at the spawn (<kbd>C</kbd> crouch) &nbsp;·&nbsp;
       <kbd>F1</kbd> help &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>S</kbd> save to browser &nbsp;·&nbsp;
       <kbd>Esc</kbd> release pointer<br />
@@ -436,7 +457,8 @@
         <button id="ep-tool-erase" title="Erase voxels — Shift+drag erases a stroke (E)">Erase</button>
         <button id="ep-tool-box" title="Click two corners to fill a cuboid, RMB erases it (V)">Box</button>
         <button id="ep-tool-fill" title="Recolor the connected region under the cursor (F)">Fill</button>
-        <button id="ep-tool-grip" title="Click a cell to set where the hand grips the item (G)">Grip</button>
+        <button id="ep-tool-grip" title="Click a cell to set where the right hand grips the item (G)">Grip R</button>
+        <button id="ep-tool-grip2" title="Click a cell to set where the left hand grips a two-handed item (H)">Grip L</button>
         <button id="ep-tool-muzzle" title="Click a cell to set the barrel end of a ranged weapon (M)">Muzzle</button>
         <button id="ep-mirror" title="Mirror painting across the volume centre (X)">Mirror: off (X)</button>
       </div>
@@ -451,8 +473,12 @@
       </div>
       <div id="ep-weapon-fields">
         <div class="ie-row">
-          <span class="label" title="Voxel cell where the hand grips the item">Grip</span>
+          <span class="label" title="Voxel cell where the right hand grips the item">Grip R</span>
           <span id="ep-grip-label">unset</span>
+        </div>
+        <div class="ie-row">
+          <span class="label" title="Voxel cell where the left hand grips a two-handed weapon">Grip L</span>
+          <span id="ep-grip2-label">unset</span>
         </div>
         <div class="ie-row">
           <span class="label" title="Forward direction of the item, shown as the cyan arrow">Direction</span>
@@ -472,7 +498,7 @@
           <span class="label">Hands</span>
           <span id="ep-hands">
             <button id="ep-hands-one" title="Held in one hand">1-hand</button>
-            <button id="ep-hands-two" title="Held in both hands (pose planned)">2-hand</button>
+            <button id="ep-hands-two" title="Held in both hands — set the left-hand grip with the Grip L tool (H)">2-hand</button>
           </span>
         </div>
         <div class="ie-row" id="ep-magazine-row">
@@ -492,6 +518,14 @@
         <div class="ie-row" id="ep-spread-row">
           <span class="label" title="Aim spread in degrees — how far shots can drift from the crosshair. 0 = perfectly accurate, 1.1° is the default pistol wobble">Spread</span>
           <input id="ep-spread" type="number" min="0" max="11.5" step="0.1" value="0" />
+        </div>
+        <div class="ie-row" id="ep-pellets-row">
+          <span class="label" title="Projectiles per shot — a pistol fires 1, a shotgun several. Damage applies per pellet">Pellets</span>
+          <input id="ep-pellets" type="number" min="1" max="20" step="1" value="1" />
+        </div>
+        <div class="ie-row" id="ep-total-row">
+          <span class="label" title="Total damage when every pellet hits the same target">Max hit</span>
+          <span id="ep-total-dmg">10</span>
         </div>
         <div class="ie-row">
           <span class="label">Attack</span>

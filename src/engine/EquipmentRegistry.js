@@ -7,12 +7,13 @@
 // gameplay-relevant editor fields:
 //   - kind:  what the item is — 'weapon' (held and fought with) or 'ammo'
 //            (a resource type a weapon consumes).
-//   - grip:  the micro-voxel cell where the player's hand grips the item,
+//   - grip:  the micro-voxel cell where the player's right hand grips the
+//            item; grip2 is the left-hand cell for two-handed weapons,
 //   - yaw:   the item's forward/direction angle (degrees about the vertical
 //            axis; the F3 editor shows this as an arrow, default +Z).
 //   - stats: damage / reach (m) / cooldown (s) used when attacking (weapons).
 //   - weapon: a composable attack profile (kind / hands / muzzle / anim /
-//            recoil / spread) — see normalizeWeapon (weapons).
+//            recoil / spread / pellets) — see normalizeWeapon (weapons).
 //   - ammo:  the ammo type a pack grants + the amount per pickup (ammo kind).
 //
 // Separate from the placeable-object ItemRegistry: objects decorate the world,
@@ -46,6 +47,7 @@ export const DEFAULT_WEAPON = Object.freeze({
   ammo: '', // ammo type id the gun consumes ('' = none / melee)
   reload: 1.4, // seconds a magazine reload takes (R in the game)
   spread: 0, // radians of random aim wobble (ranged weapons get their own default)
+  pellets: 1, // projectiles per shot (shotguns >1); stats.damage applies per pellet
 });
 
 /** Default aim spread (radians) for ranged weapons when the profile omits it. */
@@ -82,7 +84,8 @@ const REGISTRY = new Map();
  * @property {string} name         human readable name
  * @property {'weapon'|'ammo'} kind what the item is (held weapon or ammo type)
  * @property {{x:number,y:number,z:number,color:[number,number,number]}[]} microVoxels
- * @property {{x:number,y:number,z:number}|null} grip  hand grip cell
+ * @property {{x:number,y:number,z:number}|null} grip  right-hand grip cell
+ * @property {{x:number,y:number,z:number}|null} grip2 left-hand grip cell (two-handed weapons)
  * @property {number} yaw          item forward angle in degrees (0 = +Z)
  * @property {{damage:number,reach:number,cooldown:number}} stats  (weapon)
  * @property {object} weapon       composable attack profile (see normalizeWeapon)
@@ -98,6 +101,7 @@ export function emptyEquipItem(name = 'New Item') {
     grid: [...DEFAULT_EQUIP_GRID],
     microVoxels: [],
     grip: null,
+    grip2: null,
     yaw: 0,
     stats: { ...DEFAULT_EQUIP_STATS },
     weapon: { ...DEFAULT_WEAPON },
@@ -156,6 +160,7 @@ export function normalizeWeapon(w = {}) {
     reload: clampNum(w.reload, 0.2, 10, DEFAULT_WEAPON.reload),
     // Ranged weapons wobble by default; melee swings stay exact.
     spread: clampNum(w.spread, 0, 0.2, kind === 'ranged' ? RANGED_SPREAD : 0),
+    pellets: Math.round(clampNum(w.pellets, 1, 20, DEFAULT_WEAPON.pellets)),
   };
 }
 
@@ -233,6 +238,7 @@ export function serializeEquipItem(item) {
       grid: normalizeGrid(item.grid),
       microVoxels: item.microVoxels,
       grip: item.grip ?? null,
+      grip2: item.grip2 ?? null,
       yaw: item.yaw ?? 0,
       stats: normalizeStats(item.stats),
       weapon: normalizeWeapon(item.weapon),
@@ -255,12 +261,13 @@ function parseEquipDef(entry) {
         Array.isArray(v.color) && v.color.length >= 3,
     )
     .map((v) => ({ x: v.x, y: v.y, z: v.z, color: [v.color[0], v.color[1], v.color[2]] }));
-  const g = entry.grip;
   const clampCell = (v, axis) => Math.max(0, Math.min(grid[axis] - 1, v));
-  const grip =
+  const parseCell = (g) =>
     g && Number.isInteger(g.x) && Number.isInteger(g.y) && Number.isInteger(g.z)
       ? { x: clampCell(g.x, 0), y: clampCell(g.y, 1), z: clampCell(g.z, 2) }
       : null;
+  const grip = parseCell(entry.grip);
+  const grip2 = parseCell(entry.grip2);
   return {
     id: entry.id,
     name: typeof entry.name === 'string' && entry.name ? entry.name : entry.id,
@@ -268,6 +275,7 @@ function parseEquipDef(entry) {
     grid,
     microVoxels,
     grip,
+    grip2,
     yaw: clampNum(entry.yaw, 0, 360, 0),
     stats: normalizeStats(entry.stats),
     weapon: normalizeWeapon(entry.weapon),

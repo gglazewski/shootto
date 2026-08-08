@@ -12,8 +12,10 @@
 //            size). Presets cover the common silhouettes (sidearm, long gun,
 //            spear, axe); steppers allow any 4–32 cells per axis. Resizing
 //            keeps the sculpture centred and refuses when it wouldn't fit.
-//   - grip:  a highlighted voxel cell marking where the player's hand grips
-//            the item — the Grip tool (G); a cyan "handle" cube shows it.
+//   - grip:  a highlighted voxel cell marking where the player's right hand
+//            grips the item — the Grip R tool (G); a cyan "handle" cube shows
+//            it. grip2 is the left-hand cell of a two-handed weapon — the
+//            Grip L tool (H); a magenta cube shows it.
 //   - muzzle: the barrel-end cell of a ranged weapon — the Muzzle tool (M).
 //   - yaw:   the item's forward direction, drawn as a cyan arrow from the grip
 //            cell. R / "Direction" rotates it 90° at a time. Default +Z.
@@ -21,7 +23,7 @@
 //            uses when the item is equipped.
 //
 // Extra interactions on top of the shared core:
-//   G  grip tool  ·  M  muzzle tool  ·  R  rotate direction
+//   G  right-grip tool  ·  H  left-grip tool  ·  M  muzzle tool  ·  R  rotate direction
 //   F3 / Esc  back to the world editor
 
 import { microCellSizeFor, slugifyName } from '../../engine/ItemTypes.js';
@@ -52,8 +54,10 @@ const PREVIEW_SIZE = 'small';
 
 /** Grip marker + direction-arrow colour (distinct from the red/green/blue axes). */
 const HANDLE_COLOR = 0x33eeff;
+const HANDLE2_COLOR = 0xff66dd;
 const MUZZLE_COLOR = 0xffcc44;
 const GRIP_GHOST_COLOR = 0x33eeff;
+const GRIP2_GHOST_COLOR = 0xff66dd;
 const MUZZLE_GHOST_COLOR = 0xffcc44;
 const OK_GHOST_COLOR = 0x33ff66;
 const BLOCKED_GHOST_COLOR = 0xff5533;
@@ -93,13 +97,18 @@ export class EquipmentEditor extends MicroVoxelEditor {
 
   /** Back-compat: grip/muzzle "modes" are now the matching tool being active. */
   get gripMode() { return this.tool === 'grip'; }
+  get grip2Mode() { return this.tool === 'grip2'; }
   get muzzleMode() { return this.tool === 'muzzle'; }
 
-  _toolIds() { return ['grip', 'muzzle']; }
+  _toolIds() { return ['grip', 'grip2', 'muzzle']; }
 
   _applyTool(tool) {
     if (tool === 'grip') {
       this._setGrip();
+      return true;
+    }
+    if (tool === 'grip2') {
+      this._setGrip2();
       return true;
     }
     if (tool === 'muzzle') {
@@ -120,6 +129,15 @@ export class EquipmentEditor extends MicroVoxelEditor {
     );
     this.gripMarker.visible = false;
     this.group.add(this.gripMarker);
+
+    // Left-hand grip handle: the second grip cell of a two-handed weapon,
+    // shown in magenta so both hands read at a glance.
+    this.grip2Marker = new T.Mesh(
+      new T.BoxGeometry(1, 1, 1),
+      new T.MeshBasicMaterial({ color: HANDLE2_COLOR, transparent: true, opacity: 0.55, depthWrite: false }),
+    );
+    this.grip2Marker.visible = false;
+    this.group.add(this.grip2Marker);
 
     // Muzzle marker: the barrel-end voxel (where a ranged weapon shoots from),
     // shown in yellow — like the grip handle but for the muzzle.
@@ -161,6 +179,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
     return {
       grid: this.item.grid,
       grip: this.item.grip,
+      grip2: this.item.grip2,
       yaw: this.item.yaw,
       kind: this.item.kind,
       stats: this.item.stats,
@@ -172,6 +191,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
   _restoreExtra(s) {
     this.item.grid = s.grid ?? [...DEFAULT_EQUIP_GRID];
     this.item.grip = s.grip;
+    this.item.grip2 = s.grip2 ?? null;
     this.item.yaw = s.yaw;
     this.item.kind = s.kind ?? 'weapon';
     this.item.stats = s.stats;
@@ -184,6 +204,10 @@ export class EquipmentEditor extends MicroVoxelEditor {
     if (this.item.kind !== 'ammo') {
       if (code === 'KeyG') {
         this.setTool('grip');
+        return true;
+      }
+      if (code === 'KeyH') {
+        this.setTool('grip2');
         return true;
       }
       if (code === 'KeyM') {
@@ -200,6 +224,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
 
   _ghostHex(occupied) {
     if (this.gripMode) return GRIP_GHOST_COLOR;
+    if (this.grip2Mode) return GRIP2_GHOST_COLOR;
     if (this.muzzleMode) return MUZZLE_GHOST_COLOR;
     return super._ghostHex(occupied);
   }
@@ -217,6 +242,13 @@ export class EquipmentEditor extends MicroVoxelEditor {
         x: clamp(this.item.grip.x + d[0], 0),
         y: clamp(this.item.grip.y + d[1], 1),
         z: clamp(this.item.grip.z + d[2], 2),
+      };
+    }
+    if (this.item.grip2) {
+      this.item.grip2 = {
+        x: clamp(this.item.grip2.x + d[0], 0),
+        y: clamp(this.item.grip2.y + d[1], 1),
+        z: clamp(this.item.grip2.z + d[2], 2),
       };
     }
     if (this.item.weapon?.muzzle) {
@@ -269,7 +301,20 @@ export class EquipmentEditor extends MicroVoxelEditor {
     this._pushSnapshot();
     this.item.grip = { x: cell[0], y: cell[1], z: cell[2] };
     this._rebuild();
-    Notice.info(`Grip set at (${cell[0]}, ${cell[1]}, ${cell[2]})`, 900);
+    Notice.info(`Right-hand grip set at (${cell[0]}, ${cell[1]}, ${cell[2]})`, 900);
+  }
+
+  /** Set the left-hand grip (two-handed weapons) to the hovered cell. */
+  _setGrip2() {
+    const cell = this._ghostCell;
+    if (!cell) {
+      Notice.warn('Click a voxel to set the left-hand grip');
+      return;
+    }
+    this._pushSnapshot();
+    this.item.grip2 = { x: cell[0], y: cell[1], z: cell[2] };
+    this._rebuild();
+    Notice.info(`Left-hand grip set at (${cell[0]}, ${cell[1]}, ${cell[2]})`, 900);
   }
 
   _toggleMuzzleMode() { this.setTool('muzzle'); }
@@ -310,6 +355,16 @@ export class EquipmentEditor extends MicroVoxelEditor {
       this.gripMarker.position.set(wx, wy, wz);
     } else {
       this.gripMarker.visible = false;
+    }
+
+    const g2 = held && this.item.grip2;
+    if (g2) {
+      const [wx, wy, wz] = this._cellCenterToWorld([g2.x, g2.y, g2.z]);
+      this.grip2Marker.visible = true;
+      this.grip2Marker.scale.set(c * 1.25, c * 1.25, c * 1.25);
+      this.grip2Marker.position.set(wx, wy, wz);
+    } else {
+      this.grip2Marker.visible = false;
     }
 
     const muzzle = held && this.item.weapon?.muzzle;
@@ -440,6 +495,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
       weaponFields: $('#ep-weapon-fields'),
       ammoFields: $('#ep-ammo-fields'),
       gripLabel: $('#ep-grip-label'),
+      grip2Label: $('#ep-grip2-label'),
       yawLabel: $('#ep-yaw-label'),
       damage: $('#ep-damage'),
       reach: $('#ep-reach'),
@@ -463,6 +519,10 @@ export class EquipmentEditor extends MicroVoxelEditor {
       reloadRow: $('#ep-reload-row'),
       spread: $('#ep-spread'),
       spreadRow: $('#ep-spread-row'),
+      pellets: $('#ep-pellets'),
+      pelletsRow: $('#ep-pellets-row'),
+      totalRow: $('#ep-total-row'),
+      totalDmg: $('#ep-total-dmg'),
       ammoType: $('#ep-ammo-type'),
       grant: $('#ep-grant'),
     });
@@ -537,6 +597,12 @@ export class EquipmentEditor extends MicroVoxelEditor {
       this._renderUI();
       Notice.info(`Aim spread: ${deg.toFixed(1)}°`, 700);
     });
+    ui.pellets.addEventListener('change', () => {
+      this._pushSnapshot();
+      const v = Number(ui.pellets.value);
+      this.item.weapon.pellets = Number.isFinite(v) ? Math.max(1, Math.min(20, Math.round(v))) : 1;
+      this._renderUI();
+    });
   }
 
   _renderExtraUI() {
@@ -573,6 +639,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
     }
 
     ui.gripLabel.textContent = this.item.grip ? `${this.item.grip.x},${this.item.grip.y},${this.item.grip.z}` : 'unset';
+    if (ui.grip2Label) ui.grip2Label.textContent = this.item.grip2 ? `${this.item.grip2.x},${this.item.grip2.y},${this.item.grip2.z}` : 'unset';
     ui.yawLabel.textContent = yawLabel(this.item.yaw);
     ui.damage.value = String(this.item.stats.damage);
     ui.reach.value = String(this.item.stats.reach);
@@ -583,6 +650,10 @@ export class EquipmentEditor extends MicroVoxelEditor {
     ui.handsTwo.classList.toggle('active', w.hands === 'two');
     // Grip/muzzle tools only exist for held weapons; muzzle dims for melee.
     if (ui.toolBtns?.grip) ui.toolBtns.grip.disabled = isAmmo;
+    if (ui.toolBtns?.grip2) {
+      ui.toolBtns.grip2.disabled = isAmmo;
+      ui.toolBtns.grip2.style.opacity = !isAmmo && w.hands === 'two' ? '' : '0.45';
+    }
     if (ui.toolBtns?.muzzle) {
       ui.toolBtns.muzzle.disabled = isAmmo;
       ui.toolBtns.muzzle.style.opacity = !isAmmo && w.kind === 'ranged' ? '' : '0.45';
@@ -594,6 +665,12 @@ export class EquipmentEditor extends MicroVoxelEditor {
     ui.reload.value = String(w.reload ?? 1.4);
     ui.spreadRow.classList.toggle('hidden-row', w.kind !== 'ranged');
     ui.spread.value = String(Math.round(((w.spread ?? 0) * 180) / Math.PI * 100) / 100);
+    // Pellets per shot + the damage a full hit deals (damage is per pellet).
+    const pellets = Math.max(1, Math.round(w.pellets ?? 1));
+    ui.pelletsRow.classList.toggle('hidden-row', w.kind !== 'ranged');
+    ui.pellets.value = String(pellets);
+    ui.totalRow.classList.toggle('hidden-row', w.kind !== 'ranged' || pellets <= 1);
+    ui.totalDmg.textContent = `${this.item.stats.damage * pellets} (${pellets} × ${this.item.stats.damage})`;
 
     // The weapon's consumed ammo type (None + every built-in/custom type).
     syncSelect(ui.ammo, choices, this.doc);

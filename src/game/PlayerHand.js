@@ -52,6 +52,14 @@ function punchExtension(u) {
   return 1.0 * (1 - easeOutCubic((u - STRIKE) / (1 - STRIKE)));
 }
 
+/** A half-sine pulse centred on `c` with half-width `w` on the normalized
+ *  reload clock — 0 outside, peaking at 1. Shapes the reload's distinct beats
+ *  (mag out, mag in, rack) so they read even on fast reloads. */
+function reloadPulse(u, c, w) {
+  const t = (u - c + w) / (2 * w);
+  return t > 0 && t < 1 ? Math.sin(t * Math.PI) : 0;
+}
+
 export class PlayerHand {
   /**
    * @param {object} deps
@@ -92,7 +100,10 @@ export class PlayerHand {
     this._heldGroup = null;
     this._heldLightAttr = null;
     this._heldMuzzleLocal = null;
-    this._reload = null; // { elapsed, duration } — hands-down reload dip
+    this._heldGrip2Local = null; // left-hand grip cell (two-handed weapons)
+    this._grip2Vec = new THREE.Vector3(); // scratch for the left-hand attach
+    this._palmVec = new THREE.Vector3();
+    this._reload = null; // { elapsed, duration } — mag-swap reload animation
     this._equip = null; // { elapsed, duration } — hands-dip pickup animation
 
     this._next = 'right'; // which hand swings next (alternates)
@@ -101,8 +112,9 @@ export class PlayerHand {
   /** Render an equipped item in the right hand (null hides it). The item's
    *  grip voxel is anchored to the palm; its forward direction (editor yaw)
    *  points toward the view. No-op when the item id is unchanged. One-handed
-   *  weapons keep the left hand lowered (hidden); fists and two-handed weapons
-   *  show both hands. */
+   *  weapons keep the left hand lowered (hidden); fists show both hands, and
+   *  two-handed weapons wrap the left hand onto the item's second grip voxel
+   *  (grip2) when the editor set one. */
   setHeldItem(def) {
     const id = def?.id ?? null;
     if (id === this._heldId) return;
@@ -116,6 +128,7 @@ export class PlayerHand {
       this._heldGroup = null;
       this._heldLightAttr = null;
       this._heldMuzzleLocal = null;
+      this._heldGrip2Local = null;
       this._heldFlash = null;
       this._flashLight = null;
       this._flashStarMat = null;
@@ -174,6 +187,14 @@ export class PlayerHand {
     const muzzle = def.weapon?.muzzle;
     this._heldMuzzleLocal = muzzle
       ? new T.Vector3((muzzle.x - g.x) * c, (muzzle.y - g.y) * c, (muzzle.z - g.z) * c)
+      : null;
+
+    // Second grip: the left-hand grip voxel's offset from the (right-hand)
+    // grip, in the held group's local space. The left hand is attached to this
+    // point every frame while a two-handed weapon is held.
+    const g2 = def.weapon?.hands === 'two' ? def.grip2 : null;
+    this._heldGrip2Local = g2
+      ? new T.Vector3((g2.x - g.x) * c, (g2.y - g.y) * c, (g2.z - g.z) * c)
       : null;
 
     this._heldGroup = group;
@@ -368,6 +389,7 @@ export class PlayerHand {
     const d = this._probeForward ? this._probeForward(PROBE_MAX) : Infinity;
     this._updateHand(this.right, +1, dt, d);
     this._updateHand(this.left, -1, dt, d);
+    this._attachLeftHand();
     this._refreshLight(this.right);
     this._refreshLight(this.left);
     this._updateFlash(dt);
@@ -375,27 +397,73 @@ export class PlayerHand {
     this._updateEquip(dt);
   }
 
-  /** Start a reload: both hands dip down, hold, then come back up. The caller
-   *  refills ammo when it finishes (GameApp times it against the duration). */
-  reload(duration) {
-    this._reload = { elapsed: 0, duration: Math.max(0.1, duration) };
+  /** Wrap the left hand onto a two-handed weapon's second grip voxel: place
+   *  the left palm on the grip2 cell, following the right hand (and thus the
+   *  weapon) through swings, recoil and wall retraction. The transform chain
+   *  is composed from local matrices (held group → right pivot → right group),
+   *  staying in the shared-root space both hands live in. */
+  _attachLeftHand() {
+    if (!this._heldGroup || !this._heldGrip2Local) return;
+    const v = this._grip2Vec.copy(this._heldGrip2Local);
+    this._heldGroup.updateMatrix();
+    this.right.pivot.updateMatrix();
+    this.right.group.updateMatrix();
+    v.applyMatrix4(this._heldGroup.matrix)
+      .applyMatrix4(this.right.pivot.matrix)
+      .applyMatrix4(this.right.group.matrix);
+    // The palm sits at pivot-local (0, 0.06, 0) with the pivot at
+    // (0, -0.05, 0.01): offset the group so the palm lands on the grip cell.
+    const l = this.left.group;
+    this.left.pivot.rotation.set(0, 0, 0);
+    const palm = this._palmVec.set(0, 0.01, 0.01).applyEuler(l.rotation);
+    l.position.set(v.x - palm.x, v.y - palm.y, v.z - palm.z);
   }
 
-  /** Hands-down dip for the reload: fast drop, hold, fast rise. */
-  _reloadDip(u) {
-    if (u < 0.15) return -0.16 * (u / 0.15);
-    if (u < 0.85) return -0.16;
-    return -0.16 * (1 - (u - 0.85) / 0.15);
+  /** Start a reload: the weapon swings down and rolls toward the player, the
+   *  mag is tugged free, the fresh one slaps home, the action racks, and the
+   *  weapon swings back up. The caller refills ammo when it finishes (GameApp
+   *  times it against the duration). */
+  reload(duration) {
+    this._reload = { elapsed: 0, duration: Math.max(0.1, duration) };
+    this._equip = null; // the reload owns the hand root until it finishes
+  }
+
+  /** Pose of the hand root at normalized reload time u ∈ [0,1]. The base is an
+   *  eased swing down-and-inward (pitching about the camera, so the hands drop
+   *  toward the bottom of the view with the weapon tilted at the player); three
+   *  pulses ride on top of the hold: the mag tugged out (sharp extra dip + roll),
+   *  the fresh mag seated (upward slap with a muzzle bounce), and the action
+   *  racked (a pull toward the player with a muzzle flick) — then the rise. */
+  _reloadPose(u) {
+    // 0 at rest -> 1 fully lowered; drop fast, hold through the beats, rise.
+    let lower;
+    if (u < 0.16) lower = easeOutCubic(u / 0.16);
+    else if (u < 0.84) lower = 1;
+    else lower = 1 - easeOutCubic((u - 0.84) / 0.16);
+    const eject = reloadPulse(u, 0.34, 0.10);
+    const seat = reloadPulse(u, 0.60, 0.09);
+    const rack = reloadPulse(u, 0.78, 0.07);
+    return {
+      y: 0.10 * lower - 0.055 * eject + 0.04 * seat,
+      z: 0.05 * lower + 0.05 * rack,
+      rx: -0.30 * lower + 0.10 * seat + 0.12 * rack,
+      rz: 0.30 * lower + 0.12 * eject,
+    };
   }
 
   _updateReload(dt) {
     if (!this._reload) return;
     this._reload.elapsed += dt;
     const u = Math.min(1, this._reload.elapsed / this._reload.duration);
-    this.group.position.y = this._reloadDip(u);
+    const pose = this._reloadPose(u);
+    this.group.position.y = pose.y;
+    this.group.position.z = pose.z;
+    this.group.rotation.x = pose.rx;
+    this.group.rotation.z = pose.rz;
     if (u >= 1) {
       this._reload = null;
-      this.group.position.y = 0;
+      this.group.position.set(0, 0, 0);
+      this.group.rotation.set(0, 0, 0);
     }
   }
 

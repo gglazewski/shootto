@@ -6,13 +6,14 @@
 // files. Deleting removes the item from the registry everywhere.
 //
 // Save is handled by the App (register + persist); Export is an explicit,
-// separate action that writes the file.
+// separate action that writes the file. The panel chrome (search, count,
+// keyboard, delete confirm, kind chips) lives in CatalogueModal.
 
 import { listEquipItems } from '../../engine/EquipmentRegistry.js';
 import { ammoName } from '../../engine/AmmoTypes.js';
-import { buildItemSwatch } from './itemSwatch.js';
+import { CatalogueModal } from './CatalogueModal.js';
 
-export class EquipCatalogue {
+export class EquipCatalogue extends CatalogueModal {
   /**
    * @param {object} deps
    * @param {Document} [deps.doc]
@@ -20,140 +21,40 @@ export class EquipCatalogue {
    * @param {object} [deps.callbacks]
    *   { onCard(id), onEdit(id), onExport(id), onDelete(id), onImport(text) }
    */
-  constructor({ doc = document, container, callbacks = {} }) {
-    this.doc = doc;
-    this.container = container;
-    this.cb = callbacks;
-    this.onClose = null;
-
-    const panel = this.container.querySelector('.panel');
-    panel.innerHTML = '';
-
-    const title = doc.createElement('h2');
-    title.textContent = 'Items Catalogue';
-    panel.appendChild(title);
-
-    const bar = doc.createElement('div');
-    bar.className = 'cat-bar';
-    const importBtn = doc.createElement('button');
-    importBtn.className = 'cat-btn';
-    importBtn.textContent = 'Import item file';
-    importBtn.addEventListener('click', () => this._file.click());
-    bar.appendChild(importBtn);
-    this._file = doc.createElement('input');
-    this._file.type = 'file';
-    this._file.accept = '.json,application/json';
-    this._file.style.display = 'none';
-    this._file.addEventListener('change', (e) => {
-      const f = e.target.files?.[0];
-      if (!f) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        this.cb.onImport?.(String(reader.result));
-        e.target.value = '';
-      };
-      reader.readAsText(f);
+  constructor({ doc = document, container, callbacks = {} } = {}) {
+    super({
+      doc,
+      container,
+      callbacks,
+      title: 'Equipment Catalogue',
+      emptyText: 'No items yet — press F3 to build an equippable item',
+      cardHint: 'click to edit',
     });
-    bar.appendChild(this._file);
-    panel.appendChild(bar);
-
-    this.grid = doc.createElement('div');
-    this.grid.className = 'cat-grid';
-    panel.appendChild(this.grid);
-
-    this.empty = doc.createElement('div');
-    this.empty.className = 'inv-hint';
-    this.empty.textContent = 'No items yet — press F3 to build an equippable item';
-    panel.appendChild(this.empty);
-
-    const close = doc.createElement('button');
-    close.className = 'cat-btn cat-close';
-    close.textContent = 'Close';
-    close.addEventListener('click', () => this.hide());
-    panel.appendChild(close);
-
-    this.container.addEventListener('click', (e) => {
-      if (e.target === this.container) this.hide();
-    });
-
-    this.hide();
   }
 
-  /** Re-render from the current registry (call after save/import/delete). */
-  refresh() {
-    this._render();
+  _filters() {
+    return [
+      { id: 'all', label: 'All', test: () => true },
+      { id: 'weapon', label: 'Weapons', test: (i) => i.kind !== 'ammo' },
+      { id: 'ammo', label: 'Ammo', test: (i) => i.kind === 'ammo' },
+    ];
   }
 
-  show() {
-    this._render();
-    this.container.classList.add('open');
+  _list() {
+    return listEquipItems();
   }
 
-  hide() {
-    const wasOpen = this.isOpen;
-    this.container.classList.remove('open');
-    if (wasOpen && this.onClose) this.onClose();
-  }
-
-  toggle() {
-    if (this.isOpen) this.hide();
-    else this.show();
-  }
-
-  get isOpen() {
-    return this.container.classList.contains('open');
-  }
-
-  _render() {
-    this.grid.innerHTML = '';
-    const items = listEquipItems();
-    this.empty.style.display = items.length ? 'none' : '';
-    for (const item of items) this.grid.appendChild(this._card(item));
-  }
-
-  _card(item) {
-    const doc = this.doc;
-    const card = doc.createElement('div');
-    card.className = 'cat-item';
-    card.title = `${item.name} — click to edit`;
-    card.appendChild(buildItemSwatch(item, 56));
-
-    const name = doc.createElement('div');
-    name.className = 'cat-name';
-    name.textContent = item.name;
-    card.appendChild(name);
-
-    const meta = doc.createElement('div');
-    meta.className = 'cat-meta';
+  _meta(item) {
     if (item.kind === 'ammo') {
       const a = item.ammo ?? {};
-      meta.textContent = `ammo · ${a.type ? ammoName(a.type) : 'no type'} ×${a.amount ?? 0} · ${item.microVoxels.length} voxels`;
-    } else {
-      const s = item.stats ?? {};
-      const bits = [`${s.damage ?? 10} dmg`, `${s.reach ?? 2} m`, `${s.cooldown ?? 0.35} s`, `${item.microVoxels.length} voxels`];
-      if (item.grip) bits.push('grip');
-      meta.textContent = bits.join(' · ');
+      return `ammo · ${a.type ? ammoName(a.type) : 'no type'} ×${a.amount ?? 0} · ${item.microVoxels.length} voxels`;
     }
-    card.appendChild(meta);
-
-    const actions = doc.createElement('div');
-    actions.className = 'cat-actions';
-    const mk = (label, fn, extra = '') => {
-      const b = doc.createElement('button');
-      b.className = `cat-btn ${extra}`;
-      b.textContent = label;
-      b.addEventListener('click', (e) => {
-        e.stopPropagation();
-        fn();
-      });
-      actions.appendChild(b);
-    };
-    mk('Edit', () => this.cb.onEdit?.(item.id));
-    mk('Export', () => this.cb.onExport?.(item.id));
-    mk('Delete', () => this.cb.onDelete?.(item.id), 'danger');
-    card.appendChild(actions);
-
-    card.addEventListener('click', () => this.cb.onCard?.(item.id));
-    return card;
+    const s = item.stats ?? {};
+    // Multi-pellet guns show per-pellet math: "6×8 dmg" (damage is per pellet).
+    const pellets = item.weapon?.pellets ?? 1;
+    const dmg = pellets > 1 ? `${pellets}×${s.damage ?? 10} dmg` : `${s.damage ?? 10} dmg`;
+    const bits = [dmg, `${s.reach ?? 2} m`, `${s.cooldown ?? 0.35} s`, `${item.microVoxels.length} voxels`];
+    if (item.grip) bits.push(item.grip2 ? 'grip R+L' : 'grip');
+    return bits.join(' · ');
   }
 }

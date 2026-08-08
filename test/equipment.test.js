@@ -35,6 +35,7 @@ test('empty equippable item has defaults and no grip', () => {
   assert.equal(item.id, null);
   assert.deepEqual(item.microVoxels, []);
   assert.equal(item.grip, null);
+  assert.equal(item.grip2, null);
   assert.equal(item.yaw, 0);
   assert.deepEqual(item.stats, DEFAULT_EQUIP_STATS);
 });
@@ -53,7 +54,7 @@ test('normalizeWeapon builds a canonical composable profile', () => {
   assert.deepEqual(normalizeWeapon({}), DEFAULT_WEAPON);
   assert.deepEqual(
     normalizeWeapon({ kind: 'ranged', hands: 'two', muzzle: { x: 3, y: 4, z: 7 }, anim: 'gun', recoil: 0.12, magazine: 30, ammo: 'rifle' }),
-    { kind: 'ranged', hands: 'two', muzzle: { x: 3, y: 4, z: 7 }, anim: 'gun', recoil: 0.12, magazine: 30, ammo: 'rifle', reload: 1.4, spread: 0.02 },
+    { kind: 'ranged', hands: 'two', muzzle: { x: 3, y: 4, z: 7 }, anim: 'gun', recoil: 0.12, magazine: 30, ammo: 'rifle', reload: 1.4, spread: 0.02, pellets: 1 },
   );
   // invalid anims fall back per kind; muzzle is validated as integer cells.
   assert.equal(normalizeWeapon({ kind: 'ranged', anim: 'slash' }).anim, 'gun');
@@ -72,6 +73,11 @@ test('normalizeWeapon builds a canonical composable profile', () => {
   assert.equal(normalizeWeapon({ kind: 'melee' }).spread, 0, 'melee weapons have no spread');
   assert.equal(normalizeWeapon({ kind: 'ranged', spread: 0.5 }).spread, 0.2, 'spread clamps at 0.2 rad');
   assert.equal(normalizeWeapon({ kind: 'ranged', spread: 0 }).spread, 0, 'spread can be set to zero');
+  assert.equal(normalizeWeapon({}).pellets, 1, 'default is a single projectile');
+  assert.equal(normalizeWeapon({ kind: 'ranged', pellets: 6 }).pellets, 6, 'shotgun pellet count survives');
+  assert.equal(normalizeWeapon({ pellets: 99 }).pellets, 20, 'pellets clamp at 20');
+  assert.equal(normalizeWeapon({ pellets: 0 }).pellets, 1, 'at least one projectile');
+  assert.equal(normalizeWeapon({ pellets: 2.7 }).pellets, 3, 'pellet counts are whole numbers');
   assert.deepEqual(ATTACK_ANIMS.ranged, ['gun']);
 });
 
@@ -119,9 +125,10 @@ test('single item serialize/deserialize round-trips grip, yaw and stats', () => 
     { x: 1, y: 2, z: 1, color: [200, 200, 200] },
   ];
   item.grip = { x: 1, y: 1, z: 1 };
+  item.grip2 = { x: 1, y: 2, z: 1 };
   item.yaw = 270;
   item.stats = { damage: 34, reach: 1.5, cooldown: 0.6 };
-  item.weapon = { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 4, z: 5 }, anim: 'gun', recoil: 0.1, magazine: 12, ammo: 'pistol', reload: 0.8, spread: 0.02 };
+  item.weapon = { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 4, z: 5 }, anim: 'gun', recoil: 0.1, magazine: 12, ammo: 'pistol', reload: 0.8, spread: 0.02, pellets: 6 };
 
   const text = serializeEquipItem(item);
   const parsed = JSON.parse(text);
@@ -130,6 +137,7 @@ test('single item serialize/deserialize round-trips grip, yaw and stats', () => 
   const { item: back, errors } = deserializeEquipItem(text);
   assert.deepEqual(errors, []);
   assert.deepEqual(back.grip, item.grip);
+  assert.deepEqual(back.grip2, item.grip2, 'left-hand grip must round-trip');
   assert.equal(back.yaw, item.yaw);
   assert.deepEqual(back.stats, item.stats);
   assert.deepEqual(back.weapon, item.weapon);

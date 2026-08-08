@@ -571,7 +571,7 @@ export class GameApp {
       : Infinity;
     const mobHit = this.mobs.aimHit(cam, dir);
     const maxMeters = weapon.range * CELL_SIZE;
-    if (mobHit && mobHit.dist < voxelDist && mobHit.dist <= maxMeters) return { mob: mobHit.mob };
+    if (mobHit && mobHit.dist < voxelDist && mobHit.dist <= maxMeters) return { mob: mobHit.mob, dist: mobHit.dist };
     return voxelHit ? { pos: voxelHit } : null;
   }
 
@@ -580,27 +580,30 @@ export class GameApp {
    *  along it (see _hitImpact). */
   _resolveImpact(impact, weapon, dir) {
     if (impact.mob) {
-      this._damageMob(impact.mob, weapon.damage, weapon, dir);
+      this._damageMob(impact.mob, weapon.damage, weapon, dir, impact.dist);
       return;
     }
     this.smoke.puff(impact.pos);
   }
 
   /** Damage a mob; count and puff smoke when it dies. */
-  _damageMob(mob, damage, weapon, dir) {
+  _damageMob(mob, damage, weapon, dir, dist) {
     // The victim learns where the shot came from (its packmates hear about it
     // through the alarm), so mobs hunt the shooter's position, not a ghost.
     const impact = this._hitImpact(weapon, dir, mob);
     const died = mob.takeDamage(damage, this.walk.position, impact);
-    this._spawnBlood(mob, dir);
+    this._spawnBlood(mob, dir, dist);
     this.bloodDecals.splatter(mob, dir, died);
     if (died) this.mobs.kills++;
     this._updateHud();
   }
 
-  /** Blood splatter at the mob's near side, in front of the billboard so the
-   *  camera-facing sprite never hides it. Droplets spray toward the viewer. */
-  _spawnBlood(mob, dir) {
+  /** Blood splatter at the point the shot struck — feedback for WHERE you hit
+   *  (head, side, legs), not a generic mid-body puff. `dist` is the ray
+   *  distance from the camera to the mob's box; without it (no aim ray to
+   *  reconstruct) the blood falls back to the mob's near side at chest height.
+   *  Droplets spray toward the viewer. */
+  _spawnBlood(mob, dir, dist) {
     const cam = this.renderer.camera;
     // Toward the camera on the ground plane (the sprite faces the camera).
     let bx = cam.position.x - mob.pos.x;
@@ -608,15 +611,27 @@ export class GameApp {
     const h = Math.hypot(bx, bz) || 1;
     bx /= h;
     bz /= h;
-    const off = mob.halfWidth + 0.15;
-    const pos = new THREE.Vector3(
-      mob.pos.x + bx * off,
-      mob.pos.y + mob.height * 0.45,
-      mob.pos.z + bz * off,
-    );
+    let pos;
+    if (dist != null) {
+      // Where the aim ray entered the mob's box, pulled a touch back along
+      // the ray so the burst sits just off the surface.
+      const d = Math.max(0, dist - 0.08);
+      pos = new THREE.Vector3(
+        cam.position.x + dir.x * d,
+        cam.position.y + dir.y * d,
+        cam.position.z + dir.z * d,
+      );
+    } else {
+      const off = mob.halfWidth + 0.15;
+      pos = new THREE.Vector3(
+        mob.pos.x + bx * off,
+        mob.pos.y + mob.height * 0.45,
+        mob.pos.z + bz * off,
+      );
+    }
     // Splatter mostly toward the viewer, nudge the spray a touch along the
     // shot so a side hit reads as blood flying across.
-    this.blood.burst(pos, { x: bx + dir.x * 0.3, y: 0.4, z: bz + dir.z * 0.3 });
+    this.blood.burst(pos, { x: bx + dir.x * 0.3, y: 0.4, z: bz + dir.z * 0.3 }, mob);
   }
 
   /** Stopping power of a hit on a mob: gun hits stagger it (stop its movement
@@ -721,8 +736,15 @@ export class GameApp {
     if (muzzle) {
       this.muzzleFX.burst(muzzle, dir);
     }
-    const impact = this._attackImpact(weapon, dir);
-    if (impact) this._resolveImpact(impact, weapon, dir);
+    // One trigger pull = one round, one recoil/flash — but every pellet
+    // scatters on its own within the spread cone (shotguns fire several,
+    // each dealing the weapon's damage independently).
+    const pellets = Math.max(1, weapon.pellets ?? 1);
+    for (let i = 0; i < pellets; i++) {
+      const pdir = i === 0 ? dir : this._aimDir(weapon);
+      const impact = this._attackImpact(weapon, pdir);
+      if (impact) this._resolveImpact(impact, weapon, pdir);
+    }
     if (ammo.max > 0 && ammo.current <= 0 && this._carriedAmmo(ammo) > 0) this._startReload(weapon);
     this._updateHud();
   }

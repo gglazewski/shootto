@@ -66,7 +66,8 @@ const TOOL_INFO = {
   erase: { label: 'Erase', hint: 'LMB erases · Shift+drag erases a stroke' },
   box: { label: 'Box', hint: 'Click two corners to fill a cuboid · RMB erases the box · Esc cancels' },
   fill: { label: 'Fill', hint: 'Click a voxel to recolor its connected region' },
-  grip: { label: 'Grip', hint: 'Click a cell to set where the hand grips the item' },
+  grip: { label: 'Grip R', hint: 'Click a cell to set where the right hand grips the item' },
+  grip2: { label: 'Grip L', hint: 'Click a cell to set where the left hand grips a two-handed item' },
   muzzle: { label: 'Muzzle', hint: 'Click a cell to set the barrel end (muzzle flash origin)' },
 };
 
