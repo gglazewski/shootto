@@ -106,6 +106,21 @@ test('LOS is clear across open floor and blocked by a wall', () => {
   assert.equal(nav.hasLOS(...a, ...b), false);
 });
 
+test('LOS passes through see-through walls (glass, chain-link fence)', () => {
+  const w = floorWorld(8);
+  const a = [0.25, 1.2, 0.25];
+  const b = [3.25, 1.2, 3.25];
+  // Same wall as above, but built from see-through blocks: mobs can spot the
+  // player through a window or fence even though it blocks movement.
+  for (let y = 2; y <= 4; y++) {
+    for (let z = 0; z <= 2; z++) {
+      w.place(z === 1 ? 'glass' : 'fence', SIZE.SMALL, 1, y, z);
+    }
+  }
+  const nav = new NavMesh(w, navOpts);
+  assert.equal(nav.hasLOS(...a, ...b), true);
+});
+
 test('no path drops straight through solid ground into a basement', () => {
   // A 1m-thick ground slab (cells y=0,1) with a basement floor 5m below
   // (cells y=-10,-9) and NO staircase. The navmesh must not invent a drop
@@ -197,4 +212,57 @@ test('a drop edge is rejected when an overhang clips the mob body', () => {
   const src2 = nav2.nearestNodeAtCell(0, 0, -2);
   const dst2 = nav2.nearestNodeAtCell(1, 0, -5);
   assert.ok(nav2.findPath(src2, dst2), 'without the overhang the drop is open');
+});
+
+// --- hasWalkableLine (footprint-aware string-pulling check) ---
+
+test('hasWalkableLine: open floor is walkable in a straight line', () => {
+  const w = floorWorld(8);
+  const nav = new NavMesh(w, navOpts);
+  const x0 = 1 * CELL_SIZE + CELL_SIZE / 2;
+  const z0 = 1 * CELL_SIZE + CELL_SIZE / 2;
+  const x1 = 6 * CELL_SIZE + CELL_SIZE / 2;
+  const z1 = 6 * CELL_SIZE + CELL_SIZE / 2;
+  assert.equal(nav.hasWalkableLine(x0, z0, 2, x1, z1), true);
+});
+
+test('hasWalkableLine: a wall across the line rejects it', () => {
+  const w = floorWorld(8);
+  for (let z = 0; z < 8; z++) {
+    for (let y = 2; y <= 6; y++) w.place('stone', SIZE.SMALL, 3, y, z);
+  }
+  const nav = new NavMesh(w, navOpts);
+  const x0 = 1 * CELL_SIZE + CELL_SIZE / 2;
+  const z0 = 4 * CELL_SIZE + CELL_SIZE / 2;
+  const x1 = 6 * CELL_SIZE + CELL_SIZE / 2;
+  assert.equal(nav.hasWalkableLine(x0, z0, 2, x1, z0), false);
+});
+
+test('hasWalkableLine: follows a 0.5m step but rejects a 1m ledge', () => {
+  const w = floorWorld(8);
+  // Raise the east half by one cell: a single 0.5m step along the way.
+  for (let x = 4; x < 8; x++) for (let z = 0; z < 8; z++) w.place('stone', SIZE.SMALL, x, 2, z);
+  const nav = new NavMesh(w, navOpts);
+  const z = 4 * CELL_SIZE + CELL_SIZE / 2;
+  const x0 = 1 * CELL_SIZE + CELL_SIZE / 2;
+  const x1 = 6 * CELL_SIZE + CELL_SIZE / 2;
+  assert.equal(nav.hasWalkableLine(x0, z, 2, x1, z), true, 'one step is walkable');
+
+  // Raise it another cell: now a 1m jump — not walkable in a straight line.
+  for (let x = 4; x < 8; x++) for (let zz = 0; zz < 8; zz++) w.place('stone', SIZE.SMALL, x, 3, zz);
+  const nav2 = new NavMesh(w, navOpts);
+  assert.equal(nav2.hasWalkableLine(x0, z, 2, x1, z), false, 'a 1m ledge is not');
+});
+
+test('hasWalkableLine: a line brushing a wall corner within half-width is rejected', () => {
+  const w = floorWorld(8);
+  for (let y = 2; y <= 5; y++) w.place('stone', SIZE.SMALL, 4, y, 4); // single wall column
+  const nav = new NavMesh(w, navOpts);
+  // The line itself passes just south of the wall cell (z=1.80 < 2.0), but the
+  // 0.25m half-width footprint overlaps the wall's cell — a mob can't walk it.
+  const x0 = 1 * CELL_SIZE + CELL_SIZE / 2;
+  const x1 = 7 * CELL_SIZE + CELL_SIZE / 2;
+  assert.equal(nav.hasWalkableLine(x0, 1.80, 2, x1, 1.80), false, 'footprint clips the corner');
+  // A line one cell further out clears it.
+  assert.equal(nav.hasWalkableLine(x0, 1.25, 2, x1, 1.25), true, 'with clearance it walks');
 });

@@ -469,20 +469,33 @@ T('aiming at an equippable item highlights it and E picks it up', async () => {
     };
 
     g._pickup();
+    // The item detaches from the world and floats to the player before the
+    // grant: during the flight nothing is equipped yet.
+    const midFlight = {
+      primary: g.stats.equipment.primary,
+      worldItems: (() => { let n = 0; g.world.forEachItem(() => n++); return n; })(),
+      flying: !!g.pickupFX._group,
+    };
+    g.pickupFX.update(1); // let the item finish flying to the player
     const after = {
       primary: g.stats.equipment.primary,
       hand: document.querySelector('#hand').textContent,
       worldItems: (() => { let n = 0; g.world.forEachItem(() => n++); return n; })(),
       markerVisible: g._pickupMarker.visible,
+      flying: !!g.pickupFX._group,
     };
-    return { aimed, prompt, after };
+    return { aimed, prompt, midFlight, after };
   });
   assert.deepEqual(result.aimed, { id: 'pistol', markerVisible: true }, 'aiming at the pistol must highlight it');
   assert.equal(result.prompt.visible, true, 'pickup prompt must be visible');
   assert.ok(result.prompt.text.includes('E') && result.prompt.text.includes('Pistol'), `prompt text: ${result.prompt.text}`);
-  assert.equal(result.after.primary, 'pistol', 'E must put the pistol in an equipment slot');
+  assert.equal(result.midFlight.primary, null, 'during the flight the item is not granted yet');
+  assert.equal(result.midFlight.worldItems, 0, 'the placed item leaves the world as soon as it is picked up');
+  assert.equal(result.midFlight.flying, true, 'a copy of the item must be floating to the player');
+  assert.equal(result.after.primary, 'pistol', 'E must put the pistol in an equipment slot once it arrives');
   assert.equal(result.after.hand, 'Pistol', 'HUD hand must show the picked-up weapon name');
-  assert.equal(result.after.worldItems, 0, 'the placed item must be removed from the world');
+  assert.equal(result.after.worldItems, 0, 'the placed item must stay removed from the world');
+  assert.equal(result.after.flying, false, 'the flying copy must be gone after the pickup completes');
 
   // Looking away hides the highlight + prompt.
   const away = await page.evaluate(() => {
@@ -493,6 +506,75 @@ T('aiming at an equippable item highlights it and E picks it up', async () => {
   });
   assert.equal(away.target, null, 'aiming away must clear the pickup target');
   assert.equal(away.promptHidden, true, 'aiming away must hide the prompt');
+});
+
+T('rapid pickups queue up and are granted one at a time', async () => {
+  await loadGame();
+  await page.evaluate(() => {
+    localStorage.setItem('voxelequip.items', JSON.stringify([
+      {
+        id: 'pistol', name: 'Pistol',
+        microVoxels: [{ x: 3, y: 3, z: 4, color: [70, 70, 75] }],
+        grip: { x: 3, y: 3, z: 4 }, yaw: 90,
+        stats: { damage: 20, reach: 3, cooldown: 0.3 },
+      },
+    ]));
+    localStorage.setItem('voxelmap.save', JSON.stringify({
+      format: 'voxelmap', version: 1, cellSize: 0.5, spawn: [2, 4, 2],
+      blocks: [],
+      items: [
+        { itemId: 'pistol', x: 0, y: 2, z: 0, size: 'small', rotation: 0 },
+        { itemId: 'pistol', x: 2, y: 2, z: 0, size: 'small', rotation: 0 },
+      ],
+    }));
+  });
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    const { renderer } = g;
+    // Pick up pistol A.
+    renderer.camera.position.set(0.25, 1.25, 3.0);
+    renderer.camera.lookAt(0.25, 1.25, 0.25);
+    g._updatePickup();
+    g._pickup();
+    // Immediately aim at and pick up pistol B.
+    renderer.camera.position.set(1.25, 1.25, 3.0);
+    renderer.camera.lookAt(1.25, 1.25, 0.25);
+    g._updatePickup();
+    g._pickup();
+    const queued = {
+      primary: g.stats.equipment.primary,
+      secondary: g.stats.equipment.secondary,
+      queueLen: g._pickupQueue.length,
+      flying: g.pickupFX.active,
+    };
+    g.pickupFX.update(1); // A's flight lands
+    const afterA = {
+      primary: g.stats.equipment.primary,
+      secondary: g.stats.equipment.secondary,
+      flying: g.pickupFX.active,
+    };
+    g.pickupFX.update(1); // B's flight lands
+    const afterB = {
+      primary: g.stats.equipment.primary,
+      secondary: g.stats.equipment.secondary,
+      queueLen: g._pickupQueue.length,
+      flying: g.pickupFX.active,
+      worldItems: (() => { let n = 0; g.world.forEachItem(() => n++); return n; })(),
+    };
+    return { queued, afterA, afterB };
+  });
+  assert.equal(out.queued.primary, null, 'nothing is granted before the first flight lands');
+  assert.equal(out.queued.queueLen, 1, 'the second pickup must queue behind the first');
+  assert.equal(out.queued.flying, true, 'the first pickup is airborne');
+  assert.equal(out.afterA.primary, 'pistol', 'the first pickup is granted when it arrives');
+  assert.equal(out.afterA.flying, true, 'the second pickup starts flying after the first lands');
+  assert.equal(out.afterB.primary, 'pistol', 'the second pickup lands in the primary slot');
+  assert.equal(out.afterB.secondary, 'pistol', 'the second pickup lands in the secondary slot');
+  assert.equal(out.afterB.queueLen, 0, 'the queue must drain fully');
+  assert.equal(out.afterB.worldItems, 0, 'both items must leave the world');
 });
 
 T('equipping an item renders it in the hand at the grip voxel', async () => {
@@ -538,6 +620,15 @@ T('equipping an item renders it in the hand at the grip voxel', async () => {
 
     // With a weapon, a swing must animate the right (weapon) hand.
     g.hand.swing();
+    const swungRight = !!g.hand.right.anim;
+
+    // Equipping starts a hands-dip: the shared root drops below rest, then
+    // eases back up over the animation.
+    const dipStarted = !!g.hand._equip;
+    g.hand.update(0.1); // well into the drop
+    const dipped = g.hand.group.position.y < -0.1;
+    g.hand.update(1); // past the end — hands back to rest
+    const risen = g.hand.group.position.y === 0;
 
     return {
       held: true,
@@ -546,7 +637,10 @@ T('equipping an item renders it in the hand at the grip voxel', async () => {
       gripInPivot: held.position.toArray(),
       gripAtPalm: gripWorld.distanceTo(palmWorld) < 0.01,
       forwardAligned: itemFwd.dot(camForward) > 0.9,
-      swungRight: !!g.hand.right.anim,
+      swungRight,
+      dipStarted,
+      dipped,
+      risen,
     };
   });
   assert.equal(result.held, true, 'held item mesh must exist');
@@ -554,6 +648,9 @@ T('equipping an item renders it in the hand at the grip voxel', async () => {
   assert.equal(result.onRightPivot, true, 'held item must attach to the right-hand pivot');
   assert.deepEqual(result.gripInPivot, [0, 0.06, 0], 'grip voxel must sit at the palm centre');
   assert.equal(result.gripAtPalm, true, 'grip voxel must coincide with the palm in world space');
+  assert.equal(result.dipStarted, true, 'equipping a weapon must start the hands-dip animation');
+  assert.equal(result.dipped, true, 'the hands must drop below rest when a weapon is equipped');
+  assert.equal(result.risen, true, 'the hands must return to rest once the dip finishes');
   assert.equal(result.forwardAligned, true, 'item forward must point toward the view');
   assert.equal(result.swungRight, true, 'with a weapon, swing must animate the right hand');
 
@@ -731,6 +828,8 @@ T('a long-range weapon can hit far past melee reach', async () => {
   assert.equal(result.hit.smoke, 12, 'a 1000 m weapon must hit a wall 60 m away');
   assert.equal(result.hit.flash, true, 'the long-range shot still flashes at the muzzle');
   assert.equal(result.hit.anim, 'gun');
+  assert.equal(result.hit.flash, true, 'the long-range shot still flashes at the muzzle');
+  assert.equal(result.hit.anim, 'gun');
 });
 
 T('ranged weapons scatter shots away from the exact crosshair', async () => {
@@ -763,6 +862,74 @@ T('ranged weapons scatter shots away from the exact crosshair', async () => {
   assert.equal(out.diverged, true, 'a spread weapon must scatter shots off the crosshair');
   assert.ok(out.maxDev > 0.1, `spread shots must deviate by a meaningful angle (max ${out.maxDev} rad)`);
   assert.ok(out.meleeDev < 1e-6, 'a zero-spread weapon aims exactly at the crosshair');
+});
+
+T('the crosshair opens with weapon spread and blooms with each shot', async () => {
+  await loadGame();
+  await page.evaluate(() => {
+    localStorage.setItem('voxelequip.items', JSON.stringify([
+      {
+        id: 'spray', name: 'Spray',
+        microVoxels: [{ x: 3, y: 3, z: 4, color: [70, 70, 75] }],
+        grip: { x: 3, y: 3, z: 4 }, yaw: 0,
+        stats: { damage: 10, reach: 20, cooldown: 0.1 },
+        weapon: { kind: 'ranged', hands: 'one', spread: 0.02, anim: 'gun', recoil: 0.05 },
+      },
+    ]));
+  });
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    const cross = document.querySelector('#crosshair');
+    const spreadPx = () => {
+      const v = getComputedStyle(cross).getPropertyValue('--spread').trim();
+      return v ? Number(v.replace('px', '')) : 0;
+    };
+    // Fists/melee: no spread, crosshair tight.
+    g._updateCrosshair();
+    const fistsPx = spreadPx();
+
+    // A spread weapon opens the reticle to its base spread.
+    g.stats.equip('primary', 'spray');
+    g._updateHud();
+    g._updateCrosshair();
+    const basePx = spreadPx();
+
+    // Rapid fire: each shot stacks bloom, opening the crosshair further.
+    document.pointerLockElement = g.webgl.domElement;
+    g.renderer.camera.rotation.set(0, 0, 0, 'YXZ');
+    g._attackCooldown = 0;
+    g._attack();
+    const bloomAfterOne = g._bloom;
+    g._updateCrosshair();
+    const oneShotPx = spreadPx();
+    for (let i = 0; i < 2; i++) {
+      g._attackCooldown = 0;
+      g._attack();
+    }
+    const bloomAfterThree = g._bloom;
+    g._updateCrosshair();
+    const threeShotPx = spreadPx();
+
+    // Waiting past full recovery regenerates back to the base spread.
+    g._bloom = 0.01;
+    for (let i = 0; i < 120; i++) g._frame(1 / 60); // ~2 s of recovery
+    const recovered = g._bloom;
+    g._updateCrosshair();
+    const recoveredPx = spreadPx();
+
+    document.pointerLockElement = null;
+    return { fistsPx, basePx, bloomAfterOne, oneShotPx, bloomAfterThree, threeShotPx, recovered, recoveredPx };
+  });
+  assert.equal(out.fistsPx, 0, 'fists/melee keep the crosshair tight');
+  assert.equal(out.basePx, 6, 'the crosshair reflects the weapon base spread (0.02 rad)');
+  assert.ok(out.oneShotPx > out.basePx, 'a shot must open the crosshair');
+  assert.ok(Math.abs(out.bloomAfterOne - 0.01) < 1e-9, `each shot adds one bloom kick (${out.bloomAfterOne})`);
+  assert.ok(Math.abs(out.bloomAfterThree - 0.03) < 1e-9, `rapid shots stack the bloom (${out.bloomAfterThree})`);
+  assert.ok(out.threeShotPx > out.oneShotPx, 'more shots open the crosshair further');
+  assert.equal(out.recovered, 0, 'waiting long enough fully regenerates the spread');
+  assert.equal(out.recoveredPx, out.basePx, 'after recovery the crosshair returns to its base spread');
 });
 
 T('a magazine gun fires, empties, and auto-reloads from carried ammo', async () => {
@@ -1028,12 +1195,14 @@ T('mobs aggro, chase, attack and die to the player', async () => {
     const d1 = Math.hypot(player.x - mob.pos.x, player.z - mob.pos.z);
     const aggro = mob.aggro;
 
-    // Step in front of the mob (0.6 m north, camera facing -z toward it) and
-    // fight it with fists.
+    // Step in front of the mob (0.6 m north) and fight it with fists. Aim at
+    // the mob's chest rather than dead-ahead so the punch ray always passes
+    // through its AABB — mobs roll a random height, and a short one can duck
+    // under a perfectly horizontal eye-level ray.
     const mp = mob.pos;
     g.walk.position.set(mp.x, 1.0, mp.z + 0.6);
     g.walk.camera.position.set(mp.x, 2.62, mp.z + 0.6);
-    g.walk.camera.rotation.set(0, 0, 0, 'YXZ');
+    g.walk.camera.lookAt(mp.x, 1.2, mp.z);
     const healthBefore = g.stats.health;
     const fightPos = { x: mp.x, y: 1.0, z: mp.z + 0.6 };
     for (let i = 0; i < 60; i++) {
@@ -1058,6 +1227,92 @@ T('mobs aggro, chase, attack and die to the player', async () => {
   assert.equal(out.alive, 0, 'the dead mob is removed from the manager');
   assert.equal(out.dead, true);
   assert.ok(out.health < out.startHealth, 'the mob must have hurt the player');
+});
+
+T('gun shots stop and knock a mob back', async () => {
+  await loadMobGame();
+  await page.evaluate(() => {
+    localStorage.setItem('voxelequip.items', JSON.stringify([
+      {
+        id: 'pistol', name: 'Pistol',
+        microVoxels: [{ x: 3, y: 3, z: 4, color: [70, 70, 75] }],
+        grip: { x: 3, y: 3, z: 4 }, yaw: 0,
+        stats: { damage: 20, reach: 6, cooldown: 0.3 },
+        weapon: { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 3, z: 5 }, anim: 'gun', recoil: 0.1, spread: 0 },
+      },
+    ]));
+  });
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    g.stats.equip('primary', 'pistol');
+    g._updateHud();
+    const mob = g.mobs.mobs[0];
+    const mp = mob.pos;
+    // Player east of the mob, shooting west at it — the bullet shoves it -x.
+    g.renderer.camera.position.set(mp.x + 2, 1.6, mp.z);
+    g.renderer.camera.lookAt(mp.x, 1.0, mp.z);
+    g._attackCooldown = 0;
+    const before = mob.pos.x;
+    g._attack();
+    const staggered = mob.staggerTimer > 0;
+    const knocked = mob.knock.x < 0;
+    g.mobs.update(0.1, g.walk.position); // the stagger slides the mob back
+    const after = mob.pos.x;
+    return { staggered, knocked, before, after, alive: !mob.dead, health: mob.health };
+  });
+  assert.equal(out.staggered, true, 'a gun shot must stagger the mob');
+  assert.equal(out.knocked, true, 'a powerful gun must knock the mob back along the shot');
+  assert.ok(out.after < out.before - 0.01, `the mob must be shoved backward (${out.before} -> ${out.after})`);
+  assert.equal(out.alive, true, 'a 20 dmg pistol must not kill the 30 hp imp');
+});
+
+T('hitting a mob splatters blood in front of its billboard', async () => {
+  await loadMobGame();
+  await page.evaluate(() => {
+    localStorage.setItem('voxelequip.items', JSON.stringify([
+      {
+        id: 'pistol', name: 'Pistol',
+        microVoxels: [{ x: 3, y: 3, z: 4, color: [70, 70, 75] }],
+        grip: { x: 3, y: 3, z: 4 }, yaw: 0,
+        stats: { damage: 10, reach: 6, cooldown: 0.3 },
+        weapon: { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 3, z: 5 }, anim: 'gun', recoil: 0.1, spread: 0 },
+      },
+    ]));
+  });
+  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.waitForTimeout(150);
+
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    const T = g.hand.THREE;
+    g.stats.equip('primary', 'pistol');
+    g._updateHud();
+    const mob = g.mobs.mobs[0];
+    const mp = mob.pos;
+    // Player east of the mob (camera side = +x), shooting west at it.
+    g.renderer.camera.position.set(mp.x + 2, 1.6, mp.z);
+    g.renderer.camera.lookAt(mp.x, 1.0, mp.z);
+    const smokeBefore = g.smoke._mesh.filter((p) => p.alive).length;
+    g._attackCooldown = 0;
+    g._attack();
+    const drops = g.blood._mesh.filter((p) => p.alive);
+    const smokeAfter = g.smoke._mesh.filter((p) => p.alive).length;
+    // Blood must sit on the camera side of the mob centre (in front of the
+    // camera-facing sprite), not behind or dead-centre under it.
+    const v = new T.Vector3();
+    let inFront = 0;
+    for (const d of drops) {
+      v.set(d.mesh.position.x - mp.x, 0, d.mesh.position.z - mp.z);
+      if (v.x > 0) inFront++; // camera is at +x, so x > mob centre = in front
+    }
+    return { drops: drops.length, smokeBefore, smokeAfter, inFront };
+  });
+  assert.ok(out.drops >= 10, `a mob hit must splatter blood (${out.drops} droplets)`);
+  assert.equal(out.smokeAfter, out.smokeBefore, 'a mob hit must not puff gray smoke');
+  assert.ok(out.inFront > out.drops / 2, `most blood must spawn in front of the mob (${out.inFront}/${out.drops})`);
 });
 
 T('being hit flashes the red vignette + screen blur', async () => {

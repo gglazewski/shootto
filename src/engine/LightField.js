@@ -8,16 +8,19 @@
 //   - heightMap   (Int16Array)  topmost opaque y per (x,z) column
 //
 // skylight: 15 = exposed to open sky, 0 = sealed. Light pours straight down
-// open shafts without decay and fades by 1 per cell in any other direction.
-// Opaque voxels stop it; transparent ones (glass) let it through.
-// blocklight: 0..15 emitted by emissive voxels (torches), fades 1 per cell.
+// open shafts without decay and fades by 1 per cell in any other direction
+// (flood fill). Opaque voxels stop it; transparent ones (glass) let it pass.
+// blocklight: 0..15 emitted by emissive voxels/items, STAMPED per source
+// with line-of-sight occlusion (level - manhattan distance, only where the
+// source can see) — walls cast hard shadows and light never wraps around
+// thin geometry onto its far side.
 //
 // Full recomputes (recompute) are used on load/clear/bulk edits. Single edits
 // go through recomputeEdit, which re-derives only a MARGIN-wide box around the
 // edit and re-floods it, keeping per-edit cost independent of world size.
 
-import { opacityFor, lightFor } from './VoxelTypes.js';
-import { cellsFor } from './VoxelShape.js';
+import { opacityFor, lightFor, emitFacesFor } from './VoxelTypes.js';
+import { cellsFor, spanFor } from './VoxelShape.js';
 
 export const MAX_LIGHT = 15;
 /** Padding around the world bounds; one more than the light range, so a
@@ -34,6 +37,13 @@ const NEIGHBORS = [
   [0, 0, 1], [0, 0, -1],
 ];
 const COL_NEIGHBORS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+/** Outward normal per face name (for directional emitters). */
+const FACE_NORMALS = {
+  px: [1, 0, 0], nx: [-1, 0, 0],
+  py: [0, 1, 0], ny: [0, -1, 0],
+  pz: [0, 0, 1], nz: [0, 0, -1],
+};
 
 export class LightField {
   constructor(world) {
@@ -182,37 +192,110 @@ export class LightField {
     this._flood(queue, true);
   }
 
-  /** Seed block light from emissive voxels and flood. */
-  _seedBlock() {
-    const queue = [];
+  /**
+   * Cells an emissive voxel seeds. Omnidirectional emitters (no emitFaces)
+   * seed their own cells, so light escapes every open face. Directional
+   * emitters seed the cells just OUTSIDE their listed faces instead — and
+   * only where those cells are not sealed by an opaque block — so a ceiling
+   * panel embedded flush in a roof lights the room below and nothing above.
+   * @returns {[number,number,number][]}
+   */
+  _emissionCells(voxel) {
+    const faces = emitFacesFor(voxel.type);
+    const [ax, ay, az] = voxel.anchor;
+    if (!faces) return [...cellsFor(ax, ay, az, voxel.size)];
+    const span = spanFor(voxel.size);
+    const out = [];
+    for (const face of faces) {
+      const n = FACE_NORMALS[face];
+      if (!n) continue;
+      for (const [cx, cy, cz] of cellsFor(ax, ay, az, voxel.size)) {
+        // only the footprint cells on that face's outer layer emit
+        if (n[0] === 1 && cx !== ax + span - 1) continue;
+        if (n[0] === -1 && cx !== ax) continue;
+        if (n[1] === 1 && cy !== ay + span - 1) continue;
+        if (n[1] === -1 && cy !== ay) continue;
+        if (n[2] === 1 && cz !== az + span - 1) continue;
+        if (n[2] === -1 && cz !== az) continue;
+        const tx = cx + n[0], ty = cy + n[1], tz = cz + n[2];
+        const cover = this.world.get(tx, ty, tz);
+        if (cover && opacityFor(cover.type) >= 255) continue; // face sealed
+        out.push([tx, ty, tz]);
+      }
+    }
+    return out;
+  }
+
+  /** Every block-light source cell: emissive voxels (respecting their
+   *  emitFaces) plus placed item lights. @returns {[x,y,z,level][]} */
+  _collectBlockSources() {
+    const sources = [];
     this.world.forEachVoxel((voxel) => {
       const lvl = lightFor(voxel.type);
       if (lvl <= 0) return;
-      for (const [cx, cy, cz] of cellsFor(voxel.anchor[0], voxel.anchor[1], voxel.anchor[2], voxel.size)) {
-        if (!this._inRegion(cx, cy, cz)) continue;
-        const k = this._idx(cx, cy, cz);
-        const cur = this.lightData[k];
-        if (lvl > (cur & 0xf)) {
-          this.lightData[k] = ((cur >> 4) << 4) | lvl;
-          queue.push(cx, cy, cz);
-        }
-      }
+      for (const [cx, cy, cz] of this._emissionCells(voxel)) sources.push([cx, cy, cz, lvl]);
     });
-    this._seedItemLights(queue);
-    this._flood(queue, false);
+    for (const { x, y, z, level } of this.itemLights) {
+      if (level > 0) sources.push([x, y, z, level]);
+    }
+    return sources;
   }
 
-  /** Seed block light from placed item light sources (full region pass). */
-  _seedItemLights(queue) {
-    for (const { x, y, z, level } of this.itemLights) {
-      if (level <= 0 || !this._inRegion(x, y, z)) continue;
-      const k = this._idx(x, y, z);
-      const cur = this.lightData[k];
-      if (level > (cur & 0xf)) {
-        this.lightData[k] = ((cur >> 4) << 4) | level;
-        queue.push(x, y, z);
+  /**
+   * Block light is STAMPED with line-of-sight occlusion, not flooded: each
+   * source lights exactly the cells it can see (level - manhattan distance),
+   * so walls cast real shadows and light never wraps around thin geometry
+   * onto the far side. Sky light keeps the flood (soft daylight).
+   */
+  _seedBlock() {
+    for (const [sx, sy, sz, lvl] of this._collectBlockSources()) {
+      this._stampSource(
+        sx, sy, sz, lvl,
+        this._ox, this._oy, this._oz,
+        this._ox + this._sx - 1, this._oy + this._sy - 1, this._oz + this._sz - 1,
+      );
+    }
+  }
+
+  /** Stamp one source's light into (the box-clamped part of) its range. */
+  _stampSource(sx, sy, sz, level, bx0, by0, bz0, bx1, by1, bz1) {
+    if (!this._inRegion(sx, sy, sz)) return;
+    const r = level - 1;
+    const x0 = Math.max(sx - r, bx0), x1 = Math.min(sx + r, bx1);
+    const y0 = Math.max(sy - r, by0), y1 = Math.min(sy + r, by1);
+    const z0 = Math.max(sz - r, bz0), z1 = Math.min(sz + r, bz1);
+    for (let x = x0; x <= x1; x++) {
+      for (let y = y0; y <= y1; y++) {
+        for (let z = z0; z <= z1; z++) {
+          const v = level - (Math.abs(x - sx) + Math.abs(y - sy) + Math.abs(z - sz));
+          if (v <= 0) continue;
+          const k = this._idx(x, y, z);
+          if (this.opacityData[k] && !(x === sx && y === sy && z === sz)) continue;
+          const cur = this.lightData[k];
+          if (v <= (cur & 0xf)) continue;
+          if (!this._los(sx, sy, sz, x, y, z)) continue;
+          this.lightData[k] = ((cur >> 4) << 4) | v;
+        }
       }
     }
+  }
+
+  /** Line of sight between two cell centers: false when any cell along the
+   *  segment (excluding the endpoints) is opaque. */
+  _los(sx, sy, sz, tx, ty, tz) {
+    const dx = tx - sx, dy = ty - sy, dz = tz - sz;
+    const n = (Math.abs(dx) + Math.abs(dy) + Math.abs(dz)) * 2;
+    if (n <= 2) return true;
+    for (let i = 1; i < n; i++) {
+      const t = i / n;
+      const cx = Math.round(sx + dx * t);
+      const cy = Math.round(sy + dy * t);
+      const cz = Math.round(sz + dz * t);
+      if (cx === sx && cy === sy && cz === sz) continue;
+      if (cx === tx && cy === ty && cz === tz) continue;
+      if (this.opacityData[this._idx(cx, cy, cz)]) return false;
+    }
+    return true;
   }
 
   /**
@@ -327,42 +410,23 @@ export class LightField {
       }
     }
 
-    // Re-seed block light sources inside the box.
-    const blockQueue = [];
-    this.world.forEachVoxel((voxel) => {
-      const lvl = lightFor(voxel.type);
-      if (lvl <= 0) return;
-      for (const [cx, cy, cz] of cellsFor(voxel.anchor[0], voxel.anchor[1], voxel.anchor[2], voxel.size)) {
-        if (cx < bx0 || cx > bx1 || cy < by0 || cy > by1 || cz < bz0 || cz > bz1) continue;
-        const k = this._idx(cx, cy, cz);
-        const cur = this.lightData[k];
-        if (lvl > (cur & 0xf)) {
-          this.lightData[k] = ((cur >> 4) << 4) | lvl;
-          blockQueue.push(cx, cy, cz);
-        }
-      }
-    });
-
-    // Re-seed item light sources inside the box too.
-    for (const { x, y, z, level } of this.itemLights) {
-      if (level <= 0 || x < bx0 || x > bx1 || y < by0 || y > by1 || z < bz0 || z > bz1) continue;
-      const k = this._idx(x, y, z);
-      const cur = this.lightData[k];
-      if (level > (cur & 0xf)) {
-        this.lightData[k] = ((cur >> 4) << 4) | level;
-        blockQueue.push(x, y, z);
-      }
-    }
-
-    // Restore the surface as inflow sources, then flood the box.
+    // Restore the surface as sky inflow sources, then flood sky in the box.
+    // (The shell's block nibble is also correct as-is: the box extends MARGIN
+    // beyond the edit, farther than any block light can reach.)
     for (let s = 0; s < shell.length; s += 4) {
       const x = shell[s], y = shell[s + 1], z = shell[s + 2], v = shell[s + 3];
       this.lightData[this._idx(x, y, z)] = v;
       skyQueue.push(x, y, z);
-      blockQueue.push(x, y, z);
     }
     this._floodBox(skyQueue, true, bx0, by0, bz0, bx1, by1, bz1);
-    this._floodBox(blockQueue, false, bx0, by0, bz0, bx1, by1, bz1);
+
+    // Re-stamp block light: every source whose range can touch the box
+    // (including sources OUTSIDE it) writes its line-of-sight light into the
+    // box-clamped part of its radius — same math as the full recompute.
+    for (const [sx, sy, sz, lvl] of this._collectBlockSources()) {
+      if (sx + lvl < bx0 || sx - lvl > bx1 || sy + lvl < by0 || sy - lvl > by1 || sz + lvl < bz0 || sz - lvl > bz1) continue;
+      this._stampSource(sx, sy, sz, lvl, bx0, by0, bz0, bx1, by1, bz1);
+    }
   }
 
   /** Flood fill restricted to a box (writes clamped to the box bounds). */

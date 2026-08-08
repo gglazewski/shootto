@@ -7,6 +7,8 @@
 
 import { raycastVoxel, worldToCell } from '../engine/VoxelRaycaster.js';
 import { getItem } from '../engine/ItemRegistry.js';
+import { getEquipItem } from '../engine/EquipmentRegistry.js';
+import { isShootThrough } from '../engine/VoxelTypes.js';
 
 /** @returns {object} a world-like facade over voxels + placed items */
 export function itemAwareWorld(world) {
@@ -30,9 +32,27 @@ export function collisionWorld(world) {
       const v = world.get(x, y, z);
       if (v) return v;
       const item = world.itemAt(x, y, z);
-      return item && getItem(item.itemId)?.solid !== false ? item : null;
+      if (!item) return null;
+      // Pickable items (equipment registry) never block — you walk over a
+      // medkit, not onto it. Decoration items block unless marked non-solid.
+      if (getEquipItem(item.itemId)) return null;
+      return getItem(item.itemId)?.solid !== false ? item : null;
     },
     bounds: () => world.bounds(),
+  };
+}
+
+/** World facade for attack rays: shoot-through voxels (chain-link fence,
+ *  bars, barricade boards) are invisible to the ray, so bullets and swings
+ *  pass through them and hit whatever is behind. Placed items still stop
+ *  shots. Pass this (not the raw world) to itemAwarePick for weapon fire. */
+export function bulletWorld(world) {
+  return {
+    get(x, y, z) {
+      const v = world.get(x, y, z);
+      return v && isShootThrough(v.type) ? null : v;
+    },
+    itemAt: (x, y, z) => world.itemAt(x, y, z),
   };
 }
 

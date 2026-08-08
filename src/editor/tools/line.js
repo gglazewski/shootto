@@ -18,8 +18,11 @@ import { spanFor } from '../../engine/VoxelShape.js';
  */
 export function orthogonalLineAnchors(a, b, size) {
   const span = spanFor(size);
-  const ai = a.map((v) => v / span);
-  const bi = b.map((v) => v / span);
+  // Round instead of divide exactly: `a` may be a stale anchor placed at a
+  // different voxel size (small -> big switch mid-line), so snap it onto the
+  // current grid rather than producing fractional anchors.
+  const ai = a.map((v) => Math.round(v / span));
+  const bi = b.map((v) => Math.round(v / span));
 
   const dx = Math.abs(bi[0] - ai[0]);
   const dy = Math.abs(bi[1] - ai[1]);

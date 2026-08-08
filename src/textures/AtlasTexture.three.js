@@ -5,7 +5,7 @@
 // three/DOM-free and unit-testable in Node.
 
 import { renderAtlasRGBA, tilesForBlocks, TILE_SIZE } from './TextureAtlas.js';
-import { tileFor } from '../engine/VoxelTypes.js';
+import { tileFor, getDecal } from '../engine/VoxelTypes.js';
 
 /**
  * Browser: build a THREE texture + a face->index resolver for meshing.
@@ -22,6 +22,8 @@ export function createAtlasTexture(THREE) {
   texture.minFilter = THREE.NearestFilter;
   texture.generateMipmaps = false;
   texture.flipY = true;
-  const tileIndexFor = (typeId, face) => map.get(tileFor(typeId, face));
+  // Resolves block ids (per-face tiles) AND decal ids (single tile), so the
+  // mesher can look up decal quads through the same callback.
+  const tileIndexFor = (typeId, face) => map.get(getDecal(typeId)?.tile ?? tileFor(typeId, face));
   return { texture, tileIndexFor, atlas: { ...atlas, tileSize: TILE_SIZE } };
 }

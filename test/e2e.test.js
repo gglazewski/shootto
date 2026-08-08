@@ -202,9 +202,9 @@ T('lighting pipeline: sealed room is dark, roof hole lets light in', async () =>
 });
 
 T('hud reflects selection', async () => {
-  await page.evaluate(() => window.__voxelgame.toolbar.selectType('wood'));
+  await page.evaluate(() => window.__voxelgame.toolbar.selectType('stone'));
   const hud = await page.textContent('#hud-type');
-  assert.equal(hud, 'wood');
+  assert.equal(hud, 'stone');
 });
 
 T('hotbar has 10 slots and inventory keeps all block icons', async () => {
@@ -218,7 +218,8 @@ T('hotbar has 10 slots and inventory keeps all block icons', async () => {
     return {
       slotCount: slots.length,
       filled: slots.filter((s) => s.querySelector('canvas')).length,
-      inventoryIcons: document.querySelectorAll('#inventory canvas').length,
+      inventoryIcons: document.querySelectorAll('#inventory .inv-item[data-kind="block"] canvas').length,
+      decalIcons: document.querySelectorAll('#inventory .inv-item[data-kind="decal"] canvas').length,
       blockCount: window.__voxelgame.toolbar.items.length,
       iconPixels,
     };
@@ -227,19 +228,20 @@ T('hotbar has 10 slots and inventory keeps all block icons', async () => {
   assert.equal(info.filled, Math.min(info.blockCount, 10), 'default slots must fill from the block list');
   assert.ok(info.iconPixels.slice(0, info.filled).every((p) => p > 0), 'filled hotbar icons must contain visible pixels');
   assert.equal(info.inventoryIcons, info.blockCount, 'inventory must keep one icon per block');
+  assert.ok(info.decalIcons > 0, 'inventory must list the decal section');
 });
 
 T('hovering a block in the inventory and pressing a number assigns it to that slot', async () => {
   await page.evaluate(() => window.__voxelgame.app.inventory.show());
   await page.waitForTimeout(100);
-  // hover the torch block in the inventory
+  // hover the brick block in the inventory
   const hovered = await page.evaluate(() => {
     const btns = [...document.querySelectorAll('#inventory .inv-item')];
-    const torch = btns.find((b) => b.dataset.id === 'torch');
-    torch.dispatchEvent(new MouseEvent('mouseenter'));
+    const brick = btns.find((b) => b.dataset.id === 'brick');
+    brick.dispatchEvent(new MouseEvent('mouseenter'));
     return window.__voxelgame.inventory.hoveredId;
   });
-  assert.equal(hovered, 'torch');
+  assert.equal(hovered, 'brick');
 
   await page.keyboard.press('Digit1');
   await page.waitForTimeout(100);
@@ -247,18 +249,18 @@ T('hovering a block in the inventory and pressing a number assigns it to that sl
     slot0: window.__voxelgame.toolbar.slots[0]?.id ?? null,
     hotbarIcons: document.querySelectorAll('.slot canvas').length,
   }));
-  assert.equal(assigned.slot0, 'torch', 'slot 1 must hold the hovered block');
+  assert.equal(assigned.slot0, 'brick', 'slot 1 must hold the hovered block');
 
-  // reassign torch to slot 10 (the 0 key) — it must leave slot 1 behind
+  // reassign brick to slot 10 (the 0 key) — it must leave slot 1 behind
   await page.keyboard.press('Digit0');
   await page.waitForTimeout(100);
   const reassigned = await page.evaluate(() => ({
     slot0: window.__voxelgame.toolbar.slots[0]?.id ?? null,
     slot9: window.__voxelgame.toolbar.slots[9]?.id ?? null,
-    duplicates: window.__voxelgame.toolbar.slots.filter((s) => s?.id === 'torch').length,
+    duplicates: window.__voxelgame.toolbar.slots.filter((s) => s?.id === 'brick').length,
   }));
   assert.equal(reassigned.slot0, null, 'reassigning must empty the previous slot');
-  assert.equal(reassigned.slot9, 'torch', 'the 0 key must move the block to slot 10');
+  assert.equal(reassigned.slot9, 'brick', 'the 0 key must move the block to slot 10');
   assert.equal(reassigned.duplicates, 1, 'a block must never occupy two slots at once');
 
   // reassign grass (its default slot) to slot 10 via the 0 key

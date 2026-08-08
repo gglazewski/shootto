@@ -80,13 +80,18 @@
       #ammo { font-size: 20px; min-width: 0; }
     }
 
-    #crosshair { left: 50%; top: 50%; width: 18px; height: 18px; transform: translate(-50%, -50%); }
-    #crosshair::before, #crosshair::after {
-      content: ''; position: absolute; background: rgba(255,255,255,0.85);
-      box-shadow: 0 0 2px rgba(0,0,0,0.8);
-    }
-    #crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
-    #crosshair::after  { left: 0; top: 8px; width: 18px; height: 2px; }
+    /* The crosshair is four segments whose distance from the centre reflects
+       the weapon's current aim spread: tight for fists/melee and perfectly
+       accurate guns, opening up as you fire (GameApp._updateCrosshair sets the
+       --spread offset in px). */
+    #crosshair { left: 50%; top: 50%; width: 0; height: 0; transform: translate(-50%, -50%); }
+    .c-line { position: absolute; background: rgba(255,255,255,0.85); box-shadow: 0 0 2px rgba(0,0,0,0.8); }
+    .c-top, .c-bottom { width: 2px; height: 9px; left: -1px; }
+    .c-left, .c-right { height: 2px; width: 9px; top: -1px; }
+    .c-top { top: calc(-12px - var(--spread, 0px)); }
+    .c-bottom { top: calc(3px + var(--spread, 0px)); }
+    .c-left { left: calc(-12px - var(--spread, 0px)); }
+    .c-right { left: calc(3px + var(--spread, 0px)); }
 
     #toast {
       left: 50%; top: calc(50% + 30px); transform: translateX(-50%);
@@ -219,7 +224,12 @@
 <body>
   <div id="game"></div>
 
-  <div id="crosshair" class="overlay"></div>
+  <div id="crosshair" class="overlay">
+    <span class="c-line c-top"></span>
+    <span class="c-line c-bottom"></span>
+    <span class="c-line c-left"></span>
+    <span class="c-line c-right"></span>
+  </div>
   <div id="hit-feedback"></div>
   <div id="toast" class="overlay"></div>
   <div id="pickup" class="overlay hidden"></div>

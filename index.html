@@ -187,6 +187,7 @@
       position: absolute; top: 64px; left: 12px; width: 250px;
       background: rgba(14,17,22,0.94); border: 1px solid #333; border-radius: 12px;
       padding: 14px; pointer-events: auto; font-size: 13px;
+      max-height: calc(100vh - 90px); overflow-y: auto;
     }
     #ie-panel .ie-title, #ep-panel .ie-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
     #ie-panel .ie-row, #ep-panel .ie-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
@@ -196,14 +197,31 @@
       color: #eee; padding: 3px 6px;
     }
     #ie-size, #ie-collision, #ep-kind, #ep-hands, #ep-cat { display: flex; gap: 4px; }
-    #ie-size button, #ie-collision button, #ie-buttons button, #ep-buttons button, #ep-muzzle, #ep-cat button {
+    #ie-size button, #ie-collision button, #ie-buttons button, #ep-buttons button, #ep-cat button, .ie-tools button, #ep-shape button, .ie-views button {
       padding: 5px 10px; border: 1px solid #3a3f47; border-radius: 6px;
       background: rgba(20,24,30,0.9); color: #e8e8e8; cursor: pointer; font-size: 12px;
     }
     #ie-collision button { padding: 5px 6px; white-space: nowrap; }
-    #ie-size button:hover, #ie-collision button:hover, #ie-buttons button:hover, #ep-buttons button:hover, #ep-muzzle:hover, #ep-cat button:hover { background: rgba(40,46,56,0.95); }
-    #ie-size button.active, #ie-collision button.active, #ep-grip.active, #ep-muzzle.active, #ep-kind button.active, #ep-hands button.active, #ep-cat button.active { border-color: #6c9; background: rgba(102,204,153,0.2); color: #fff; }
-    #ep-muzzle.active { border-color: #fc3; background: rgba(255,204,60,0.2); }
+    .ie-tools button, #ep-shape button, .ie-views button { padding: 4px 7px; }
+    #ie-size button:hover, #ie-collision button:hover, #ie-buttons button:hover, #ep-buttons button:hover, #ep-cat button:hover, .ie-tools button:hover:not(:disabled), #ep-shape button:hover, .ie-views button:hover { background: rgba(40,46,56,0.95); }
+    #ie-size button.active, #ie-collision button.active, #ep-kind button.active, #ep-hands button.active, #ep-cat button.active, .ie-tools button.active, #ep-shape button.active { border-color: #6c9; background: rgba(102,204,153,0.2); color: #fff; }
+    #ep-tool-muzzle.active { border-color: #fc3; background: rgba(255,204,60,0.2); }
+    .ie-tools { flex-wrap: wrap; justify-content: flex-start; }
+    .ie-tools button:disabled { opacity: 0.35; cursor: default; }
+    #ep-shape { display: flex; gap: 4px; flex-wrap: wrap; }
+    .ie-views { display: flex; gap: 4px; }
+    .ie-palette-strip { display: grid; grid-template-columns: repeat(auto-fill, 24px); gap: 4px; margin: 2px 0 8px; }
+    .ie-palette-strip .ie-color-swatch, .ie-recent .ie-color-swatch { width: 24px; height: 24px; }
+    .ie-color-swatch.selected { border-color: #6c9; box-shadow: 0 0 6px rgba(102,204,153,0.5); }
+    .ie-recent { display: flex; gap: 4px; min-height: 24px; }
+    .ie-status {
+      margin-top: 8px; padding-top: 6px; border-top: 1px solid #2c3442;
+      font-size: 11px; opacity: 0.75; line-height: 1.4; min-height: 28px;
+    }
+    .ie-grid-steppers { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+    #ep-panel .ie-grid-steppers input[type=number] { width: 40px; }
+    .ie-dim-label { opacity: 0.7; font-size: 11px; white-space: nowrap; }
+    #ie-thumb, #ep-thumb { background: #12151b; border: 1px solid #2c3442; border-radius: 6px; }
     #ep-cat button.active[data-kind="ammo"] { border-color: #fc3; background: rgba(255,204,60,0.2); }
     #ep-weapon-fields, #ep-ammo-fields { margin: 0; }
     #ep-weapon-fields.hidden, #ep-ammo-fields.hidden { display: none; }
@@ -393,9 +411,43 @@
         </span>
       </div>
       <div class="ie-row">
+        <span class="label" title="Build volume presets — the space you sculpt in (1 cell = 6.25 cm)">Volume</span>
+        <span id="ep-shape"></span>
+      </div>
+      <div class="ie-row">
+        <span class="label" title="Build volume in cells per axis (width × height × length)">Cells</span>
+        <span class="ie-grid-steppers">
+          <input id="ep-grid-x" type="number" min="4" max="32" step="1" value="8" title="Width (X)" />
+          <input id="ep-grid-y" type="number" min="4" max="32" step="1" value="8" title="Height (Y)" />
+          <input id="ep-grid-z" type="number" min="4" max="32" step="1" value="8" title="Length (Z — the direction the item points)" />
+          <span id="ep-grid-size" class="ie-dim-label">0.5 × 0.5 × 0.5 m</span>
+        </span>
+      </div>
+      <div class="ie-row">
         <span class="label">Color</span>
         <canvas id="ep-color" width="30" height="30"></canvas>
         <span id="ep-color-name"></span>
+        <input id="ep-color-custom" type="color" value="#c8b394" title="Pick a custom color" />
+      </div>
+      <div id="ep-palette-strip" class="ie-palette-strip"></div>
+      <div class="ie-row"><span class="label" title="Recently used custom colors">Recent</span><span id="ep-recent" class="ie-recent"></span></div>
+      <div class="ie-row ie-tools">
+        <button id="ep-tool-paint" title="Paint voxels — Shift+drag paints a stroke (P)">Paint</button>
+        <button id="ep-tool-erase" title="Erase voxels — Shift+drag erases a stroke (E)">Erase</button>
+        <button id="ep-tool-box" title="Click two corners to fill a cuboid, RMB erases it (V)">Box</button>
+        <button id="ep-tool-fill" title="Recolor the connected region under the cursor (F)">Fill</button>
+        <button id="ep-tool-grip" title="Click a cell to set where the hand grips the item (G)">Grip</button>
+        <button id="ep-tool-muzzle" title="Click a cell to set the barrel end of a ranged weapon (M)">Muzzle</button>
+        <button id="ep-mirror" title="Mirror painting across the volume centre (X)">Mirror: off (X)</button>
+      </div>
+      <div class="ie-row">
+        <span class="label">View</span>
+        <span id="ep-views" class="ie-views">
+          <button data-view="front" title="Look along the item's forward axis">Front</button>
+          <button data-view="side" title="Side view">Side</button>
+          <button data-view="top" title="Top-down view">Top</button>
+          <button data-view="iso" title="Default orbit view">Iso</button>
+        </span>
       </div>
       <div id="ep-weapon-fields">
         <div class="ie-row">
@@ -422,10 +474,6 @@
             <button id="ep-hands-one" title="Held in one hand">1-hand</button>
             <button id="ep-hands-two" title="Held in both hands (pose planned)">2-hand</button>
           </span>
-        </div>
-        <div class="ie-row">
-          <span class="label" title="Barrel end of a ranged weapon — where shots come from (M)">Muzzle</span>
-          <button id="ep-muzzle" title="Toggle muzzle mode — click a voxel to set the barrel end (M)">Muzzle (M)</button>
         </div>
         <div class="ie-row" id="ep-magazine-row">
           <span class="label" title="Rounds per magazine; 0 = no magazine">Magazine</span>
@@ -462,26 +510,19 @@
           <input id="ep-grant" type="number" min="1" max="9999" step="1" value="6" />
         </div>
       </div>
-      <div class="ie-row"><span class="label">Voxels</span><span id="ep-count">0</span></div>
+      <div class="ie-row">
+        <span class="label">Voxels</span><span id="ep-count">0</span>
+        <canvas id="ep-thumb" width="72" height="72" title="Catalogue / pickup preview"></canvas>
+      </div>
       <div id="ep-buttons">
         <button id="ep-new" title="Start a fresh blank item (Ctrl+Z restores the previous one)">New</button>
-        <button id="ep-palette" title="Choose a color (E or 1-0)">Palette (E)</button>
-        <button id="ep-grip" title="Toggle grip mode — click a voxel to set the grip (G)">Grip (G)</button>
         <button id="ep-rotate" title="Rotate the direction arrow 90° (R)">Direction (R)</button>
         <button id="ep-undo" title="Undo (Ctrl+Z)">Undo</button>
         <button id="ep-save" title="Save to the items catalogue (Ctrl+S)">Save</button>
         <button id="ep-catalogue" title="Browse saved items">Catalogue</button>
         <button id="ep-back" title="Back to world editor (F3)">Back</button>
       </div>
-    </div>
-  </div>
-
-  <div id="ep-palette-modal" class="ie-modal">
-    <div class="ie-modal-box">
-      <h2>Voxel Color</h2>
-      <div class="ie-row"><span class="label">Tip</span><span>LMB paints, RMB erases, MMB picks · G sets the grip</span></div>
-      <div id="ep-palette-grid" class="ie-palette-grid"></div>
-      <button id="ep-palette-close" class="ie-close">Close</button>
+      <div id="ep-status" class="ie-status"></div>
     </div>
   </div>
 
@@ -514,12 +555,33 @@
         <span class="label">Color</span>
         <canvas id="ie-color" width="30" height="30"></canvas>
         <span id="ie-color-name"></span>
+        <input id="ie-color-custom" type="color" value="#c8b394" title="Pick a custom color" />
+      </div>
+      <div id="ie-palette-strip" class="ie-palette-strip"></div>
+      <div class="ie-row"><span class="label" title="Recently used custom colors">Recent</span><span id="ie-recent" class="ie-recent"></span></div>
+      <div class="ie-row ie-tools">
+        <button id="ie-tool-paint" title="Paint voxels — Shift+drag paints a stroke (P)">Paint</button>
+        <button id="ie-tool-erase" title="Erase voxels — Shift+drag erases a stroke (E)">Erase</button>
+        <button id="ie-tool-box" title="Click two corners to fill a cuboid, RMB erases it (V)">Box</button>
+        <button id="ie-tool-fill" title="Recolor the connected region under the cursor (F)">Fill</button>
+        <button id="ie-mirror" title="Mirror painting across the grid centre (X)">Mirror: off (X)</button>
+      </div>
+      <div class="ie-row">
+        <span class="label">View</span>
+        <span id="ie-views" class="ie-views">
+          <button data-view="front" title="Front view">Front</button>
+          <button data-view="side" title="Side view">Side</button>
+          <button data-view="top" title="Top-down view">Top</button>
+          <button data-view="iso" title="Default orbit view">Iso</button>
+        </span>
       </div>
       <div class="ie-row"><span class="label">Light</span><span id="ie-light-label">off</span></div>
-      <div class="ie-row"><span class="label">Voxels</span><span id="ie-count">0</span></div>
+      <div class="ie-row">
+        <span class="label">Voxels</span><span id="ie-count">0</span>
+        <canvas id="ie-thumb" width="72" height="72" title="Catalogue / inventory preview"></canvas>
+      </div>
       <div id="ie-buttons">
         <button id="ie-new" title="Start a fresh blank item (Ctrl+Z restores the previous one)">New</button>
-        <button id="ie-palette" title="Choose a color (E or 1-0)">Palette (E)</button>
         <button id="ie-light" title="Light settings (L)">Light (L)</button>
         <button id="ie-undo" title="Undo (Ctrl+Z)">Undo</button>
         <button id="ie-load" title="Load an item file">Load</button>
@@ -527,15 +589,7 @@
         <button id="ie-catalogue" title="Browse saved items">Catalogue</button>
         <button id="ie-back" title="Back to world editor (F2)">Back</button>
       </div>
-    </div>
-  </div>
-
-  <div id="ie-palette-modal" class="ie-modal">
-    <div class="ie-modal-box">
-      <h2>Voxel Color</h2>
-      <div class="ie-row"><span class="label">Tip</span><span>LMB paints, RMB erases, MMB picks</span></div>
-      <div id="ie-palette-grid" class="ie-palette-grid"></div>
-      <button id="ie-palette-close" class="ie-close">Close</button>
+      <div id="ie-status" class="ie-status"></div>
     </div>
   </div>
 

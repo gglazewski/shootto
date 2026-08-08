@@ -2,9 +2,9 @@
 //
 // Each live mob is a THREE.Sprite carrying a frame-strip texture built by
 // mobSprites. Sprites always face the camera (true billboards) and are scaled
-// so the art fills the mob's AABB (feet at the bottom, head at the top), which
-// makes them depth-test correctly against the voxel world. A hurt flash tints
-// the sprite through the material color.
+// so the drawn character stands exactly mob.height tall with its feet on the
+// mob's position, which makes them depth-test correctly against the voxel
+// world. A hurt flash tints the sprite through the material color.
 //
 // Lighting: mobs live in the same light engine as chunks/items. Each sprite
 // samples the LightField at its current cell (cached until it crosses into a
@@ -14,7 +14,10 @@
 // normal. Dark caves stay dark, torches glow warm, and night dims them, so a
 // mob no longer glows at full brightness in a sealed room.
 
-import { buildMobSpriteSheet, FRAMES, FRAME_COUNT } from './mobSprites.js';
+import {
+  buildMobSpriteSheet, randomMobSkin, FRAMES, FRAME_COUNT,
+  SHEET_STAND_ROWS, SHEET_GROUND_ROW,
+} from './mobSprites.js';
 import { CELL_SIZE } from '../engine/Space.js';
 
 /** Frame index for a (state, animTime) pair. */
@@ -25,6 +28,10 @@ export function frameFor(animName, animTime) {
   if (animName === 'idle') return list[Math.floor(animTime * 2) % n];
   if (animName === 'walk') return list[Math.floor(animTime * 8) % n];
   if (animName === 'attack') return list[Math.floor(animTime * 10) % n];
+  if (animName === 'hurt') return list[Math.floor(animTime * 14) % n];
+  // Death plays once and holds on the corpse: Mob.takeDamage zeroes animTime
+  // when it kills, so the mob collapses, hits the floor, and stays there.
+  if (animName === 'dead') return list[Math.min(n - 1, Math.floor(animTime * 7))];
   return list[0];
 }
 
@@ -48,15 +55,15 @@ export class MobRenderer {
     this.camera = camera;
     /** @type {Map<object, {sprite: THREE.Sprite, texture: THREE.Texture}>} */
     this.sprites = new Map();
-    this._sheetCache = new Map(); // typeId -> sheet
+    this._sheetCache = new Map(); // skin -> sheet (shared by every mob wearing it)
     this._toCam = new THREE.Vector3();
   }
 
-  _sheetFor(typeId) {
-    let sheet = this._sheetCache.get(typeId);
+  _sheetFor(skin) {
+    let sheet = this._sheetCache.get(skin);
     if (!sheet) {
-      sheet = buildMobSpriteSheet(typeId);
-      this._sheetCache.set(typeId, sheet);
+      sheet = buildMobSpriteSheet(skin);
+      this._sheetCache.set(skin, sheet);
     }
     return sheet;
   }
@@ -64,7 +71,9 @@ export class MobRenderer {
   /** Create + attach a billboard for a mob. */
   addMob(mob) {
     const T = this.THREE;
-    const sheet = this._sheetFor(mob.type.id);
+    // Which character a mob looks like is picked once, at spawn (MobManager),
+    // and only affects its art — stats and size come from its type.
+    const sheet = this._sheetFor(mob.skin ?? randomMobSkin());
     const texture = new T.Texture(sheet.canvas);
     texture.needsUpdate = true;
     texture.magFilter = T.NearestFilter;
@@ -81,6 +90,9 @@ export class MobRenderer {
     const sprite = new T.Sprite(material);
     sprite.renderOrder = 1;
     this.scene.add(sprite);
+    // The sheet canvas is blank until its art decodes (see mobSprites), so
+    // re-upload it once that lands — otherwise the first mobs stay invisible.
+    sheet.ready?.then(() => { texture.needsUpdate = true; }).catch(() => {});
     const entry = { sprite, texture, sheet };
     this.sprites.set(mob, entry);
     this._applyPose(mob, 0, entry);
@@ -104,11 +116,16 @@ export class MobRenderer {
 
   _applyPose(mob, dt, entry) {
     const { sprite, texture, sheet } = entry;
-    const aspect = sheet.frameW / sheet.frameH;
-    const h = mob.height;
-    // Sprite is centered at its position, so raise it by half its height.
-    sprite.scale.set(h * aspect, h, 1);
-    sprite.position.set(mob.pos.x, mob.pos.y + h / 2, mob.pos.z);
+    // The quad is the whole frame, but a mob's height describes the character
+    // standing in it — and the frame is taller than that, since it also has to
+    // hold outflung arms and a corpse lying down. Scale so the art's standing
+    // height equals mob.height (shorter characters stay shorter), then drop the
+    // quad so the frame's ground row lands on the mob's feet.
+    const quadH = mob.height * (sheet.frameH / SHEET_STAND_ROWS);
+    const quadW = quadH * (sheet.frameW / sheet.frameH);
+    const underfoot = (sheet.frameH - SHEET_GROUND_ROW) / sheet.frameH * quadH;
+    sprite.scale.set(quadW, quadH, 1);
+    sprite.position.set(mob.pos.x, mob.pos.y + quadH / 2 - underfoot, mob.pos.z);
 
     // Pick the frame for the current anim.
     const idx = frameFor(mob.animName, mob.animTime);

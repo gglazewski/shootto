@@ -28,7 +28,7 @@ export class InputDispatcher {
         e.preventDefault();
         this._emit('wheel', { deltaY: e.deltaY });
       },
-      mousedown: (e) => this._emit('mousedown', { button: e.button, x: e.clientX, y: e.clientY }),
+      mousedown: (e) => this._emit('mousedown', { button: e.button, x: e.clientX, y: e.clientY, shiftKey: e.shiftKey }),
       mouseup: (e) => this._emit('mouseup', { button: e.button, x: e.clientX, y: e.clientY }),
       contextmenu: (e) => e.preventDefault(),
     };

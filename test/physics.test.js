@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { World } from '../src/engine/World.js';
 import { SIZE } from '../src/engine/VoxelTypes.js';
 import { CELL_SIZE } from '../src/engine/Space.js';
-import { aabbCells, collides, moveAxis, moveWithStep, groundedAt } from '../src/engine/Physics.js';
+import { aabbCells, collides, moveAxis, moveWithStep, moveWithStepEx, groundedAt } from '../src/engine/Physics.js';
 
 const box = (minX, minY, minZ, maxX, maxY, maxZ) => ({ minX, minY, minZ, maxX, maxY, maxZ });
 // Standing player AABB centered at cx/cz on the x/z plane, feet at feetY.
@@ -197,4 +197,82 @@ test('moveWithStep: does not step onto a 1m wall from -x either', () => {
   const b = playerBox(0.1, 0, CELL_SIZE);
   const r = moveWithStep(w, b, -0.4, 0, 0.5, true);
   assert.equal(r.minY, CELL_SIZE, 'feet did not rise onto a 1m wall');
+});
+
+// --- moveWithStepEx (both axis orders, hit metadata, slide) ---
+
+/** Wall column at cell x=2 (world x [1.0, 1.5]) covering only z cell 0. */
+function cornerWallWorld() {
+  const w = new World();
+  for (let y = 0; y <= 3; y++) w.place('stone', SIZE.SMALL, 2, y, 0);
+  return w;
+}
+
+test('moveWithStepEx: diagonal past a wall end picks the axis order that clears it', () => {
+  // x-first snaps flush against the wall while the box still overlaps its z
+  // band, wasting most of the x delta. z-first moves the box past the wall's
+  // end first, freeing the full diagonal.
+  const w = cornerWallWorld();
+  const b = playerBox(0.6, 0.6, 0);
+  const r = moveWithStepEx(w, b, 0.4, 0.4, 0.5, false);
+  assert.ok(Math.abs(r.box.minX - (0.3 + 0.4)) < 1e-9, `x travelled fully (minX=${r.box.minX})`);
+  assert.ok(Math.abs(r.box.minZ - (0.3 + 0.4)) < 1e-9, 'z travelled fully');
+  assert.equal(r.hitX, false);
+  assert.equal(r.hitZ, false);
+  assert.equal(r.steppedUp, false);
+});
+
+test('moveWithStepEx: mirrored (-x/-z) diagonal clears the wall end too', () => {
+  const w = new World();
+  for (let y = 0; y <= 3; y++) w.place('stone', SIZE.SMALL, -3, y, -1);
+  const b = playerBox(-0.6, -0.6, 0);
+  const r = moveWithStepEx(w, b, -0.4, -0.4, 0.5, false);
+  assert.ok(Math.abs(r.box.minX - (-0.9 - 0.4)) < 1e-9, `x travelled fully (minX=${r.box.minX})`);
+  assert.ok(Math.abs(r.box.minZ - (-0.9 - 0.4)) < 1e-9, 'z travelled fully');
+});
+
+test('moveWithStepEx: reports which axis hit', () => {
+  const w = new World();
+  // Solid wall across the whole +x face ahead (several z cells).
+  for (let z = -2; z <= 2; z++) for (let y = 0; y <= 3; y++) w.place('stone', SIZE.SMALL, 2, y, z);
+  const b = playerBox(0.6, 0, 0);
+  const r = moveWithStepEx(w, b, 0.4, 0.1, 0.5, false);
+  assert.equal(r.hitX, true, 'x ran into the wall');
+  assert.equal(r.hitZ, false, 'z stayed free');
+  assert.ok(Math.abs(r.box.maxX - 1.0) < 1e-9, 'flush against the wall face');
+});
+
+test('moveWithStepEx: slide spends the blocked delta along the free axis', () => {
+  const w = new World();
+  for (let z = -2; z <= 2; z++) for (let y = 0; y <= 3; y++) w.place('stone', SIZE.SMALL, 2, y, z);
+  const b = playerBox(0.6, 0.3, 0);
+  const noSlide = moveWithStepEx(w, { ...b }, 0.4, 0.1, 0.5, false);
+  const slid = moveWithStepEx(w, { ...b }, 0.4, 0.1, 0.5, false, { slide: true });
+  assert.ok(Math.abs(noSlide.box.minZ - 0.1) < 1e-9, 'plain clamp keeps the small z delta');
+  assert.ok(slid.box.minZ > noSlide.box.minZ + 0.2, `slide carries speed along the wall (z=${slid.box.minZ})`);
+  // Total displacement must not exceed the requested magnitude.
+  const want = Math.hypot(0.4, 0.1);
+  const got = Math.hypot(slid.box.minX - b.minX, slid.box.minZ - b.minZ);
+  assert.ok(got <= want + 1e-9, 'slide must not add speed');
+});
+
+test('moveWithStepEx: slide does not invent sideways motion on a head-on hit', () => {
+  const w = new World();
+  for (let z = -2; z <= 2; z++) for (let y = 0; y <= 3; y++) w.place('stone', SIZE.SMALL, 2, y, z);
+  const b = playerBox(0.6, 0, 0);
+  const r = moveWithStepEx(w, b, 0.4, 0, 0.5, false, { slide: true });
+  assert.ok(Math.abs(r.box.minZ - (-0.3)) < 1e-9, 'no lateral drift without z intent');
+});
+
+test('moveWithStepEx: steps up a 0.5m block approached diagonally', () => {
+  const w = new World();
+  // 2x2 floor (top face y=0.5) with a step block at cell (1,1,1) (top y=1.0).
+  for (let x = 0; x <= 1; x++) for (let z = 0; z <= 1; z++) w.place('grass', SIZE.SMALL, x, 0, z);
+  w.place('wood', SIZE.SMALL, 1, 1, 1);
+  const b = playerBox(0.15, 0.15, CELL_SIZE, 0.25, 1.7); // mob-sized, on the floor
+  const r = moveWithStepEx(w, b, 0.3, 0.3, 0.5, true);
+  assert.equal(r.steppedUp, true, 'diagonal approach must still step');
+  assert.ok(Math.abs(r.box.minY - 2 * CELL_SIZE) < 1e-9, 'feet raised onto the block top');
+  assert.ok(Math.abs(r.box.minX - (0.15 - 0.25 + 0.3)) < 1e-9, 'x travelled fully');
+  assert.ok(Math.abs(r.box.minZ - (0.15 - 0.25 + 0.3)) < 1e-9, 'z travelled fully');
 });

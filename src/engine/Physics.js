@@ -96,20 +96,76 @@ export function groundedAt(world, box) {
  * used instead. Returns a new box. Does not mutate `box`.
  */
 export function moveWithStep(world, box, dx, dz, stepHeight, grounded) {
-  const moved = { ...box };
-  const tx = moveAxis(world, moved, 'x', dx);
-  const tz = moveAxis(world, moved, 'z', dz);
-  if (!grounded || (!tx.hit && !tz.hit)) return moved;
+  return moveWithStepEx(world, box, dx, dz, stepHeight, grounded).box;
+}
 
-  const raised = { ...box };
-  if (moveAxis(world, raised, 'y', stepHeight).hit) return moved; // no headroom
-  const rx = moveAxis(world, raised, 'x', dx);
-  const rz = moveAxis(world, raised, 'z', dz);
-  if (collides(world, raised)) return moved; // something in the way up top
-  // Compare travel distance, not signed delta: `moved` is negative when moving
-  // along -x/-z, so a step-up that clears the obstacle must be judged by |moved|.
-  const improved =
-    (tx.hit && Math.abs(rx.moved) > Math.abs(tx.moved)) ||
-    (tz.hit && Math.abs(rz.moved) > Math.abs(tz.moved));
-  return improved ? raised : moved;
+/**
+ * Like moveWithStep, but returns hit metadata alongside the box:
+ * { box, hitX, hitZ, steppedUp }. The horizontal move is attempted in BOTH
+ * axis orders (x-then-z and z-then-x) and the order that travels further wins —
+ * resolving one axis first snaps the box flush against a face, which used to
+ * block the other axis on diagonal approaches to corners. The step-up retry is
+ * judged by total travel too, so a 0.5 m block approached diagonally (where no
+ * single axis improves on its own) still steps.
+ *
+ * opts.slide: when exactly one axis hit (and no step happened), spend the
+ * unused magnitude along the free axis so the mover keeps its speed along a
+ * wall instead of grinding into it. Off by default — the player's feel and
+ * tests expect the plain per-axis clamp. opts.slideCapX / opts.slideCapZ bound
+ * the EXTRA distance slide may add on that axis, so a mover aiming almost
+ * straight at a narrow gap converges onto the gap line instead of being flung
+ * past it by the redirected speed.
+ */
+export function moveWithStepEx(world, box, dx, dz, stepHeight, grounded, opts = {}) {
+  const attempt = (src, xFirst) => {
+    const b = { ...src };
+    let rx, rz;
+    if (xFirst) {
+      rx = moveAxis(world, b, 'x', dx);
+      rz = moveAxis(world, b, 'z', dz);
+    } else {
+      rz = moveAxis(world, b, 'z', dz);
+      rx = moveAxis(world, b, 'x', dx);
+    }
+    return { box: b, hitX: rx.hit, hitZ: rz.hit, travel: Math.hypot(rx.moved, rz.moved) };
+  };
+  const pick = (src) => {
+    const a = attempt(src, true);
+    if (!a.hitX && !a.hitZ) return a; // free move: both orders are identical
+    const b = attempt(src, false);
+    return b.travel > a.travel + 1e-9 ? b : a;
+  };
+
+  let best = pick(box);
+  let steppedUp = false;
+
+  if (grounded && (best.hitX || best.hitZ)) {
+    const raisedSrc = { ...box };
+    if (!moveAxis(world, raisedSrc, 'y', stepHeight).hit) {
+      const raised = pick(raisedSrc);
+      if (!collides(world, raised.box) && raised.travel > best.travel + 1e-9) {
+        best = raised;
+        steppedUp = true;
+      }
+    }
+  }
+
+  if (opts.slide && !steppedUp && best.hitX !== best.hitZ) {
+    const want = Math.hypot(dx, dz);
+    const got = Math.hypot(best.box.minX - box.minX, best.box.minZ - box.minZ);
+    const leftover = want - got;
+    if (leftover > 1e-6) {
+      // Slide only along an axis the mover already intended to travel — a
+      // head-on hit must not invent sideways motion.
+      if (best.hitX && dz !== 0) {
+        const amount = Math.min(leftover, opts.slideCapZ ?? Infinity);
+        if (amount > 0 && moveAxis(world, best.box, 'z', Math.sign(dz) * amount).hit) best.hitZ = true;
+      } else if (best.hitZ && dx !== 0) {
+        const amount = Math.min(leftover, opts.slideCapX ?? Infinity);
+        if (amount > 0 && moveAxis(world, best.box, 'x', Math.sign(dx) * amount).hit) best.hitX = true;
+      }
+    }
+  }
+
+  return { box: best.box, hitX: best.hitX, hitZ: best.hitZ, steppedUp };
 }

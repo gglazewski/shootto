@@ -36,9 +36,11 @@ test('a group of mobs shares LOS while walled/far mobs do not aggro', () => {
   world.addMobSpawn('imp', 10, 2, 22); // world (5.25, 1.0, 11.25)
   world.addMobSpawn('imp', 10, 2, 24); // world (5.25, 1.0, 12.25)
   world.addMobSpawn('imp', 12, 2, 22); // world (6.25, 1.0, 11.25)
-  // East of the wall, within aggro range but with no line of sight.
-  world.addMobSpawn('imp', 34, 2, 22); // world (17.25, 1.0, 11.25)
-  world.addMobSpawn('imp', 36, 2, 24); // world (18.25, 1.0, 12.25)
+  // East of the wall, within aggro range but with no line of sight — and
+  // beyond the cluster's alertRadius (12m), so their alarm can't wake these
+  // either (a separate, intended mechanic — see the alarm tests).
+  world.addMobSpawn('imp', 40, 2, 22); // world (20.25, 1.0, 11.25)
+  world.addMobSpawn('imp', 42, 2, 24); // world (21.25, 1.0, 12.25)
   // Far corner, beyond aggro range entirely.
   world.addMobSpawn('imp', 46, 2, 46); // world (23.25, 1.0, 23.25)
 
@@ -51,7 +53,7 @@ test('a group of mobs shares LOS while walled/far mobs do not aggro', () => {
 
   const aggroByX = mgr.mobs.map((m) => ({ x: m.pos.x, aggro: m.aggro })).sort((a, b) => a.x - b.x);
   const near = aggroByX.filter((m) => m.x < 10);
-  const walled = aggroByX.filter((m) => m.x > 15 && m.x < 20);
+  const walled = aggroByX.filter((m) => m.x > 15 && m.x < 22);
   const far = aggroByX.filter((m) => m.x > 22);
 
   assert.equal(near.length, 3, 'three mobs cluster near the player');
@@ -189,7 +191,10 @@ test('mobs chase the player down the bundled-world staircase without disappearin
 
   // The player ducks down the staircase into the basement; mobs must follow
   // down without any position going non-finite or plunging below the world.
+  // (Teleported out of sight, so seed the mobs' last-known position — the
+  // test exercises the descent, not target acquisition.)
   const basement = { x: 4.25, y: -2.5, z: 0.75 };
+  for (const m of mgr.mobs) m.lkp = { ...basement };
   let minY = 1e9;
   let nonFinite = false;
   for (let i = 0; i < 30 * 60; i++) {
@@ -204,4 +209,159 @@ test('mobs chase the player down the bundled-world staircase without disappearin
   }
   assert.equal(nonFinite, false, 'no mob may disappear (non-finite position or plunge)');
   assert.ok(minY < -1.5, `at least one mob should descend into the basement (minY=${minY.toFixed(1)})`);
+});
+
+test('a pack funnels through a narrow doorway without deadlocking', () => {
+  // A wall with a single 1m doorway between the pack and the player — wide
+  // enough for one mob plus elbow room, far too narrow for the pack abreast.
+  // The crowd must queue through — steering separation and overlap resolution
+  // must not wedge mobs into the jambs or lock the doorway up.
+  const world = new World();
+  for (let x = 0; x < 48; x += 2) {
+    for (let z = 0; z < 48; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
+  }
+  for (let z = 0; z < 48; z++) {
+    if (z === 12 || z === 13) continue; // the doorway
+    for (let y = 2; y <= 6; y++) world.place('stone', SIZE.SMALL, 20, y, z);
+  }
+  for (let i = 0; i < 6; i++) world.addMobSpawn('imp', 12 + (i % 3) * 2, 2, 10 + Math.floor(i / 3) * 2);
+
+  const mgr = makeManager(world);
+  mgr.rebuild();
+  assert.equal(mgr.mobs.length, 6);
+  // The wall hides the player, so wake the pack directly — the test is about
+  // crowd flow through the bottleneck, not aggro acquisition.
+  for (const m of mgr.mobs) {
+    m.aggro = true;
+    m.state = 'chase';
+  }
+
+  const player = { x: 13.25, y: 1.0, z: 6.25 }; // east of the wall
+  let walled = false;
+  for (let f = 0; f < 40 * 60 && !walled; f++) {
+    mgr.update(1 / 60, player);
+    for (const m of mgr.mobs) {
+      if (collides(world, m._box())) { walled = true; break; }
+    }
+  }
+  assert.equal(walled, false, 'no mob may be squeezed into the doorway jambs');
+  // "Through" = east of the wall (face at x=10.5). The whole pack can't all
+  // stand within arm's reach of the player — the front rank rings them and the
+  // back rank queues behind it — so proximity is the wrong metric here.
+  const through = mgr.mobs.filter((m) => m.pos.x > 10.5).length;
+  assert.ok(through >= 4, `most of the pack should make it through the doorway (${through}/6 east of the wall)`);
+  const engaged = mgr.mobs.filter((m) => Math.hypot(m.pos.x - player.x, m.pos.z - player.z) < 2.0).length;
+  assert.ok(engaged >= 1, `the front rank should engage the player (${engaged} within 2m)`);
+});
+
+// --- group alarm ---
+
+test('shooting one mob alarms its packmates, even through a wall', () => {
+  const world = walledWorld();
+  world.addMobSpawn('imp', 10, 2, 22); // west: the victim, world (5.25, 1.0, 11.25)
+  world.addMobSpawn('imp', 30, 2, 22); // east of the wall, ~10.0m from the victim
+  world.addMobSpawn('imp', 46, 2, 46); // far corner, ~21m — out of earshot
+
+  const mgr = makeManager(world);
+  mgr.rebuild();
+  assert.equal(mgr.mobs.length, 3);
+  const [victim, walled, far] = mgr.mobs;
+
+  // Player stands west, visible only to the victim's side; they snipe it.
+  const player = { x: 3.25, y: 1.0, z: 11.25 };
+  victim.takeDamage(10, player);
+  assert.equal(victim.aggro, true);
+
+  // Run past the alert wake delay (0..0.3s).
+  for (let i = 0; i < 8; i++) mgr.update(0.1, player);
+
+  assert.equal(walled.aggro, true, 'a packmate in earshot must join, wall or not');
+  assert.ok(walled.lkp, 'and it knows where the shot came from');
+  assert.equal(far.aggro, false, 'out of earshot stays asleep');
+});
+
+test('an alarm propagates one hop, not in a chain across the map', () => {
+  const world = new World();
+  for (let x = 0; x < 64; x += 2) {
+    for (let z = 0; z < 64; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
+  }
+  // Three mobs in a line, 10m apart: A hears nobody, B hears A, C hears B.
+  world.addMobSpawn('imp', 10, 2, 10); // A (5.25, 1.0, 5.25)
+  world.addMobSpawn('imp', 30, 2, 10); // B (15.25) — 10m from A
+  world.addMobSpawn('imp', 50, 2, 10); // C (25.25) — 10m from B, 20m from A
+
+  const mgr = makeManager(world);
+  mgr.rebuild();
+  const [a, b, c] = mgr.mobs;
+
+  // Player far away in a corner: nobody can see or aggro them by sight.
+  const player = { x: 5.25, y: 1.0, z: 30.25 };
+  a.takeDamage(10, player);
+  for (let i = 0; i < 12; i++) mgr.update(0.1, player);
+
+  assert.equal(a.aggro, true);
+  assert.equal(b.aggro, true, 'B hears the shot victim');
+  assert.equal(c.aggro, false, 'C must NOT be woken by a chain — alerted mobs do not re-shout');
+});
+
+test('sight aggro also shouts: a hidden packmate joins when the pack spots you', () => {
+  const world = walledWorld();
+  world.addMobSpawn('imp', 10, 2, 22); // west, sees the player
+  world.addMobSpawn('imp', 30, 2, 22); // east of the wall, in earshot (~10m)
+
+  const mgr = makeManager(world);
+  mgr.rebuild();
+  const [seer, hidden] = mgr.mobs;
+
+  const player = { x: 3.25, y: 1.0, z: 11.25 }; // west side, visible to `seer`
+  for (let i = 0; i < 10; i++) mgr.update(0.1, player);
+
+  assert.equal(seer.aggro, true, 'sanity: the west mob sees and aggroes');
+  assert.equal(hidden.aggro, true, 'its shout wakes the packmate behind the wall');
+});
+
+// --- flank role assignment ---
+
+test('a raised pack splits into deterministic direct and flank roles', () => {
+  const world = new World();
+  for (let x = 0; x < 48; x += 2) {
+    for (let z = 0; z < 48; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
+  }
+  // Six mobs in one tight pack, all within earshot of the first.
+  for (let i = 0; i < 6; i++) world.addMobSpawn('imp', 10 + (i % 3) * 2, 2, 10 + Math.floor(i / 3) * 2);
+
+  const mgr = makeManager(world);
+  mgr.rebuild();
+  const player = { x: 20.25, y: 1.0, z: 20.25 };
+  mgr.mobs[0].takeDamage(10, player);
+  mgr.update(0.1, player);
+
+  const roles = mgr.mobs.map((m) => m.flankRole);
+  const flankers = roles.filter((r) => r !== 'direct');
+  assert.equal(flankers.length, 2, `a pack of 6 fields exactly 2 flankers (got ${roles.join(',')})`);
+  assert.ok(flankers.includes('flankL') && flankers.includes('flankR'), 'one flanker per side');
+  assert.equal(roles[0], 'direct', 'the shouter itself charges head-on');
+
+  // Deterministic: an identical setup assigns identical roles.
+  const mgr2 = makeManager(world);
+  mgr2.rebuild();
+  mgr2.mobs[0].takeDamage(10, player);
+  mgr2.update(0.1, player);
+  assert.deepEqual(mgr2.mobs.map((m) => m.flankRole), roles);
+});
+
+test('a pack of two never flanks', () => {
+  const world = new World();
+  for (let x = 0; x < 48; x += 2) {
+    for (let z = 0; z < 48; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
+  }
+  world.addMobSpawn('imp', 10, 2, 10);
+  world.addMobSpawn('imp', 12, 2, 10);
+
+  const mgr = makeManager(world);
+  mgr.rebuild();
+  const player = { x: 20.25, y: 1.0, z: 20.25 };
+  mgr.mobs[0].takeDamage(10, player);
+  for (let i = 0; i < 5; i++) mgr.update(0.1, player);
+  assert.ok(mgr.mobs.every((m) => m.flankRole === 'direct'), 'both charge — no lone flanker');
 });

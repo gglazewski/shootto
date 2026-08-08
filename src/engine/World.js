@@ -10,6 +10,8 @@
 
 import { anchorFor, cellsFor } from './VoxelShape.js';
 import { DEFAULT_CHUNK_SIZE } from './Space.js';
+import { getDecal } from './VoxelTypes.js';
+import { FACE_TABLE, decalFootprint } from './ChunkMeshBuilder.js';
 
 export { DEFAULT_CHUNK_SIZE, anchorFor, cellsFor };
 
@@ -49,6 +51,10 @@ export class World {
      *  entities (not voxels or items): the editor places spawns here and the
      *  game's MobManager reads them when a game starts. */
     this.mobSpawns = new Map();
+    /** Decals pinned to voxel faces: `x,y,z,face` -> { decalId, cell, face,
+     *  rotation }. A decal rides the face it is attached to (meshed into the
+     *  chunk); removing the voxel removes its decals. */
+    this.decals = new Map();
   }
 
   /** Set the player spawn point to a cell. @returns {[number,number,number]} */
@@ -70,11 +76,14 @@ export class World {
   /**
    * Try to place a voxel. Occupancy is checked across all its cells; if any
    * cell is taken the whole placement is rejected (atomic).
+   * @param {number} [rotation] yaw in quarter turns (0..3); rotates the
+   *   textures only (top face spins, side tiles permute), never the shape.
    * @returns {boolean} true when placed
    */
-  place(type, size, ax, ay, az) {
+  place(type, size, ax, ay, az, rotation = 0) {
     if (!this.isAreaFree(ax, ay, az, size)) return false;
     const voxel = { type, size, anchor: [ax, ay, az] };
+    if (rotation) voxel.rotation = ((rotation % 4) + 4) % 4;
     const cells = [...cellsFor(ax, ay, az, size)];
     for (const [x, y, z] of cells) {
       this.cells.set(key(x, y, z), voxel);
@@ -94,9 +103,9 @@ export class World {
   }
 
   /** Convenience: place a voxel snapping coordinates to size parity. */
-  placeAt(type, size, x, y, z) {
+  placeAt(type, size, x, y, z, rotation = 0) {
     const [ax, ay, az] = anchorFor(x, y, z, size);
-    return this.place(type, size, ax, ay, az);
+    return this.place(type, size, ax, ay, az, rotation);
   }
 
   /** Remove the whole voxel occupying a cell. Returns the removed voxel or null. */
@@ -108,9 +117,113 @@ export class World {
     for (const [cx, cy, cz] of cells) {
       this.cells.delete(key(cx, cy, cz));
       this.markDirty(cx, cy, cz);
+      // decals ride the voxel's faces — they go with it, whole footprints
+      // included (a multi-cell decal loses its backing when any cell goes)
+      for (const face of ['px', 'nx', 'py', 'ny', 'pz', 'nz']) {
+        if (this.decals.has(`${key(cx, cy, cz)},${face}`)) this.removeDecal(cx, cy, cz, face);
+      }
     }
     this.edits.push({ cells, remove: true, type: voxel.type });
     return voxel;
+  }
+
+  // --- decals (cutout tiles pinned to voxel faces) ---
+
+  /** Cells a decal's footprint covers: from the anchor cell, `w` cells along
+   *  the face's u axis and `h` along v (odd rotations swap w/h, matching the
+   *  spun artwork). Multi-cell decals share one object across all keys, like
+   *  BIG voxels. */
+  _decalCells(decalId, x, y, z, face, rotation) {
+    const span = getDecal(decalId)?.span ?? [1, 1];
+    const f = FACE_TABLE[face];
+    if (!f) return [];
+    const [eu, ev] = decalFootprint(face, span, rotation);
+    const out = [];
+    for (let i = 0; i < eu; i++) {
+      for (let j = 0; j < ev; j++) {
+        out.push([
+          x + i * f.u[0] + j * f.v[0],
+          y + i * f.u[1] + j * f.v[1],
+          z + i * f.u[2] + j * f.v[2],
+        ]);
+      }
+    }
+    return out;
+  }
+
+  /** True when a decal could be pinned here: every footprint cell holds a
+   *  voxel and none of the covered faces already carries a decal. */
+  canPlaceDecal(decalId, x, y, z, face, rotation = 0) {
+    const rot = ((rotation % 4) + 4) % 4;
+    const cells = this._decalCells(decalId, x, y, z, face, rot);
+    if (!cells.length) return false;
+    for (const [cx, cy, cz] of cells) {
+      if (!this.get(cx, cy, cz)) return false;
+      if (this.decals.has(`${key(cx, cy, cz)},${face}`)) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Pin a decal onto a voxel face. The anchor cell is the footprint's
+   * min-corner along the face's u/v axes; multi-cell decals need backing
+   * voxels under every covered cell.
+   * @param {number} [rotation] quarter turns spinning the decal on its face
+   * @returns {boolean} true when placed
+   */
+  placeDecal(decalId, x, y, z, face, rotation = 0) {
+    const rot = ((rotation % 4) + 4) % 4;
+    if (!this.canPlaceDecal(decalId, x, y, z, face, rot)) return false;
+    const decal = { decalId, cell: [x, y, z], face };
+    if (rot) decal.rotation = rot;
+    for (const [cx, cy, cz] of this._decalCells(decalId, x, y, z, face, rot)) {
+      this.decals.set(`${key(cx, cy, cz)},${face}`, decal);
+      this.markDirty(cx, cy, cz);
+    }
+    return true;
+  }
+
+  /** Remove the decal covering a cell face (the whole footprint goes).
+   *  Returns the removed decal or null. */
+  removeDecal(x, y, z, face) {
+    const decal = this.decals.get(`${key(x, y, z)},${face}`) ?? null;
+    if (!decal) return null;
+    const [ax, ay, az] = decal.cell;
+    for (const [cx, cy, cz] of this._decalCells(decal.decalId, ax, ay, az, face, decal.rotation ?? 0)) {
+      this.decals.delete(`${key(cx, cy, cz)},${face}`);
+      this.markDirty(cx, cy, cz);
+    }
+    return decal;
+  }
+
+  /** Decal covering a cell face, or null. */
+  decalAt(x, y, z, face) {
+    return this.decals.get(`${key(x, y, z)},${face}`) ?? null;
+  }
+
+  /** Iterate every decal once (multi-cell decals share one object). */
+  forEachDecal(fn) {
+    for (const decal of new Set(this.decals.values())) fn(decal);
+  }
+
+  /**
+   * Replace this world's contents with a copy of another world's — voxels
+   * (including rotation), decals, items, mob spawns and the player spawn.
+   * THE single world-copy path: the editor's map load and the game's world
+   * load both go through here, so a new voxel/world field only needs to be
+   * threaded once. Keeps this instance's identity, so renderers/physics
+   * holding a reference stay valid.
+   */
+  copyFrom(other) {
+    this.clear();
+    other.forEachVoxel((v) => this.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0));
+    other.forEachDecal((d) => this.placeDecal(d.decalId, d.cell[0], d.cell[1], d.cell[2], d.face, d.rotation ?? 0));
+    other.forEachItem((it) => this.placeItem(it.itemId, it.size, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0));
+    other.forEachMobSpawn((s) => this.addMobSpawn(s.type, s.x, s.y, s.z));
+    if (other.spawn) {
+      this.setSpawn(other.spawn[0], other.spawn[1], other.spawn[2]);
+      this.spawnYaw = other.spawnYaw ?? 0;
+    }
   }
 
   /** Remove every voxel, item and the spawn point. */
@@ -123,6 +236,7 @@ export class World {
     this.items.clear();
     this.itemCells.clear();
     this.mobSpawns.clear();
+    this.decals.clear();
   }
 
   /**

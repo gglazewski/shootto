@@ -9,8 +9,13 @@
 //    voxels only, so interior faces between two voxels are correctly hidden),
 //    or when that neighbor is transparent and THIS voxel is opaque (so an
 //    opaque face remains visible through glass).
-//  - Transparent voxels (glass, torch) go into a separate `transparent`
-//    buffer so they can render in a second, alpha-blended pass.
+//  - Transparent voxels (glass) go into a separate `transparent` buffer so
+//    they can render in a second, alpha-blended pass.
+//  - shape:'pane' voxels (chain-link fence, bars, barricades) emit a single
+//    quad centered in the voxel instead of cube faces, oriented by the
+//    voxel's rotation; the tile's alpha channel cuts out the holes. Panes
+//    are emitted double-winded into the OPAQUE buffer (depth-written,
+//    alpha-discarded), so overlapping panes never blend in the wrong order.
 //  - BIG voxels are expanded automatically: each of their sub-cells that has
 //    an empty neighbor emits a 0.5m quad, so a 1m block renders as 4 coplanar
 //    quads per exposed side.
@@ -21,7 +26,7 @@
 //    giving smooth interpolated lighting across faces.
 
 import { CELL_SIZE } from './Space.js';
-import { opacityFor, isTransparent } from './VoxelTypes.js';
+import { opacityFor, isTransparent, shapeFor, getDecal } from './VoxelTypes.js';
 
 // Face table: for each face, the outward normal n, the in-plane basis u/v
 // (unit axis steps with u x v === n) and the origin corner o. Corners:
@@ -45,6 +50,31 @@ export const FACE_TABLE = Object.freeze({
 
 // Brightness for AO levels 0..3 (0 = fully occluded).
 const AO_BRIGHTNESS = [0.45, 0.62, 0.82, 1.0];
+
+/**
+ * Footprint of a decal on a face, in cells along the face's u/v axes, for
+ * artwork spanning [w, h] cells. The artwork's width follows the face's
+ * texture-x axis: on faces whose UVs are rotated (FACE_TABLE.tex = ROT90,
+ * px/nz) texture-x runs along the v axis, so the span swaps there; odd decal
+ * rotations swap it again. Keeps a [4,2] graffiti 4 cells WIDE on every wall.
+ * @returns {[number, number]} cells along [u, v]
+ */
+export function decalFootprint(face, span, rotation = 0) {
+  const f = FACE_TABLE[face];
+  const swapped = (f.tex[0] === 0) !== ((rotation & 1) === 1);
+  return swapped ? [span[1], span[0]] : [span[0], span[1]];
+}
+
+// Voxel yaw (rotation 0..3, quarter turns around +Y): a rotated voxel's
+// world face shows the tile of the face that rotated into it. One CCW step
+// maps world px<-pz, pz<-nx, nx<-nz, nz<-px; top/bottom keep their tile but
+// spin their UVs instead (see the corner loop).
+const SIDE_CYCLE = ['px', 'pz', 'nx', 'nz'];
+function rotatedFace(name, rot) {
+  const i = SIDE_CYCLE.indexOf(name);
+  if (i < 0) return name; // py/ny
+  return SIDE_CYCLE[(i + rot) & 3];
+}
 
 const DEFAULT_LIGHT = 15;
 
@@ -82,6 +112,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
   const face = (fx, fy, fz, voxel) => {
     const selfTransparent = isTransparent(voxel.type);
     const buf = selfTransparent ? transparentBuf : opaqueBuf;
+    const rot = voxel.rotation ?? 0;
     for (const name of Object.keys(FACE_TABLE)) {
       const f = FACE_TABLE[name];
       const nx = fx + f.n[0], ny = fy + f.n[1], nz = fz + f.n[2];
@@ -90,7 +121,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
       // it; two transparent voxels hide each other (glass-on-glass).
       if (neighbor && (isOpaqueVoxel(neighbor) || selfTransparent)) continue;
 
-      const tile = tileIndexFor(voxel.type, name);
+      const tile = tileIndexFor(voxel.type, rot ? rotatedFace(name, rot) : name);
       const tileW = 1 / AW;
       const tileH = 1 / AH;
       const baseU = (tile % AW) * tileW;
@@ -111,6 +142,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
       ];
 
       const first = buf.positions.length / 3;
+      const cornerData = [];
       for (const c of corners) {
         const cx = fx + c.x, cy = fy + c.y, cz = fz + c.z;
         // Classic face AO: sample the three cells that meet at this corner on
@@ -138,14 +170,102 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         // Affine UVs: each corner samples a (possibly rotated) (u,v) so the
         // tile maps cleanly (no diagonal fold) and, on side faces, the texture
         // vertical axis follows world-up (see FACE_TABLE.tex).
+        // Voxel yaw spins the top/bottom tile in quarter turns (rotating a
+        // road line or crack); side faces stay upright and only swap tiles.
+        let cu = c.u, cv = c.v;
+        if (rot && f.n[1] !== 0) {
+          for (let k = 0; k < rot; k++) { const tmp = cu; cu = cv; cv = 1 - tmp; }
+        }
         const t = f.tex;
-        const du = 0.5 + t[0] * (c.u - 0.5) + t[1] * (c.v - 0.5);
-        const dv = 0.5 + t[2] * (c.u - 0.5) + t[3] * (c.v - 0.5);
+        const du = 0.5 + t[0] * (cu - 0.5) + t[1] * (cv - 0.5);
+        const dv = 0.5 + t[2] * (cu - 0.5) + t[3] * (cv - 0.5);
         const u = baseU + htU + du * (tileW - 2 * htU);
         const v = baseV + htV + dv * (tileH - 2 * htV);
         pushCorner(buf, cx, cy, cz, f.n[0], f.n[1], f.n[2], u, v, b, b, b, ls, lb);
+        cornerData.push({ cx, cy, cz, b, ls, lb, u0: c.u, v0: c.v });
       }
       buf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
+
+      // Decal covering this face: a second quad a hair off the surface,
+      // reusing the face's AO/light so it blends in. Only visible faces get
+      // here, so a decal on a buried face costs nothing. Multi-cell decals
+      // emit one quad per covered face, each sampling its sub-rect of the
+      // (span-sized) artwork, so culling/AO/light stay per-face.
+      const decal = world.decalAt?.(fx, fy, fz, name);
+      if (decal) {
+        const [cw, ch] = getDecal(decal.decalId)?.span ?? [1, 1];
+        const dRot = decal.rotation ?? 0;
+        const [eu, ev] = decalFootprint(name, [cw, ch], dRot); // cells along u/v
+        const [ax, ay, az] = decal.cell ?? [fx, fy, fz];
+        // this cell's offset inside the footprint, along the face's axes
+        const iOff = (fx - ax) * f.u[0] + (fy - ay) * f.u[1] + (fz - az) * f.u[2];
+        const jOff = (fx - ax) * f.v[0] + (fy - ay) * f.v[1] + (fz - az) * f.v[2];
+        const dTile = tileIndexFor(decal.decalId, name);
+        const rectW = cw * tileW, rectH = ch * tileH; // art rect in the atlas
+        const dBaseU = (dTile % AW) * tileW;
+        const dBaseV = 1 - (Math.floor(dTile / AW) + ch) * tileH;
+        const dFirst = buf.positions.length / 3;
+        const EPS = 0.02; // 1cm in cell units — clears z-fighting
+        for (const cd of cornerData) {
+          // footprint-space fraction -> spin by the decal rotation -> face
+          // orientation (f.tex) -> atlas rect
+          let cu = (iOff + cd.u0) / eu, cv = (jOff + cd.v0) / ev;
+          for (let k = 0; k < dRot; k++) { const tmp = cu; cu = cv; cv = 1 - tmp; }
+          const t = f.tex;
+          const du = 0.5 + t[0] * (cu - 0.5) + t[1] * (cv - 0.5);
+          const dv = 0.5 + t[2] * (cu - 0.5) + t[3] * (cv - 0.5);
+          const u = dBaseU + htU + du * (rectW - 2 * htU);
+          const v = dBaseV + htV + dv * (rectH - 2 * htV);
+          pushCorner(
+            buf,
+            cd.cx + f.n[0] * EPS, cd.cy + f.n[1] * EPS, cd.cz + f.n[2] * EPS,
+            f.n[0], f.n[1], f.n[2], u, v, cd.b, cd.b, cd.b, cd.ls, cd.lb,
+          );
+        }
+        buf.indices.push(dFirst, dFirst + 1, dFirst + 2, dFirst, dFirst + 2, dFirst + 3);
+      }
+    }
+  };
+
+  // shape:'pane' — one quad centered in the voxel, spanning its full extent.
+  // The voxel's rotation turns it: 0/180 = pane runs along x (normal z),
+  // 90/270 = along z (normal x). Emitted once per voxel (at its anchor
+  // cell), so a BIG fence is one 1m pane, not eight 0.5m ones. Both windings
+  // go into the OPAQUE buffer: the material there is front-side but writes
+  // depth, and the shader discards fully transparent texels — so panes
+  // occlude each other correctly instead of alpha-blend ghosting. No AO
+  // (colors stay 1); light is sampled inside the voxel's own cells (the
+  // field is defined there since panes are transparent to light).
+  const pane = (voxel, ax, ay, az) => {
+    const span = voxel.size === 'big' ? 2 : 1;
+    const tile = tileIndexFor(voxel.type, 'px');
+    const tileW = 1 / AW;
+    const tileH = 1 / AH;
+    const baseU = (tile % AW) * tileW;
+    const baseV = 1 - (Math.floor(tile / AW) + 1) * tileH;
+    const htU = 0.5 / (AW * tileSize);
+    const htV = 0.5 / (AH * tileSize);
+    const cc = (p, a) => Math.max(a, Math.min(a + span - 1, Math.floor(p)));
+    const half = span / 2;
+    const alongX = ((voxel.rotation ?? 0) & 1) === 0;
+    const corners = alongX
+      ? [[ax, ay, az + half], [ax + span, ay, az + half], [ax + span, ay + span, az + half], [ax, ay + span, az + half]]
+      : [[ax + half, ay, az], [ax + half, ay, az + span], [ax + half, ay + span, az + span], [ax + half, ay + span, az]];
+    const n = alongX ? [0, 0, 1] : [1, 0, 0];
+    const uv = [[0, 0], [1, 0], [1, 1], [0, 1]]; // uv-v follows world +y
+    for (const flip of [1, -1]) {
+      const order = flip === 1 ? [0, 1, 2, 3] : [0, 3, 2, 1];
+      const first = opaqueBuf.positions.length / 3;
+      for (const i of order) {
+        const c = corners[i];
+        const lx = cc(c[0], ax), ly = cc(c[1], ay), lz = cc(c[2], az);
+        const ls = sky(lx, ly, lz) / 15;
+        const lb = block(lx, ly, lz) / 15;
+        const u = baseU + htU + uv[i][0] * (tileW - 2 * htU);
+        const v = baseV + htV + uv[i][1] * (tileH - 2 * htV);
+        pushCorner(opaqueBuf, c[0], c[1], c[2], n[0] * flip, n[1] * flip, n[2] * flip, u, v, 1, 1, 1, ls, lb);
+      }
+      opaqueBuf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
     }
   };
 
@@ -154,6 +274,13 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
       for (let z = oz; z < oz + size; z++) {
         const voxel = world.get(x, y, z);
         if (!voxel) continue;
+        if (shapeFor(voxel.type) === 'pane') {
+          // Emit at the anchor cell only (worlds without anchors fall back to
+          // per-cell emission, which only matters for synthetic test worlds).
+          const [ax, ay, az] = voxel.anchor ?? [x, y, z];
+          if (x === ax && y === ay && z === az) pane(voxel, ax, ay, az);
+          continue;
+        }
         face(x, y, z, voxel);
       }
     }

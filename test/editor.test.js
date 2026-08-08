@@ -11,7 +11,9 @@ import { BuildTool } from '../src/editor/tools/BuildTool.js';
 import { SquareTool } from '../src/editor/tools/SquareTool.js';
 import { SpawnTool } from '../src/editor/tools/SpawnTool.js';
 import { MobTool } from '../src/editor/tools/MobTool.js';
+import { DecalTool, faceFromNormal } from '../src/editor/tools/DecalTool.js';
 import { orthogonalLineAnchors } from '../src/editor/tools/line.js';
+import { placeItemCommand, removeItemCommand } from '../src/editor/commands.js';
 import { SelectionGhost } from '../src/editor/SelectionGhost.js';
 import { EditorState } from '../src/editor/EditorState.js';
 import { History } from '../src/editor/History.js';
@@ -189,6 +191,36 @@ test('history undo/redo roundtrips world edits through commands', () => {
   assert.equal(world.count, 1);
 });
 
+test('item place/remove commands roundtrip through undo, notifying onChange', () => {
+  const world = new World();
+  const h = new History();
+  let changes = 0;
+  const onChange = () => changes++;
+
+  const place = placeItemCommand(world, { itemId: 'lamp', size: SIZE.SMALL, anchor: [0, 0, 0], rotation: Math.PI / 2 }, onChange);
+  assert.equal(place.do(), true);
+  h.push(place);
+  assert.equal(world.itemAt(0, 0, 0).itemId, 'lamp');
+  assert.equal(changes, 1);
+
+  h.undo();
+  assert.equal(world.itemAt(0, 0, 0), null);
+  assert.equal(changes, 2, 'undo refreshes item lights too');
+  h.redo();
+  assert.equal(world.itemAt(0, 0, 0).itemId, 'lamp');
+
+  const item = world.itemAt(0, 0, 0);
+  const remove = removeItemCommand(world, item, onChange);
+  assert.equal(remove.do(), true);
+  h.push(remove);
+  assert.equal(world.itemAt(0, 0, 0), null);
+
+  h.undo();
+  const restored = world.itemAt(0, 0, 0);
+  assert.equal(restored.itemId, 'lamp');
+  assert.equal(restored.rotation, Math.PI / 2, 'rotation survives the roundtrip');
+});
+
 // --- build tool line mode ---
 
 test('shift line is axis-constrained, locking non-dominant axes to the start', () => {
@@ -232,6 +264,113 @@ test('build tool draws a line from the last placed voxel with shift', () => {
   assert.equal(r2.ok, true);
   for (let x = 0; x <= 4; x++) assert.equal(world.get(x, 1, 0)?.type, 'sand', `cell ${x},1,0`);
   assert.equal(history.length, 2);
+});
+
+test('build tool places voxels with the selected block rotation', () => {
+  const world = makeFloor();
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25);
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({ THREE, scene });
+  const state = new EditorState({ blockId: 'asphalt_line', size: SIZE.SMALL, blockRotation: 1 });
+  const history = new History();
+  const tool = new BuildTool({ THREE, world, camera, ghost, state, history, input: { isDown: () => false } });
+
+  const r = tool.place();
+  assert.equal(r.ok, true);
+  assert.equal(world.get(r.anchor[0], r.anchor[1], r.anchor[2]).rotation, 1);
+  history.undo();
+  assert.equal(world.get(r.anchor[0], r.anchor[1], r.anchor[2]), null);
+});
+
+test('placement ghost shows the textured block preview when an atlas is wired', () => {
+  const world = makeFloor();
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25);
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({
+    THREE, scene,
+    atlasTexture: new THREE.Texture(),
+    tileIndexFor: () => 0,
+    atlas: { width: 8, height: 4 },
+  });
+  const state = new EditorState({ blockId: 'barricade', size: SIZE.SMALL, blockRotation: 0 });
+  const tool = new BuildTool({ THREE, world, camera, ghost, state, history: new History(), input: { isDown: () => false } });
+
+  tool.updateGhost();
+  assert.equal(ghost.texPlace.visible, true, 'textured preview shown');
+  assert.equal(ghost.place.visible, false, 'plain cube hidden');
+  assert.equal(ghost.texPlace.geometry.attributes.position.count, 8, 'pane preview = one double-winded quad');
+  const flat = [...ghost.texPlace.geometry.attributes.position.array];
+
+  state.set('blockRotation', 1);
+  tool.updateGhost();
+  assert.notDeepEqual([...ghost.texPlace.geometry.attributes.position.array], flat,
+    'rotating the block turns the pane preview');
+});
+
+test('line ghost keeps the aim cube and marks blocked cells red', () => {
+  const world = makeFloor();
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25);
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({ THREE, scene });
+  const state = new EditorState({ blockId: 'sand', size: SIZE.SMALL });
+  const shiftDown = { isDown: (c) => c === 'ShiftLeft' || c === 'ShiftRight' };
+  const tool = new BuildTool({ THREE, world, camera, ghost, state, history: new History(), input: shiftDown });
+
+  tool.place(); // line anchor at (0,1,0)
+  camera.position.set(2.25, 2, 0.25);
+  camera.lookAt(2.25, 0, 0.25); // aim 4 cells along +x
+  tool.updateGhost();
+
+  assert.equal(ghost.place.visible, true, 'aim cube stays visible during a line preview');
+  assert.equal(ghost.cells.visible, true, 'line cells shown');
+  assert.equal(ghost.cells.count, 5);
+  const c = new THREE.Color();
+  ghost.cells.getColorAt(0, c);
+  assert.ok(c.r > c.g, 'occupied start cell is red');
+  ghost.cells.getColorAt(4, c);
+  assert.ok(c.g > c.r, 'free end cell is green');
+});
+
+// --- decal tool ---
+
+test('decal tool pins a decal to the aimed face, with undo and RMB removal', () => {
+  const world = makeFloor();
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25); // straight down onto the top face of (0,0,0)
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({
+    THREE, scene,
+    atlasTexture: new THREE.Texture(),
+    tileIndexFor: () => 0,
+    atlas: { width: 8, height: 4 },
+  });
+  const state = new EditorState({ decalId: 'decal_blood', decalRotation: 1 });
+  const history = new History();
+  const tool = new DecalTool({ THREE, world, camera, ghost, state, history, input: { isDown: () => false } });
+
+  assert.equal(faceFromNormal([0, 1, 0]), 'py');
+  tool.update(0.016);
+  assert.equal(ghost.texPlace.visible, true, 'decal ghost previews on the face');
+
+  tool.onMouseDown(0);
+  const d = world.decalAt(0, 0, 0, 'py');
+  assert.equal(d.decalId, 'decal_blood');
+  assert.equal(d.rotation, 1);
+  history.undo();
+  assert.equal(world.decalAt(0, 0, 0, 'py'), null, 'placement is undoable');
+
+  world.placeDecal('decal_crack', 0, 0, 0, 'py');
+  tool.onMouseDown(2); // RMB peels the decal off
+  assert.equal(world.decalAt(0, 0, 0, 'py'), null);
+  history.undo();
+  assert.equal(world.decalAt(0, 0, 0, 'py').decalId, 'decal_crack', 'removal is undoable');
 });
 
 // --- square tool ---
@@ -281,6 +420,78 @@ test('build tool RMB cancels a pending line preview instead of removing', () => 
   assert.equal(world.count, before + 1, 'RMB cancel must not remove a voxel');
 });
 
+test('build tool RMB click-and-release removes one voxel as a plain undoable removal', () => {
+  const { world, tool, history } = makeTool();
+  tool.onMouseDown(2);
+  tool.onMouseUp(2);
+  assert.equal(world.count, 0);
+  assert.equal(history.length, 1);
+  history.undo();
+  assert.equal(world.count, 1);
+});
+
+test('build tool hold-RMB sweep erases every voxel the aim moves onto as one undo step', () => {
+  const world = makeFloor(); // grass at (0..4, 0, 0)
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25); // straight down onto cell (0,0,0)
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({ THREE, scene });
+  const state = new EditorState({ blockId: 'sand', size: SIZE.SMALL });
+  const history = new History();
+  const tool = new BuildTool({ THREE, world, camera, ghost, state, history, input: { isDown: () => false } });
+
+  tool.onMouseDown(2); // stroke opens: the first voxel goes immediately
+  assert.equal(world.count, 4);
+  assert.equal(history.length, 0, 'stroke still open - nothing on history yet');
+
+  tool.update(0.016);
+  tool.update(0.016);
+  assert.equal(world.count, 4, 'holding still must not drill deeper');
+
+  // Strafe sideways: every new column under the crosshair goes.
+  camera.position.set(1.25, 2, 0.25); // over cell (2,0,0)
+  tool.update(0.016);
+  assert.equal(world.count, 3);
+  camera.position.set(2.25, 2, 0.25); // over cell (4,0,0)
+  tool.update(0.016);
+  assert.equal(world.count, 2);
+
+  tool.onMouseUp(2);
+  assert.equal(history.length, 1, 'the whole sweep must be ONE history entry');
+  history.undo();
+  assert.equal(world.count, 5, 'undo restores every swept voxel');
+  history.redo();
+  assert.equal(world.count, 2, 'redo removes them again');
+});
+
+test('build tool shift+RMB erases a straight line from the last removed voxel', () => {
+  const world = makeFloor();
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25); // straight down onto cell (0,0,0)
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({ THREE, scene });
+  const state = new EditorState({ blockId: 'sand', size: SIZE.SMALL });
+  const history = new History();
+  let shift = false;
+  const input = { isDown: (c) => shift && (c === 'ShiftLeft' || c === 'ShiftRight') };
+  const tool = new BuildTool({ THREE, world, camera, ghost, state, history, input });
+
+  tool.onMouseDown(2); // plain removal anchors the erase line
+  tool.onMouseUp(2);
+  assert.equal(world.count, 4);
+  assert.deepEqual(tool.lastRemoved, [0, 0, 0]);
+
+  shift = true;
+  camera.position.set(2.25, 2, 0.25); // over cell (4,0,0)
+  tool.onMouseDown(2);
+  assert.equal(world.count, 0, 'the whole row erases in one line');
+  assert.equal(history.length, 2);
+  history.undo();
+  assert.equal(world.count, 4, 'undo restores the line');
+});
+
 // --- square tool: init on a voxel, orientation from camera ---
 
 function makeSquareTool(world, cameraPos, lookAt) {
@@ -321,15 +532,42 @@ test('square tool makes a vertical square when the camera looks forward', () => 
   tool.cancel();
 });
 
-test('square tool flips orientation with camera movement mid-drag', () => {
+test('square tool keeps its plane locked while the camera moves mid-drag', () => {
   const world = makeFloor();
   const { camera, tool } = makeSquareTool(world, [0.25, 2, 0.25], [0.25, 0, 0.25]);
-  tool.onMouseDown(0); // looking down -> horizontal
+  tool.onMouseDown(0); // clicked a top face -> horizontal floor plane
   assert.equal(tool._drag.axis, 1);
   camera.position.set(0.25, 2, 2.25);
-  camera.lookAt(0.25, 2, 0); // now looking along -z
+  camera.lookAt(0.25, 2, 0); // swing the camera level mid-drag
   tool.update(0.016);
-  assert.equal(tool._drag.axis, 2); // vertical, fixed z
+  assert.equal(tool._drag.axis, 1, 'plane must stay locked for the whole drag');
+  tool.cancel();
+});
+
+test('square tool with shift builds a wall from a top-face click', () => {
+  const world = makeFloor();
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(2, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25); // down + toward -x: dominant horizontal axis is x
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({ THREE, scene });
+  const state = new EditorState({ blockId: 'concrete', size: SIZE.SMALL });
+  const shiftDown = { isDown: (c) => c === 'ShiftLeft' || c === 'ShiftRight' };
+  const tool = new SquareTool({ THREE, world, camera, ghost, state, history: new History(), input: shiftDown });
+  tool.onMouseDown(0);
+  assert.ok(tool._drag);
+  assert.equal(tool._drag.axis, 0, 'shift on a top face -> vertical wall facing the camera');
+  tool.cancel();
+});
+
+test('square tool far corner tracks the aim even at shallow view angles', () => {
+  const world = makeFloor();
+  const { camera, tool } = makeSquareTool(world, [0.25, 2, 0.25], [0.25, 0, 0.25]);
+  tool.onMouseDown(0); // floor plane at cell y=1
+  camera.position.set(0.25, 1.75, 0.25);
+  camera.lookAt(20, 0.75, 0.25); // nearly horizontal along +x
+  tool.update(0.016);
+  assert.ok(tool._drag.end[0] > 30, `far corner should reach out (got x=${tool._drag.end[0]})`);
   tool.cancel();
 });
 
@@ -347,6 +585,55 @@ test('square tool RMB cancels an in-progress drag without placing', () => {
   assert.equal(world.count, 5, 'cancelled drag must not place voxels');
 });
 
+test('square tool RMB click still removes the voxel under the cursor', () => {
+  const world = makeFloor();
+  const { tool } = makeSquareTool(world, [0.25, 2, 0.25], [0.25, 0, 0.25]);
+  tool.onMouseDown(2);
+  tool.onMouseUp(2);
+  assert.equal(world.count, 4);
+});
+
+test('square tool RMB drag erases a rectangle as one undo step', () => {
+  const world = makeFloor();
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25); // straight down onto cell (0,0,0)
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({ THREE, scene });
+  const state = new EditorState({ blockId: 'concrete', size: SIZE.SMALL });
+  const history = new History();
+  const tool = new SquareTool({ THREE, world, camera, ghost, state, history, input: { isDown: () => false } });
+
+  tool.onMouseDown(2); // erase drag opens on the clicked voxel's own layer
+  assert.ok(tool._drag?.erase);
+  assert.equal(tool._drag.axis, 1);
+  assert.deepEqual(tool._drag.start, [0, 0, 0], 'erase rect sits on the voxel layer, not above it');
+  assert.equal(world.count, 5, 'nothing removed until release');
+
+  camera.position.set(2.25, 2, 0.25);
+  camera.lookAt(2.25, 0, 0.25); // far corner over cell (4,0,0)
+  tool.update(0.016);
+  tool.onMouseUp(2);
+  assert.equal(world.count, 0, 'the whole rectangle erases on release');
+  assert.equal(history.length, 1);
+  history.undo();
+  assert.equal(world.count, 5, 'undo restores the rectangle');
+});
+
+test('square tool LMB cancels an in-progress erase drag without removing', () => {
+  const world = makeFloor();
+  const { camera, tool } = makeSquareTool(world, [0.25, 2, 0.25], [0.25, 0, 0.25]);
+  tool.onMouseDown(2);
+  assert.ok(tool._drag?.erase);
+  camera.position.set(2.25, 2, 0.25);
+  camera.lookAt(2.25, 0, 0.25);
+  tool.update(0.016);
+  tool.onMouseDown(0); // cancel
+  assert.equal(tool._drag, null);
+  tool.onMouseUp(2); // leftover release must not erase anything
+  assert.equal(world.count, 5, 'cancelled erase drag must not remove voxels');
+});
+
 // --- spawn tool ---
 
 function makeSpawnTool() {
@@ -357,8 +644,9 @@ function makeSpawnTool() {
   const scene = new THREE.Scene();
   const ghost = new SelectionGhost({ THREE, scene });
   const state = new EditorState({ blockId: 'grass', size: SIZE.SMALL });
-  const tool = new SpawnTool({ THREE, world, camera, ghost, state, history: new History(), input: { isDown: () => false } });
-  return { world, camera, tool };
+  const history = new History();
+  const tool = new SpawnTool({ THREE, world, camera, ghost, state, history, input: { isDown: () => false } });
+  return { world, camera, tool, history };
 }
 
 test('spawn tool places the spawn point at the hovered face and clears with RMB', () => {
@@ -377,6 +665,28 @@ test('spawn tool moves the spawn when placed again', () => {
   camera.lookAt(2.25, 0, 0.25); // now over cell (4,0,0)
   tool.onMouseDown(0);
   assert.deepEqual(world.spawn, [4, 1, 0]);
+});
+
+test('spawn tool edits are undoable (set, move, clear)', () => {
+  const { world, camera, tool, history } = makeSpawnTool();
+  tool.onMouseDown(0);
+  assert.deepEqual(world.spawn, [0, 1, 0]);
+  history.undo();
+  assert.equal(world.spawn, null, 'undo of the first set clears the spawn');
+  history.redo();
+  assert.deepEqual(world.spawn, [0, 1, 0]);
+
+  camera.position.set(2.25, 2, 0.25);
+  camera.lookAt(2.25, 0, 0.25);
+  tool.onMouseDown(0); // move it
+  assert.deepEqual(world.spawn, [4, 1, 0]);
+  history.undo();
+  assert.deepEqual(world.spawn, [0, 1, 0], 'undo of a move restores the old spawn');
+
+  tool.onMouseDown(2); // clear
+  assert.equal(world.spawn, null);
+  history.undo();
+  assert.deepEqual(world.spawn, [0, 1, 0], 'undo of a clear restores the spawn');
 });
 
 test('spawn is a point marker, not a voxel', () => {
@@ -398,8 +708,9 @@ function makeMobTool() {
   const scene = new THREE.Scene();
   const ghost = new SelectionGhost({ THREE, scene });
   const state = new EditorState({ blockId: 'grass', size: SIZE.SMALL });
-  const tool = new MobTool({ THREE, world, camera, ghost, state, history: new History(), input: { isDown: () => false } });
-  return { world, camera, tool };
+  const history = new History();
+  const tool = new MobTool({ THREE, world, camera, ghost, state, history, input: { isDown: () => false } });
+  return { world, camera, tool, history };
 }
 
 test('mob tool places a mob spawn at the hovered face and removes it with RMB', () => {
@@ -409,6 +720,21 @@ test('mob tool places a mob spawn at the hovered face and removes it with RMB', 
   assert.equal(world.get(0, 1, 0), null, 'mob spawns are not voxels');
   tool.onMouseDown(2);
   assert.equal(world.mobSpawnAt(0, 1, 0), null);
+});
+
+test('mob tool edits are undoable (place and remove)', () => {
+  const { world, tool, history } = makeMobTool();
+  tool.onMouseDown(0);
+  assert.ok(world.mobSpawnAt(0, 1, 0));
+  history.undo();
+  assert.equal(world.mobSpawnAt(0, 1, 0), null, 'undo removes the placed spawn');
+  history.redo();
+  assert.ok(world.mobSpawnAt(0, 1, 0));
+
+  tool.onMouseDown(2); // remove it
+  assert.equal(world.mobSpawnAt(0, 1, 0), null);
+  history.undo();
+  assert.deepEqual(world.mobSpawnAt(0, 1, 0), { type: 'imp', x: 0, y: 1, z: 0 }, 'undo restores the removed spawn');
 });
 
 test('mob tool rejects placing on top of an existing spawn or inside a block', () => {
@@ -578,6 +904,14 @@ test('keybindings resolve events to semantic actions', () => {
   assert.equal(resolveBinding(ev({ code: 'KeyZ' })), null);
 });
 
+test('keybindings follow the keycap label on non-QWERTY layouts', () => {
+  const ev = ({ code, key = '', ctrl = false, shift = false }) => ({ code, key, ctrlKey: ctrl, metaKey: false, shiftKey: shift, altKey: false });
+  // German QWERTZ: the key labelled Z sits at the QWERTY Y position.
+  assert.equal(resolveBinding(ev({ code: 'KeyY', key: 'z', ctrl: true })).action, 'undo');
+  assert.equal(resolveBinding(ev({ code: 'KeyY', key: 'Z', ctrl: true, shift: true })).action, 'redo');
+  assert.equal(resolveBinding(ev({ code: 'KeyY', key: 'z' })), null, 'plain z is not undo');
+});
+
 // --- notice ---
 
 test('notice delivers messages to subscribers', () => {
@@ -723,15 +1057,26 @@ test('clearChunks empties the chunk cache', () => {
 test('atlas renders the expected dimensions and tile map', () => {
   const names = ['grass_top', 'sand'];
   const { width, height, data, map, atlas } = renderAtlasRGBA(names);
-  assert.equal(width, TILE_SIZE * 4);
-  assert.equal(height, TILE_SIZE * 5);
+  assert.equal(width, TILE_SIZE * 8);
+  assert.equal(height, TILE_SIZE * 14);
   assert.equal(map.size, 2);
-  assert.deepEqual(atlas, { width: 4, height: 5 });
+  assert.deepEqual(atlas, { width: 8, height: 14 });
   assert.ok(data.length > 0);
 });
 
+test('multi-slot decal tiles pack below the small tiles, aligned to slots', () => {
+  const { map } = renderAtlasRGBA(['grass_top', 'decal_stop', 'decal_graffiti', 'decal_arrow']);
+  assert.equal(map.get('grass_top'), 0);
+  // bigs pack on shelves below the single small row, tallest first
+  const stop = map.get('decal_stop');
+  assert.equal(Math.floor(stop / 8), 1, 'first shelf starts under the smalls');
+  for (const name of ['decal_stop', 'decal_graffiti', 'decal_arrow']) {
+    assert.ok(map.has(name), `${name} placed`);
+  }
+});
+
 test('block definitions reference only known tiles', () => {
-  const known = new Set(['grass_top', 'grass_side', 'dirt', 'sand', 'concrete', 'wood_side', 'wood_top', 'wood_side_light', 'wood_top_light', 'wood_side_dark', 'wood_top_dark', 'planks', 'planks_light', 'planks_dark', 'glass', 'torch_top', 'torch_side']);
+  const known = new Set(['grass_top', 'grass_side', 'dirt', 'stone', 'gravel', 'sand', 'concrete', 'asphalt', 'asphalt_line', 'brick', 'rubble', 'metal', 'sandbags', 'wood_side', 'wood_top', 'wood_side_light', 'wood_top_light', 'wood_side_dark', 'wood_top_dark', 'planks', 'planks_light', 'planks_dark', 'glass', 'chainlink', 'bars', 'boards', 'asphalt_corner', 'lamp', 'neon_red', 'lamp_off', 'neon_off', 'curb_side', 'curb_top', 'canopy', 'canopy_trim', 'tile_floor', 'plaster', 'shutter', 'decal_blood', 'decal_blood2', 'decal_blood3', 'decal_blood_pool', 'decal_crack', 'decal_bullets', 'decal_clothes', 'decal_glass', 'decal_papers', 'decal_cans', 'decal_stain', 'decal_food', 'decal_graffiti', 'decal_stop', 'decal_arrow']);
   for (const name of tilesForBlocks()) assert.ok(known.has(name), `unknown tile ${name}`);
 });
 

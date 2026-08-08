@@ -37,6 +37,10 @@ const PROBE_MAX = 1.5;
 const easeInCubic = (t) => t * t * t;
 const easeOutCubic = (t) => 1 - Math.pow(1 - t, 3);
 
+// When a weapon is equipped the hands dip down, hold, then rise back up with
+// the weapon (seconds), so a picked-up weapon doesn't pop into the view.
+const EQUIP_DIP = 0.6;
+
 /** Punch extension over normalized progress u in [0,1].
  *  Returns a scalar in roughly [-0.18, 1.0]: a small wind-up (negative),
  *  a fast strike up to full extension (1.0), then a recover back to 0. */
@@ -89,6 +93,7 @@ export class PlayerHand {
     this._heldLightAttr = null;
     this._heldMuzzleLocal = null;
     this._reload = null; // { elapsed, duration } — hands-down reload dip
+    this._equip = null; // { elapsed, duration } — hands-dip pickup animation
 
     this._next = 'right'; // which hand swings next (alternates)
   }
@@ -125,16 +130,24 @@ export class PlayerHand {
       // player hasn't moved (otherwise a freshly picked-up weapon stays black
       // until they cross a cell boundary).
       this.right.cell = null;
+      // The hands dip down and rise back up with the new weapon.
+      this._equip = { elapsed: 0, duration: EQUIP_DIP };
+    } else {
+      this._equip = null;
     }
   }
 
   _buildHeld(def) {
     const T = this.THREE;
     const c = microCellSizeFor(def.size ?? 'small');
-    // Grip cell: the editor's grip voxel, falling back to the grid centre.
+    // Grip cell: the editor's grip voxel, falling back to the centre of the
+    // item's build volume (per-item since long weapons; default 8^3).
+    const dims = Array.isArray(def.grid) && def.grid.length === 3
+      ? def.grid
+      : [MICRO_GRID, MICRO_GRID, MICRO_GRID];
     const g = def.grip
       ? { x: def.grip.x, y: def.grip.y, z: def.grip.z }
-      : { x: Math.floor(MICRO_GRID / 2), y: Math.floor(MICRO_GRID / 2), z: Math.floor(MICRO_GRID / 2) };
+      : { x: Math.floor(dims[0] / 2), y: Math.floor(dims[1] / 2), z: Math.floor(dims[2] / 2) };
 
     const group = new T.Group();
     const geo = createItemGeometry(T, def.microVoxels ?? []);
@@ -359,6 +372,7 @@ export class PlayerHand {
     this._refreshLight(this.left);
     this._updateFlash(dt);
     this._updateReload(dt);
+    this._updateEquip(dt);
   }
 
   /** Start a reload: both hands dip down, hold, then come back up. The caller
@@ -383,6 +397,32 @@ export class PlayerHand {
       this._reload = null;
       this.group.position.y = 0;
     }
+  }
+
+  /** A freshly equipped weapon arrives with the hands: the whole hand group
+   *  dips down, holds, then eases back up with the weapon in the grip — the
+   *  weapon visibly rises into the view instead of popping in. Applied to the
+   *  shared root, so both hands move together. */
+  _updateEquip(dt) {
+    if (!this._equip || !this._heldGroup) {
+      this._equip = null;
+      return;
+    }
+    this._equip.elapsed += dt;
+    const u = Math.min(1, this._equip.elapsed / this._equip.duration);
+    this.group.position.y = this._equipDip(u);
+    if (u >= 1) {
+      this.group.position.y = 0;
+      this._equip = null;
+    }
+  }
+
+  /** Hands-down dip for a freshly equipped weapon: fast drop, brief hold, then
+   *  a slow ease back up to the resting position. */
+  _equipDip(u) {
+    if (u < 0.18) return -0.26 * easeOutCubic(u / 0.18);
+    if (u < 0.45) return -0.26;
+    return -0.26 * (1 - easeOutCubic((u - 0.45) / 0.55));
   }
 
   /** Sample the light field at the hand's world position and bake it into the

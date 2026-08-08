@@ -8,7 +8,7 @@ import * as THREE from '../vendor/three.module.js';
 import { World } from './engine/World.js';
 import { Renderer } from './engine/Renderer.js';
 import { CELL_SIZE } from './engine/Space.js';
-import { listBlockIds, getBlock, SIZE } from './engine/VoxelTypes.js';
+import { listBlockIds, getBlock, SIZE, listDecalIds, getDecal } from './engine/VoxelTypes.js';
 import { getItem, listItems, registerItem, removeItem, isItemId, deserializeRegistry } from './engine/ItemRegistry.js';
 import {
   getEquipItem,
@@ -21,6 +21,7 @@ import {
 } from './engine/EquipmentRegistry.js';
 import { microCellSizeFor, lightLevelForMeters, slugifyName, deserializeItem, rotateMicroPoint } from './engine/ItemTypes.js';
 import { createAtlasTexture } from './textures/AtlasTexture.three.js';
+import { Blinkers } from './engine/Blinkers.js';
 import { FlyControls } from './editor/FlyControls.js';
 import { WalkControls } from './editor/WalkControls.js';
 import { SelectionGhost } from './editor/SelectionGhost.js';
@@ -29,7 +30,7 @@ import { MobMarker } from './editor/MobMarker.js';
 import { Toolbar } from './editor/Toolbar.js';
 import { Inventory } from './editor/Inventory.js';
 import { UI } from './editor/UI.js';
-import { buildSwatchList } from './editor/Swatches.js';
+import { buildSwatchList, buildDecalSwatchList } from './editor/Swatches.js';
 import { EditorState } from './editor/EditorState.js';
 import { History } from './editor/History.js';
 import { ToolRegistry } from './editor/ToolRegistry.js';
@@ -38,6 +39,7 @@ import { SquareTool } from './editor/tools/SquareTool.js';
 import { SpawnTool } from './editor/tools/SpawnTool.js';
 import { MobTool } from './editor/tools/MobTool.js';
 import { ItemTool } from './editor/tools/ItemTool.js';
+import { DecalTool } from './editor/tools/DecalTool.js';
 import { ItemEditor } from './editor/items/ItemEditor.js';
 import { ItemCatalogue } from './editor/items/ItemCatalogue.js';
 import { EquipmentEditor } from './editor/items/EquipmentEditor.js';
@@ -66,13 +68,17 @@ export class App {
 
     // --- engine ---
     this.world = new World();
+    this.blinkers = new Blinkers(this.world);
     this.webgl = new THREE.WebGLRenderer({ antialias: true });
     this.container.appendChild(this.webgl.domElement);
     const { texture, tileIndexFor, atlas } = createAtlasTexture(THREE);
     this.renderer = new Renderer({ THREE, webgl: this.webgl, world: this.world, atlasTexture: texture, tileIndexFor, atlas });
 
     // --- editor state / history ---
-    this.state = new EditorState({ blockId: 'grass', size: SIZE.SMALL, itemId: null, itemRotation: 0 });
+    this.state = new EditorState({
+      blockId: 'grass', size: SIZE.SMALL, itemId: null, itemRotation: 0,
+      blockRotation: 0, decalId: null, decalRotation: 0,
+    });
     this.history = new History({ max: CONFIG.history.max });
 
     this.controls = new FlyControls({ THREE, camera: this.renderer.camera, domElement: this.webgl.domElement, opts: CONFIG.controls });
@@ -85,14 +91,21 @@ export class App {
     });
     this.mode = 'edit'; // 'edit' | 'test'
     this._savedEditorCam = null;
-    this.ghost = new SelectionGhost({ THREE, scene: this.renderer.scene });
+    this.ghost = new SelectionGhost({ THREE, scene: this.renderer.scene, atlasTexture: texture, tileIndexFor, atlas });
     this.spawnMarker = new SpawnMarker({ THREE, scene: this.renderer.scene, world: this.world });
     this.mobMarker = new MobMarker({ THREE, scene: this.renderer.scene, world: this.world });
 
     // --- UI ---
-    const items = listBlockIds().map((id) => ({ id, name: getBlock(id).name }));
+    const items = listBlockIds()
+      .filter((id) => !getBlock(id).hidden) // internal states (blink-off phases)
+      .map((id) => ({ id, name: getBlock(id).name }));
+    const decalItems = listDecalIds().map((id) => ({ id, name: getDecal(id).name }));
     this.toolbar = new Toolbar({ container: this.doc.querySelector('#toolbar'), items: buildSwatchList(items) });
-    this.inventory = new Inventory({ container: this.doc.querySelector('#inventory'), items: buildSwatchList(items) });
+    this.inventory = new Inventory({
+      container: this.doc.querySelector('#inventory'),
+      items: buildSwatchList(items),
+      decalItems: buildDecalSwatchList(decalItems),
+    });
     this.ui = new UI({ doc });
     onNotice((n) => this.ui.toast(n.message, n.level === 'info' ? 1200 : 2400));
 
@@ -175,6 +188,7 @@ export class App {
     this.tools.register(new SpawnTool(ctx));
     this.tools.register(new MobTool(ctx));
     this.tools.register(new ItemTool(ctx));
+    this.tools.register(new DecalTool(ctx));
     this.tool = this.tools.get('build'); // back-compat alias (tests / debug)
     this.tools.activate('build');
 
@@ -185,6 +199,7 @@ export class App {
     this.state.on(({ field }) => {
       if (field === 'blockId') {
         this.state.set('itemId', null);
+        this.state.set('decalId', null);
         const id = this.state.get('blockId');
         if (id) {
           this.toolbar.selectType(id);
@@ -198,11 +213,26 @@ export class App {
       if (field === 'itemId') {
         const id = this.state.get('itemId');
         if (id) {
+          this.state.set('decalId', null);
           const it = getItem(id) ?? getEquipItem(id);
           this.toolbar.selectItem(id);
           this.ui.setSelection(`Item: ${it?.name ?? id}`, it?.size ?? 'small');
           this.tools.activate('item');
-        } else {
+        } else if (this.tools.active?.id === 'item') {
+          this.toolbar.clearSelection();
+          this.ui.setSelection(this.state.get('blockId'), this.state.get('size'));
+          this.tools.activate('build');
+        }
+        this.ui.setTool(this.tools.active.name);
+      }
+      if (field === 'decalId') {
+        const id = this.state.get('decalId');
+        if (id) {
+          this.state.set('itemId', null);
+          this.toolbar.selectDecal(id);
+          this.ui.setSelection(`Decal: ${getDecal(id)?.name ?? id}`, 'face');
+          this.tools.activate('decal');
+        } else if (this.tools.active?.id === 'decal') {
           this.toolbar.clearSelection();
           this.ui.setSelection(this.state.get('blockId'), this.state.get('size'));
           this.tools.activate('build');
@@ -214,15 +244,18 @@ export class App {
       if (!slot) {
         // Deselect: nothing in hand.
         this.state.set('itemId', null);
+        this.state.set('decalId', null);
         this.state.set('blockId', null);
         return;
       }
       if (slot.kind === 'item') this.state.set('itemId', slot.id);
+      else if (slot.kind === 'decal') this.state.set('decalId', slot.id);
       else this.state.set('blockId', slot.id);
     };
     this.inventory.onSelect = (id) => this.state.set('blockId', id);
     this.inventory.onSelectItem = (id) => this.state.set('itemId', id);
     this.inventory.onSelectEquip = (id) => this.state.set('itemId', id);
+    this.inventory.onSelectDecal = (id) => this.state.set('decalId', id);
     // Closing the inventory (selection, E, or backdrop click) re-locks the
     // pointer so editing resumes right away.
     this.inventory.onClose = () => {
@@ -311,9 +344,12 @@ export class App {
     }
     const voxel = this.world.get(hit.cell[0], hit.cell[1], hit.cell[2]);
     if (!voxel) return;
-    this.state.set('blockId', voxel.type);
+    // A blinking light caught dark picks as its lit id, never the hidden phase.
+    const id = getBlock(voxel.type)?.blinkOn ?? voxel.type;
+    this.state.set('blockId', id);
     this.state.set('size', voxel.size);
-    this.ui.toast(`Picked: ${getBlock(voxel.type).name}`, 900);
+    this.state.set('blockRotation', voxel.rotation ?? 0);
+    this.ui.toast(`Picked: ${getBlock(id).name}`, 900);
   }
 
   // --- item registry / rendering ---
@@ -355,6 +391,13 @@ export class App {
   /** Hotbar entry for a block id (from the toolbar's block swatch list). */
   _blockEntry(id) {
     return this.toolbar.items.find((it) => it.id === id) ?? null;
+  }
+
+  /** Hotbar entry for a decal id (fresh preview canvas). */
+  _decalEntry(id) {
+    const decal = getDecal(id);
+    if (!decal) return null;
+    return { kind: 'decal', id: decal.id, name: decal.name, canvas: buildDecalSwatchList([{ id: decal.id, name: decal.name }])[0].canvas };
   }
 
   /** Hotbar entry for a placeable object id (fresh preview canvas). */
@@ -744,17 +787,11 @@ export class App {
     return [cx, top + 2, cz];
   }
 
-  /** Replace world contents with the voxels/items of another world, then reload. */
+  /** Replace world contents with another world's (one shared copy path —
+   *  World.copyFrom — so rotation/decals/items always survive), then reload. */
   replaceWorldVoxels(loaded) {
-    this.world.clear();
     this.history.clear();
-    loaded.forEachVoxel((v) => this.world.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2]));
-    loaded.forEachItem((it) => this.world.placeItem(it.itemId, it.size, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0));
-    loaded.forEachMobSpawn((s) => this.world.addMobSpawn(s.type, s.x, s.y, s.z));
-    if (loaded.spawn) {
-      this.world.setSpawn(loaded.spawn[0], loaded.spawn[1], loaded.spawn[2]);
-      this.world.spawnYaw = loaded.spawnYaw ?? 0;
-    }
+    this.world.copyFrom(loaded);
     this.renderer.clearChunks();
     this.renderer.loadWorldBounds();
     this.itemRenderer.rebuildAll();
@@ -894,13 +931,13 @@ export class App {
       else if (this.mode === 'equip') this.equipmentEditor.onWheel({ deltaY });
       else if (this.mode === 'edit') this.ui.setSpeed(this.controls.onWheel(deltaY));
     });
-    sub('mousedown', ({ button, x, y }) => {
+    sub('mousedown', ({ button, x, y, shiftKey }) => {
       if (this.mode === 'item') {
-        this.itemEditor.onMouseDown({ button, x, y });
+        this.itemEditor.onMouseDown({ button, x, y, shiftKey });
         return;
       }
       if (this.mode === 'equip') {
-        this.equipmentEditor.onMouseDown({ button, x, y });
+        this.equipmentEditor.onMouseDown({ button, x, y, shiftKey });
         return;
       }
       if (this.toolRing.open) return;
@@ -937,6 +974,7 @@ export class App {
             if (!h) return;
             const entry = h.kind === 'item' ? this._objectEntry(h.id)
               : h.kind === 'equip' ? this._equipEntry(h.id)
+              : h.kind === 'decal' ? this._decalEntry(h.id)
               : this._blockEntry(h.id);
             if (entry && this.toolbar.assign(i, entry)) {
               this.ui.toast(`Slot ${Toolbar.keyFor(i)}: ${entry.name}`, 900);
@@ -958,10 +996,26 @@ export class App {
         this.ui.toast(`Spawn direction: ${this.world.spawnYaw}°`, 700);
         return;
       }
-      if (!this.state.get('itemId')) return;
-      const rot = (this.state.get('itemRotation') + 90) % 360;
-      this.state.set('itemRotation', rot);
-      this.ui.toast(`Rotation: ${rot}°`, 700);
+      // Decal in hand: R spins it on its face in quarter turns.
+      if (this.state.get('decalId')) {
+        const rot = ((this.state.get('decalRotation') ?? 0) + 1) % 4;
+        this.state.set('decalRotation', rot);
+        this.ui.toast(`Decal rotation: ${rot * 90}°`, 700);
+        return;
+      }
+      if (this.state.get('itemId')) {
+        const rot = (this.state.get('itemRotation') + 90) % 360;
+        this.state.set('itemRotation', rot);
+        this.ui.toast(`Rotation: ${rot}°`, 700);
+        return;
+      }
+      // Block in hand: R spins the pending voxel's textures in quarter
+      // turns (rotate a road line, a crack, wood grain...).
+      if (this.state.get('blockId')) {
+        const rot = ((this.state.get('blockRotation') ?? 0) + 1) % 4;
+        this.state.set('blockRotation', rot);
+        this.ui.toast(`Block rotation: ${rot * 90}°`, 700);
+      }
     }));
     sub('inventory.toggle', editorOnly(() => {
       const opened = this.inventory.toggle();
@@ -1002,6 +1056,7 @@ export class App {
     if (t) {
       this.tools.activate(t.id);
       if (t.id !== 'item') this.state.set('itemId', null);
+      if (t.id !== 'decal') this.state.set('decalId', null);
       this.ui.setTool(t.name);
       this.ui.toast(`Tool: ${t.name}`, 700);
     }
@@ -1019,7 +1074,11 @@ export class App {
       this.mobMarker.update();
     } else if (this.mode === 'test') {
       this.walk.update(dt);
-    } else if (this.mode === 'item') {
+    }
+    // Blinking lights strobe in the editor too; the periodic rescan picks up
+    // newly placed/removed lamps without an explicit hook.
+    if (this.mode === 'edit' || this.mode === 'test') this.blinkers.update(dt, 1);
+    if (this.mode === 'item') {
       this.itemEditor.update(dt);
     } else if (this.mode === 'equip') {
       this.equipmentEditor.update(dt);

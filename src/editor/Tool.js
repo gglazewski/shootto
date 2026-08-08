@@ -7,7 +7,7 @@
 //   update(dt)                     — called each frame (ghost refresh, drags)
 
 import { raycastVoxel, worldToCell } from '../engine/VoxelRaycaster.js';
-import { anchorFor } from '../engine/VoxelShape.js';
+import { anchorFor, spanFor } from '../engine/VoxelShape.js';
 
 export class Tool {
   constructor({ id, name, ctx }) {
@@ -34,6 +34,36 @@ export class Tool {
       size,
     );
     return [x, y, z];
+  }
+
+  /**
+   * Unique voxels overlapping the given anchor cells, scanning the full
+   * span volume of `size` at each anchor so small voxels inside a big-size
+   * footprint (and vice versa) are all caught.
+   * @param {[number,number,number][]} anchors
+   * @param {string} size
+   * @returns {object[]} voxels, deduped by anchor
+   */
+  voxelsAt(anchors, size) {
+    const { world } = this.ctx;
+    const span = spanFor(size);
+    const seen = new Set();
+    const out = [];
+    for (const a of anchors) {
+      for (let dx = 0; dx < span; dx++) {
+        for (let dy = 0; dy < span; dy++) {
+          for (let dz = 0; dz < span; dz++) {
+            const v = world.get(a[0] + dx, a[1] + dy, a[2] + dz);
+            if (!v) continue;
+            const key = v.anchor.join(',');
+            if (seen.has(key)) continue;
+            seen.add(key);
+            out.push(v);
+          }
+        }
+      }
+    }
+    return out;
   }
 
   get isShift() {

@@ -11,7 +11,7 @@
 // readers that ignore it) still load fine.
 
 import { World } from '../engine/World.js';
-import { assertValidBlockId, SIZE } from '../engine/VoxelTypes.js';
+import { assertValidBlockId, getBlock, SIZE, isDecalId, FACES } from '../engine/VoxelTypes.js';
 import { isItemId } from '../engine/ItemRegistry.js';
 import { isEquipId } from '../engine/EquipmentRegistry.js';
 import { isMobId } from '../engine/mobTypes.js';
@@ -24,7 +24,14 @@ export const VERSION = 1;
 export function serialize(world) {
   const blocks = [];
   world.forEachVoxel((v) => {
-    blocks.push({ x: v.anchor[0], y: v.anchor[1], z: v.anchor[2], size: v.size, type: v.type });
+    // rotation is additive and omitted when 0, so old readers and untouched
+    // maps stay byte-identical. A blinking light caught in its dark phase is
+    // normalized back to its lit id — maps always store the canonical block.
+    const type = getBlock(v.type)?.blinkOn ?? v.type;
+    blocks.push({
+      x: v.anchor[0], y: v.anchor[1], z: v.anchor[2], size: v.size, type,
+      ...(v.rotation ? { rotation: v.rotation } : {}),
+    });
   });
   const items = [];
   world.forEachItem((it) => {
@@ -40,7 +47,13 @@ export function serialize(world) {
   const spawn = world.spawn ? [...world.spawn] : null;
   const mobs = [];
   world.forEachMobSpawn((s) => mobs.push({ type: s.type, x: s.x, y: s.y, z: s.z }));
-  return JSON.stringify({ format: FORMAT, version: VERSION, cellSize: CELL_SIZE, spawn, spawnYaw: world.spawnYaw ?? 0, blocks, items, mobs }, null, 2);
+  // `decals` is additive — readers that ignore it still load the map.
+  const decals = [];
+  world.forEachDecal((d) => decals.push({
+    id: d.decalId, x: d.cell[0], y: d.cell[1], z: d.cell[2], face: d.face,
+    ...(d.rotation ? { rotation: d.rotation } : {}),
+  }));
+  return JSON.stringify({ format: FORMAT, version: VERSION, cellSize: CELL_SIZE, spawn, spawnYaw: world.spawnYaw ?? 0, blocks, items, mobs, decals }, null, 2);
 }
 
 /** @returns {{world: World, errors: string[]}} */
@@ -82,7 +95,8 @@ export function deserialize(text) {
       errors.push(`Skipped block ${b.x},${b.y},${b.z}: ${e.message}`);
       continue;
     }
-    if (!world.place(b.type, size, b.x, b.y, b.z)) {
+    const rotation = Number.isInteger(b.rotation) ? ((b.rotation % 4) + 4) % 4 : 0;
+    if (!world.place(b.type, size, b.x, b.y, b.z, rotation)) {
       errors.push(`Skipped overlapping block ${b.x},${b.y},${b.z}`);
     }
   }
@@ -100,6 +114,26 @@ export function deserialize(text) {
       const rotation = typeof it.rotation === 'number' ? it.rotation : 0;
       if (!world.placeItem(it.itemId, size, it.x, it.y, it.z, rotation)) {
         errors.push(`Skipped overlapping item ${it.itemId} at ${it.x},${it.y},${it.z}`);
+      }
+    }
+  }
+  if (Array.isArray(data.decals)) {
+    for (const d of data.decals) {
+      if (!d || typeof d.x !== 'number' || typeof d.y !== 'number' || typeof d.z !== 'number' || typeof d.id !== 'string') {
+        errors.push('Skipped malformed decal entry');
+        continue;
+      }
+      if (!isDecalId(d.id)) {
+        errors.push(`Skipped decal ${d.id} (not registered)`);
+        continue;
+      }
+      if (!FACES.includes(d.face)) {
+        errors.push(`Skipped decal ${d.id} at ${d.x},${d.y},${d.z}: bad face "${d.face}"`);
+        continue;
+      }
+      const rotation = Number.isInteger(d.rotation) ? ((d.rotation % 4) + 4) % 4 : 0;
+      if (!world.placeDecal(d.id, d.x, d.y, d.z, d.face, rotation)) {
+        errors.push(`Skipped decal ${d.id} at ${d.x},${d.y},${d.z}: no block there`);
       }
     }
   }

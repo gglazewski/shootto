@@ -10,6 +10,13 @@ import { getItem } from '../engine/ItemRegistry.js';
 import { getEquipItem, RANGED_SPREAD } from '../engine/EquipmentRegistry.js';
 import { CELL_SIZE } from '../engine/Space.js';
 
+// Stopping power: a ranged hit staggers its target (Mob.takeDamage's impact).
+// Damage above this threshold also knocks the mob back at KNOCKBACK_PER_DAMAGE
+// m/s per point, so a pistol gives a shove while a heavy gun launches.
+const KNOCKBACK_THRESHOLD = 15;
+const KNOCKBACK_PER_DAMAGE = 0.22;
+const knockbackFor = (damage) => Math.max(0, (damage - KNOCKBACK_THRESHOLD) * KNOCKBACK_PER_DAMAGE);
+
 export const FISTS = Object.freeze({
   id: 'fists',
   name: 'Fists',
@@ -25,6 +32,7 @@ export const FISTS = Object.freeze({
   ammo: '',
   reload: 0, // fists cannot reload
   spread: 0, // radians of aim wobble (melee swings are exact)
+  knockback: 0, // melee only flinches, never stops or shoves a mob
 });
 
 /** Weapon profile for an equipped item (equipment profile when available). */
@@ -49,6 +57,9 @@ export function weaponFor(itemId) {
       reload: typeof w.reload === 'number' ? Math.max(0.2, Math.min(10, w.reload)) : 1.4,
       // Ranged weapons wobble by default; melee stays exact.
       spread: w.spread ?? (w.kind === 'ranged' ? RANGED_SPREAD : 0),
+      // Only guns stop/shove mobs — derived from damage so stopping power
+      // grows with the punch.
+      knockback: w.kind === 'ranged' ? knockbackFor(item.stats.damage) : 0,
     };
   }
   return {
@@ -66,6 +77,7 @@ export function weaponFor(itemId) {
     ammo: '',
     reload: 1.4,
     spread: 0,
+    knockback: 0,
   };
 }
 

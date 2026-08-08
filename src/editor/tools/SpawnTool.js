@@ -6,6 +6,7 @@
 
 import { Tool } from '../Tool.js';
 import { Notice } from '../Notice.js';
+import { setSpawnCommand, clearSpawnCommand } from '../commands.js';
 
 export class SpawnTool extends Tool {
   constructor(ctx) {
@@ -31,8 +32,9 @@ export class SpawnTool extends Tool {
 
   onMouseDown(button) {
     if (button === 2) {
-      if (this.ctx.world.spawn) {
-        this.ctx.world.clearSpawn();
+      const cmd = clearSpawnCommand(this.ctx.world);
+      if (cmd.do()) {
+        this.ctx.history.push(cmd);
         this.lastAction = 'Spawn point removed';
         Notice.info('Player spawn removed');
       }
@@ -46,7 +48,9 @@ export class SpawnTool extends Tool {
       Notice.warn('Cannot place the spawn inside a block');
       return;
     }
-    this.ctx.world.setSpawn(cell[0], cell[1], cell[2]);
+    const cmd = setSpawnCommand(this.ctx.world, cell);
+    cmd.do();
+    this.ctx.history.push(cmd);
     this.lastAction = `Spawn at ${cell.join(',')}`;
     Notice.info(`Player spawn set at (${cell.join(', ')})`);
   }

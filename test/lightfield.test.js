@@ -2,8 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { World } from '../src/engine/World.js';
-import { SIZE } from '../src/engine/VoxelTypes.js';
+import { SIZE, registerBlock } from '../src/engine/VoxelTypes.js';
 import { LightField, MAX_LIGHT } from '../src/engine/LightField.js';
+
+// The game no longer ships an emissive block (torches are placed objects now),
+// but the engine still supports emissive voxels — register one for these tests.
+registerBlock({ id: 'torch', name: 'Test Torch', tiles: 'concrete', light: 15, opacity: 0, transparent: true });
 
 // Build a hollow box of opaque blocks: x,z in [-span,span], y in [bottom,top].
 // Returns the world.
@@ -207,6 +211,50 @@ test('incremental: placing a torch in a sealed room matches full recompute', () 
       }
     }
   });
+});
+
+test('directional lamp lights only the side its face opens into', () => {
+  const w = new World();
+  // A large flat ceiling (11x11) with the lamp embedded flush in its center.
+  for (let x = -5; x <= 5; x++) {
+    for (let z = -5; z <= 5; z++) {
+      if (x === 0 && z === 0) continue;
+      w.place('concrete', SIZE.SMALL, x, 2, z);
+    }
+  }
+  w.place('lamp', SIZE.SMALL, 0, 2, 0); // emitFaces: ['ny'] -> shines down
+  const lf = new LightField(w);
+  lf.recompute();
+  assert.equal(lf.get(0, 1, 0).block, MAX_LIGHT, 'full light below the panel');
+  assert.equal(lf.get(0, 0, 0).block, MAX_LIGHT - 1);
+  // Above the ceiling only a faint wrap-around remnant may arrive (the flood
+  // walking around the 11x11 slab), never direct light through the panel.
+  assert.ok(lf.get(0, 3, 0).block <= 2, `above the panel stays dark (got ${lf.get(0, 3, 0).block})`);
+});
+
+test('directional lamp goes dark when its emit face is sealed', () => {
+  const w = new World();
+  w.place('lamp', SIZE.SMALL, 0, 1, 0);
+  w.place('concrete', SIZE.SMALL, 0, 0, 0); // block under the panel
+  const lf = new LightField(w);
+  lf.recompute();
+  assert.equal(lf.get(1, 1, 0).block, 0, 'no sideways spill from a sealed panel');
+});
+
+test('block light casts hard shadows: no wrap around a small wall', () => {
+  const w = new World();
+  // a small 3x3 wall right in front of the light — with flooding, light
+  // would wrap around it and light the back almost fully; with LOS
+  // stamping the space directly behind is pitch black
+  for (let y = -1; y <= 1; y++) {
+    for (let z = -1; z <= 1; z++) w.place('concrete', SIZE.SMALL, 2, y, z);
+  }
+  w.place('torch', SIZE.SMALL, 0, 0, 0);
+  const lf = new LightField(w);
+  lf.recompute();
+  assert.equal(lf.get(1, 0, 0).block, MAX_LIGHT - 1, 'lit in front of the wall');
+  assert.equal(lf.get(3, 0, 0).block, 0, 'shadow directly behind the wall');
+  assert.equal(lf.get(5, 0, 0).block, 0, 'the shadow extends');
 });
 
 test('incremental: world growth falls back to a full recompute', () => {

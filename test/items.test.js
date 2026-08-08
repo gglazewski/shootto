@@ -27,6 +27,7 @@ import {
 import { buildItemGeometry } from '../src/engine/ItemMeshBuilder.js';
 import { serialize, deserialize } from '../src/persistence/WorldSerializer.js';
 import { collisionWorld } from '../src/editor/itemPick.js';
+import { registerEquipItem, clearEquipItems, emptyEquipItem } from '../src/engine/EquipmentRegistry.js';
 import { collides } from '../src/engine/Physics.js';
 
 // --- item data model ---
@@ -283,6 +284,21 @@ test('blocking items are solid to the player, traversable items are not', () => 
   world.removeItemAt(0, 0, 0);
   world.placeItem('prop', SIZE.SMALL, 0, 0, 0);
   assert.equal(collides(cw, box), true, 'items without a solid flag default to blocking');
+  clearItems();
+});
+
+test('pickable (equipment) items are traversable even when solid', () => {
+  clearItems();
+  clearEquipItems();
+  registerItem({ id: 'medkit', name: 'Medkit', size: 'small', solid: true, microVoxels: [], light: null });
+  registerEquipItem({ ...emptyEquipItem('Medkit'), id: 'medkit' });
+  const world = new World();
+  const cw = collisionWorld(world);
+  const box = { minX: 0, minY: 0, minZ: 0, maxX: 0.5, maxY: 1.8, maxZ: 0.5 };
+
+  world.placeItem('medkit', SIZE.SMALL, 0, 0, 0);
+  assert.equal(collides(cw, box), false, 'pickable items must not block the player');
+  clearEquipItems();
   clearItems();
 });
 

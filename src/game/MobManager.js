@@ -16,8 +16,9 @@
 import { Mob } from './Mob.js';
 import { MOB_EYE_HEIGHT } from './Mob.js';
 import { MobRenderer } from './MobRenderer.js';
+import { randomMobSkin } from './mobSprites.js';
 import { NavMesh, hasLineOfSight } from '../engine/NavMesh.js';
-import { getMob } from '../engine/mobTypes.js';
+import { getMob, randomMobHeight, MOB_HEIGHT_MAX } from '../engine/mobTypes.js';
 import { collisionWorld } from '../editor/itemPick.js';
 
 /** Edge length of a shared-LOS bucket in meters (kept small so walls split
@@ -27,10 +28,13 @@ const LOS_BUCKET = 1.5;
 const LOS_REFRESH = 0.2;
 /** Cap on cached LOS entries (drops stale ones past this). */
 const LOS_CACHE_MAX = 256;
-/** Max meters a mob may be pushed by separation in a single frame, so a large
- *  cluster eases apart over a few frames instead of teleporting a mob clear
- *  across a room. */
-const MAX_SEPARATION = 0.2;
+/** Max meters a mob may be pushed by overlap resolution in a single frame, so
+ *  a pile eases apart over a few frames instead of teleporting a mob clear
+ *  across a room. Small: crowd spacing is the mobs' own steering separation
+ *  now — this pass only fixes true overlaps (e.g. mobs parked in attack). */
+const OVERLAP_RELAX = 0.08;
+/** Packs smaller than this never flank — everyone charges. */
+const FLANK_MIN_PACK = 3;
 
 /** Ray vs AABB intersection (slab method). @returns distance t or Infinity. */
 function rayAabb(ox, oy, oz, dx, dy, dz, box) {
@@ -93,7 +97,10 @@ export class MobManager {
     for (const id of types) {
       const def = getMob(id);
       if (!def) continue;
-      this.navs.set(id, new NavMesh(this.solidWorld, { halfWidth: def.halfWidth, height: def.height }));
+      // Clearance for the tallest a mob of this type may roll, so every one of
+      // them fits everywhere its shared navmesh says it can walk.
+      const height = Math.max(def.height, MOB_HEIGHT_MAX);
+      this.navs.set(id, new NavMesh(this.solidWorld, { halfWidth: def.halfWidth, height }));
     }
 
     this.world.forEachMobSpawn((s) => {
@@ -107,6 +114,11 @@ export class MobManager {
         world: this.solidWorld,
         nav,
         aggroDelay: Math.random() * 0.3,
+        // A spawn point says what a mob *is*; which of the drawn characters it
+        // looks like, and how tall it stands, are rolled here so a crowd is a
+        // mix rather than a row of clones. Stats and AI are untouched.
+        skin: randomMobSkin(),
+        height: randomMobHeight(),
         onDamagePlayer: this.onDamagePlayer,
       });
       if (!mob.valid) return; // spawn has no walkable surface — skip
@@ -115,34 +127,139 @@ export class MobManager {
     });
   }
 
-  /** Advance all mobs + their billboards. @param {number} dt seconds */
-  update(dt, player) {
+  /**
+   * Advance all mobs + their billboards.
+   * @param {number} dt seconds
+   * @param {{x:number,y:number,z:number}} player  player feet position (m)
+   * @param {{x:number,z:number}|null} [facing]  player view direction on the
+   *   ground plane (unit), so flankers can aim outside the player's cone;
+   *   null/omitted when unknown (tests, looking straight up/down)
+   */
+  update(dt, player, facing = null) {
     this._losClock += dt;
     this._updateSharedLOS(player);
+    this._assignNeighbors();
     this.renderer.update(dt);
+    let shouters = null;
     for (let i = this.mobs.length - 1; i >= 0; i--) {
       const mob = this.mobs[i];
+      mob.playerFacing = facing ?? undefined;
       mob.update(dt, player);
+      // Any aggro mob that hasn't sounded its alarm yet shouts, exactly once —
+      // whether it aggroed from sight, from damage, or was one-shot before its
+      // own update (a kill should still raise the pack).
+      if (mob.aggro && !mob._shouted) (shouters ??= []).push(mob);
       if (mob.dead && mob.deadTimer <= 0) {
         this.mobs.splice(i, 1);
         this.renderer.removeMob(mob);
       }
     }
-    this._separate(player);
+    if (shouters) {
+      for (const mob of shouters) {
+        mob._shouted = true;
+        this.alertNear(mob);
+      }
+    }
+    this._resolveOverlaps(player);
   }
 
   /**
-   * Push overlapping mobs apart so a pack doesn't stack into one sprite, and
-   * nudge mobs off the player's own body. Horizontal only (mobs on different
-   * floors may legitimately share x/z).
-   *
-   * Each mob accumulates ONE separation vector from every overlapping neighbor
-   * plus the player, clamps it to a small per-frame maximum, then applies it
-   * through Mob.nudge — which resolves against solid cells, so a mob slides
-   * along walls instead of clipping into them. Clamping keeps a big cluster
-   * from shoving any single mob several meters in one frame (no teleports).
+   * A mob's alarm cry: every packmate within ITS OWN alertRadius of the
+   * shouter is alerted — primed to aggro after its usual wake delay, handed
+   * the shouter's last-known player position to hunt. Deliberately NOT gated
+   * on line of sight (sound carries through walls; the modest radius keeps
+   * distant rooms asleep) and deliberately single-hop: alerted mobs never
+   * re-shout (see Mob._shouted), so one sniped mob wakes its pack, not the
+   * whole map in a chain.
    */
-  _separate(player) {
+  alertNear(source) {
+    const group = [source];
+    for (const mob of this.mobs) {
+      if (mob === source || mob.dead) continue;
+      const dx = mob.pos.x - source.pos.x;
+      const dz = mob.pos.z - source.pos.z;
+      const r = mob.type.alertRadius;
+      if (dx * dx + dz * dz > r * r) continue;
+      // Mobs already in the fight still count toward the pack size (and may
+      // pick up a flank role); only sleepers get the actual alert.
+      if (!mob.aggro && !mob.alerted) mob.alert(source.lkp);
+      group.push(mob);
+    }
+    this._assignFlankRoles(group);
+  }
+
+  /**
+   * Split an engagement group into chargers and flankers: at most a third
+   * flank (alternating left/right), the rest press head-on so the player is
+   * never left unpressured. Small packs never flank. Assignment order follows
+   * the mob list, so it is deterministic and testable; the shouter itself
+   * always charges (the mob you just shot coming straight at you reads
+   * better than it veering off sideways).
+   */
+  _assignFlankRoles(group) {
+    if (group.length < FLANK_MIN_PACK) return;
+    const quota = Math.floor(group.length / 3);
+    let flankers = 0;
+    for (const m of group) {
+      if (m.flankRole !== 'direct') flankers++;
+    }
+    for (let i = 1; i < group.length && flankers < quota; i++) {
+      const m = group[i];
+      if (m.flankRole !== 'direct' || m._flankDone) continue;
+      m.flankRole = flankers % 2 === 0 ? 'flankL' : 'flankR';
+      flankers++;
+    }
+  }
+
+  /**
+   * Hand every mob its nearby alive packmates for this frame — the input to
+   * each mob's own steering separation. Buckets on the same coarse grid as the
+   * shared-LOS pass (a mob's separation radius fits within one bucket ring),
+   * so the cost is O(mobs), not O(mobs^2).
+   */
+  _assignNeighbors() {
+    const buckets = new Map();
+    for (const mob of this.mobs) {
+      if (mob.dead) {
+        mob.neighbors = [];
+        continue;
+      }
+      const kx = Math.floor(mob.pos.x / LOS_BUCKET);
+      const kz = Math.floor(mob.pos.z / LOS_BUCKET);
+      mob._nbKx = kx;
+      mob._nbKz = kz;
+      const key = `${kx}|${kz}`;
+      let arr = buckets.get(key);
+      if (!arr) buckets.set(key, (arr = []));
+      arr.push(mob);
+    }
+    for (const mob of this.mobs) {
+      if (mob.dead) continue;
+      const list = [];
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dz = -1; dz <= 1; dz++) {
+          const arr = buckets.get(`${mob._nbKx + dx}|${mob._nbKz + dz}`);
+          if (!arr) continue;
+          for (const m of arr) if (m !== mob) list.push(m);
+        }
+      }
+      mob.neighbors = list;
+    }
+  }
+
+  /**
+   * Safety net under the mobs' own steering separation: fix true overlaps only
+   * — mobs standing inside each other (a pack parked in attack state doesn't
+   * steer) — and keep mobs off the player's body. Horizontal only (mobs on
+   * different floors may legitimately share x/z).
+   *
+   * Each mob accumulates ONE push from every overlapping neighbor plus the
+   * player, clamps it to a small per-frame maximum, then applies it through
+   * Mob.nudge — which resolves against solid cells, so a mob slides along
+   * walls instead of clipping into them. Clamping keeps a pile from shoving
+   * any single mob several meters in one frame (no teleports).
+   */
+  _resolveOverlaps(player) {
     const mobs = this.mobs;
     for (let i = 0; i < mobs.length; i++) {
       const a = mobs[i];
@@ -162,7 +279,10 @@ export class MobManager {
         dz += (pdz / pd) * push;
       }
 
-      // Away from every overlapping mob on the same floor.
+      // Away from every crowding mob on the same floor. The spacing target
+      // matches the mobs' own steering separation; this pass mostly matters
+      // for mobs parked in attack state (which don't steer) — the gentle
+      // per-frame clamp is what keeps it from fighting path following.
       for (let j = i + 1; j < mobs.length; j++) {
         const b = mobs[j];
         if (b.dead) continue;
@@ -184,7 +304,7 @@ export class MobManager {
 
       const len = Math.hypot(dx, dz);
       if (len < 1e-4) continue;
-      const s = Math.min(len, MAX_SEPARATION);
+      const s = Math.min(len, OVERLAP_RELAX);
       a.nudge((dx / len) * s, (dz / len) * s);
     }
   }

@@ -1,0 +1,25 @@
+# mise tasks — build and run the editor / game without remembering the
+# esbuild + node server incantations. `mise run <task>` from anywhere in the
+# repo; `mise run` lists them all.
+
+[tasks.build]
+description = "Build both bundles (editor + game)"
+run = "npm run build"
+
+[tasks.editor]
+description = "Build the editor bundle, then serve it at http://localhost:4173"
+run = [
+  "npm run build:editor",
+  "node server.mjs",
+]
+
+[tasks.game]
+description = "Build the game bundle, then serve it at http://localhost:4173/game.html"
+run = [
+  "npm run build:game",
+  "node server.mjs",
+]
+
+[tasks.serve]
+description = "Just serve the current bundles (no rebuild) at http://localhost:4173"
+run = "node server.mjs"

@@ -96,10 +96,13 @@ build or the server) to simulate the authored world.
 | Mouse wheel | Adjust move speed |
 | Left click | Place the selected block |
 | Right click | Remove the block under the cursor |
+| `Right click` (hold) + sweep | Erase every block the crosshair moves onto; the whole sweep is one undo step |
+| `Shift` + `Right click` | Erase a straight line from the last removed voxel |
 | Middle click | Pick the block under the cursor (sets the current block + size) |
 | `Shift` + `Left click` | Draw a line from the last placed voxel |
 | `Tab` | Hold for the radial tool selector (release to pick); tap to cycle |
 | `Left click` (hold) + drag | Square tool: start on a voxel, drag, release to place. Orientation follows the camera — look down for a horizontal square, look forward for a vertical one; it can extend into empty space from the starting voxel |
+| `Right click` (hold) + drag | Square tool: erase a rectangle on the clicked voxel's layer, release to apply (one undo step) |
 | Spawn tool: `Left click` / `Right click` | Place/move the player spawn point / clear it |
 | `1`–`9`, `0` | Select block or placeable object (10-slot hotbar) |
 | `B` | Toggle 0.5 m / 1 m voxel size |
@@ -142,7 +145,13 @@ under **Placeable Objects**, or assign it to a hotbar slot (hover it, press a
 number) and use that slot key. Then `LMB`/`RMB` places/removes it like a block.
 Press `R` to rotate the selected object 90° around its vertical axis before
 placing — the preview and the placed copy show the rotation, and each copy in
-the world keeps the rotation it was placed with (saved in the map file). The
+the world keeps the rotation it was placed with (saved in the map file).
+`R` works for blocks too: with a block in hand it spins the pending voxel's
+textures in quarter turns (rotate a road marking, a crack, wood grain...) —
+the top face rotates, side tiles swap around the block, the shape never
+changes. Placed rotations persist in the map file (an additive `rotation`
+field, omitted when 0) and middle-click picking copies a block's rotation
+along with its type and size. The
 item placement tool shows a translucent preview with a green/red footprint
 box. Items occupy their footprint (blocks can't be placed through them), render
 as independent colored meshes (not chunk geometry), are **lit by the same light
@@ -165,20 +174,44 @@ use them for rugs, signs, plants and other props. Changing the setting is
 saved with the object, and every copy already placed in the world updates
 immediately.
 
+Both editors share a tool strip (one active tool at a time — the status bar at
+the bottom of the panel always shows the active tool and what the mouse will
+do), an inline palette with a custom color picker + recent colors, camera view
+presets (Front / Side / Top / Iso) and a live isometric preview thumbnail.
+
 | Item editor input | Action |
 |---|---|
 | `LMB` drag / `MMB` drag / wheel | Orbit / pan / zoom the camera |
-| `LMB` click | Paint a micro voxel — aims at a placed voxel the ghost sticks to the face you're looking at (like the world editor, red when blocked); aiming at empty space paints the deepest cell along your aim, so a fresh grid fills from the back toward you |
-| `RMB` click | Erase the nearest micro voxel under the cursor |
+| `LMB` click | Apply the active tool (Paint by default) — aiming at a placed voxel the ghost sticks to the face you're looking at (red when blocked); aiming at empty space paints the deepest cell along your aim, so a fresh grid fills from the back toward you |
+| `RMB` click | Always erases the voxel under the cursor |
 | `MMB` click | Pick the color of the voxel under the cursor |
-| `1`–`9`, `0` or `E` | Quick-select / pick a palette color |
+| `Shift`+`LMB` drag | Stroke of the active tool (paint or erase); `Shift`+`RMB` drag always erases a stroke |
+| `P` / `E` | Paint / Erase tool (a tool's key again returns to Paint) |
+| `V` | Box tool — click two corners to fill a cuboid (`RMB` erases the box, `Esc` cancels the pending corner) |
+| `F` | Fill tool — click to recolor the connected same-color region |
+| `X` | Mirror painting across the volume centre (off → X → Z → XZ) |
+| Arrow keys | Nudge the whole model in X/Z (`Shift`+`↑`/`↓` moves it up/down) |
+| `1`–`9`, `0` | Quick-select a palette color (palette strip + custom color input in the panel) |
 | `L` | Light source settings (on/off, color, strength) |
 | `B` | Toggle the object's world size (0.5 m / 1 m) |
 | Collision buttons | Blocking (solid in test run) vs Traversable (walk-through) |
 | `Ctrl`+`Z` / `Ctrl`+`Shift`+`Z` | Undo / redo micro-voxel edits |
 | `Ctrl`+`S` | Save the object to the item catalogue (no file) |
 | `Catalogue` | Browse, edit, export or delete saved objects |
-| `F2` / `Esc` | Back to the world editor |
+| `F2` / `Esc` | Back to the world editor (`Esc` first cancels the box corner / returns to Paint) |
+
+### Equipment build volumes (F3)
+
+The F3 items editor sculpts inside a per-item **build volume** (`grid`,
+default 8×8×8 cells at a fixed 6.25 cm cell) instead of one fixed size. The
+Volume presets cover the common silhouettes — Sidearm 8×8×8 (0.5 m), Long gun
+8×8×16 (1 m — shotguns, rifles), Spear 8×8×24 (1.5 m), Axe 8×16×8 (1 m tall) —
+and the Cells steppers allow any 4–32 cells per axis (Z is the direction the
+weapon points). Resizing keeps the sculpture centred; a shrink the content
+wouldn't survive is refused, never silently cropped. Held-item rendering is
+grip-relative, so long weapons aim, fire and swing correctly; old item files
+without a `grid` load as the classic 8×8×8. The F3 editor also has Grip (`G`)
+and Muzzle (`M`) tools plus `R` to rotate the forward direction.
 
 To place a saved object in the world, open the inventory (`E`), click it under
 **Placeable Objects**, then `LMB`/`RMB` places/removes it like a block. The
@@ -253,7 +286,10 @@ src/
       SpawnTool.js         place/move/clear the player spawn point
       ItemTool.js          place/remove registered placeable objects
     items/
-      ItemEditor.js        F2 object editor: orbit camera + micro-voxel painting
+      MicroVoxelEditor.js  shared editor core: orbit camera, painting, undo, box/mirror/fill tools
+      microOps.js          PURE grid ops (mirror, box, flood fill, translate)
+      ItemEditor.js        F2 object editor: size / collision / light aspect
+      EquipmentEditor.js   F3 equipment editor: grip / muzzle / stats aspect
       itemSwatch.js        2D iso previews for the inventory
     itemPick.js            raycast that also hits placed items + player-collision facade
     ItemRenderer.js        meshes + lights for placed items
@@ -286,17 +322,24 @@ src/
   pure; only the texture adapter (`AtlasTexture.three.js`) touches the DOM/three.
 - **One draw call per chunk.** Each 16³-cell chunk is a single `BufferGeometry`
   with a shared atlas material; only exposed faces are emitted and simple
-  vertex AO darkens corners. Chunks with transparent voxels (glass, torch) get
-  a second transparent `BufferGeometry` rendered in a blended pass.
+  vertex AO darkens corners. Chunks with transparent voxels (glass) get a
+  second transparent `BufferGeometry` rendered in a blended pass. Cutout
+  shapes (chain-link, bars, boards) stay in the opaque pass with their holes
+  discarded in the shader — they write depth, so overlapping panes sort
+  correctly instead of alpha-blend ghosting.
 - **Flood-fill lighting.** `LightField` precomputes two 0–15 channels per cell
   — *skylight* (light pours straight down open shafts, fades 1 per horizontal
-  cell, stops at opaque blocks) and *block light* (torches, fades in every
+  cell, stops at opaque blocks) and *block light* (emissive light sources —
+  stamped per source with line-of-sight occlusion, so walls cast hard
+  shadows and light never wraps around thin geometry onto its far side —
+  fading 1 per cell in every
   direction). It is stored in dense typed arrays over the world bounds and
   seeded from a per-column heightmap, so a full recompute costs milliseconds.
   The mesher bakes each channel per vertex (smoothed across the 4 surrounding
   cells) into a `light` attribute; the custom `chunkShader.js` material
   multiplies the texture by it. Sealed rooms go dark, light falls through
-  windows/roof holes, torches glow warm. A configurable day/night cycle
+  windows/roof holes, placed light objects glow warm. A configurable day/night
+  cycle
   drives the `uSkyIntensity` uniform and lerps the sky color. The scene's
   `AmbientLight`/`DirectionalLight` only affect the editor overlays now.
 - **Edits mark a 27-chunk neighborhood dirty** so face culling and AO stay
@@ -320,6 +363,10 @@ src/
   part of chunk meshing. Loading a map with a spawn frames the camera there.
 - **Single input owner.** `Input.js` owns every key/mouse/wheel listener and
   emits semantic actions from the `Keybindings.js` table.
+- **One world-copy path.** `World.copyFrom(other)` is the only way a loaded
+  world replaces a live one (editor map load and game boot both use it), so
+  a new voxel/world field — rotation, decals — is threaded once and can
+  never silently vanish on one of the paths.
 
 ## Adding a new block
 
@@ -329,17 +376,65 @@ src/
    name for per-face textures.
 2. Add a tile generator function to the `GENERATORS` object in
    `src/textures/TextureAtlas.js` (signature `(x, y, size, rng) -> [r, g, b]`,
-   or `[r, g, b, a]` when the tile has transparent pixels, e.g. glass/torch).
+   or `[r, g, b, a]` when the tile has transparent pixels, e.g. glass or the
+   chain-link fence — alpha 0 texels are cut out entirely in the shader).
 
 Optional fields on the block def:
 - `opacity: 0..255` — default 255. Blocks with `opacity < 255` let light pass
-  through them (glass).
-- `light: 0..15` — block light emitted by this block (torch = 15).
+  through them (glass, fences) and don't block mob line-of-sight.
+- `light: 0..15` — block light emitted by this block (lamp = 15, neon = 9;
+  placed light objects work too).
+- `emitFaces: ['ny', ...]` — directional emission: the block seeds light
+  only into the open cells beyond the listed faces (a ceiling panel shines
+  down, a neon tube sideways), so a light embedded flush in a wall or roof
+  never lights the far side. A sealed emit face emits nothing. Omit for
+  omnidirectional glow.
+- `blink: 'flicker'` + `blinkOff: <id>` — the block strobes between itself
+  and its hidden dark phase (`hidden: true` keeps that state out of the
+  palette), in the game AND the editor (`engine/Blinkers.js`). The toggle
+  swaps the voxel type in place and pushes a light edit, so the
+  surroundings really flicker — horror-movie cadence: lit stretches with
+  the odd dip, broken by fits of rapid ~20Hz chatter. Saves and
+  middle-click picking normalize a mid-blink dark phase back to the lit id.
 - `transparent: true` — render in the alpha-blended pass (needed when the
   tiles have transparent pixels, and keeps glass-on-glass faces culled).
+- `shape: 'pane'` — instead of cube faces, mesh a single quad centered in
+  the block (chain-link fence, metal bars, barricade boards); `R` turns it
+  (0°/180° = along x, 90°/270° = along z). Panes render as depth-written
+  alpha cutouts in the opaque pass, so overlapping see-through blocks never
+  blend in the wrong order. The block still occupies its full cell for
+  collision.
+- `shootThrough: true` — attack rays (bullets and melee swings) pass through
+  the block and hit whatever is behind it; movement is still blocked. Used
+  with `shape: 'pane'` so you can fight through fences and barricades.
 
 It then appears in the hotbar, inventory, meshing and save files
 automatically. Old maps that reference unknown ids load with a warning.
+
+## Decals
+
+Decals are cutout tiles pinned onto one face of a placed block — blood
+splatter, cracks, bullet holes — picked from the **Decals** section of the
+inventory (`E`, assignable to hotbar slots like blocks). With a decal in
+hand, LMB pins it to the face under the crosshair, RMB peels it off, and `R`
+spins it in quarter turns; the ghost previews the decal texture on the exact
+face it will land on. A decal has no collision or light interaction: it is
+meshed into the chunk as one extra quad a hair off its face (only when that
+face is visible), reuses the face's baked AO/light, and its holes are
+alpha-discarded. One decal per face; removing the block removes its decals.
+Decals persist in the map file as an additive `decals` array (`{ id, x, y,
+z, face, rotation? }`). Adding a new decal = one entry in `DECALS`
+(`VoxelTypes.js`) plus an RGBA tile generator in `TextureAtlas.js`.
+
+Decals can be **bigger than one block**: a `span: [w, h]` on the decal def
+(graffiti 4x2, STOP road text 4x4, road arrow 2x4) makes the footprint cover
+w x h cells — the anchor is the cell you click, every covered cell needs a
+backing block, and the art is `span * 16px` so texel density matches blocks.
+The atlas packs multi-slot art on shelves below the regular tiles, the
+mesher emits one sub-rect quad per covered face (so culling, AO and light
+stay per-face), and `decalFootprint()` keeps the artwork's width horizontal
+on every wall. One footprint = one decal: removing it from any covered cell
+(or breaking any backing block) removes the whole thing.
 
 ## Voxel-size rules
 

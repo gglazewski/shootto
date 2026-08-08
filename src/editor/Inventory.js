@@ -15,15 +15,19 @@ export class Inventory {
    *   registered placeable objects (shown in a separate section).
    * @param {{id:string, name:string, canvas:HTMLCanvasElement}[]} [deps.equipItems]
    *   registered equippable items (shown in a separate section).
+   * @param {{id:string, name:string, canvas:HTMLCanvasElement}[]} [deps.decalItems]
+   *   registered decals (blood, cracks... — shown in a separate section).
    */
-  constructor({ container, items, objectItems = [], equipItems = [] }) {
+  constructor({ container, items, objectItems = [], equipItems = [], decalItems = [] }) {
     this.items = items;
     this.objectItems = objectItems;
     this.equipItems = equipItems;
+    this.decalItems = decalItems;
     this.container = container;
     this.onSelect = null;
     this.onSelectItem = null;
     this.onSelectEquip = null;
+    this.onSelectDecal = null;
     /** Called whenever the panel closes (selection, E, or backdrop click). */
     this.onClose = null;
     /** The block/object currently under the cursor: { kind, id } or null. */
@@ -55,6 +59,33 @@ export class Inventory {
       grid.appendChild(btn);
     }
     panel.appendChild(grid);
+
+    if (decalItems.length) {
+      const decalSection = document.createElement('h3');
+      decalSection.className = 'inv-section';
+      decalSection.textContent = 'Decals';
+      panel.appendChild(decalSection);
+      const decalGrid = document.createElement('div');
+      decalGrid.className = 'inventory-grid decal-grid';
+      for (const item of decalItems) {
+        const btn = document.createElement('button');
+        btn.className = 'inv-item';
+        btn.dataset.id = item.id;
+        btn.dataset.kind = 'decal';
+        btn.title = item.name;
+        btn.appendChild(item.canvas);
+        const label = document.createElement('span');
+        label.textContent = item.name;
+        btn.appendChild(label);
+        btn.addEventListener('click', () => {
+          if (this.onSelectDecal) this.onSelectDecal(item.id);
+          this.hide();
+        });
+        btn.addEventListener('mouseenter', () => this.setHovered('decal', item.id));
+        decalGrid.appendChild(btn);
+      }
+      panel.appendChild(decalGrid);
+    }
 
     const hint = document.createElement('div');
     hint.className = 'inv-hint';

@@ -86,6 +86,11 @@ export class Toolbar {
     this._selectByKind('item', id);
   }
 
+  /** Select the first slot holding a decal with `id`; no-op if not on the bar. */
+  selectDecal(id) {
+    this._selectByKind('decal', id);
+  }
+
   _selectByKind(kind, id) {
     const i = this.slots.findIndex((it) => it && it.kind === kind && it.id === id);
     if (i >= 0) this.select(i);

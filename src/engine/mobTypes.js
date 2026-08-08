@@ -6,6 +6,21 @@
 // Dimensions are in meters; `halfWidth` is half the x/z footprint, `height` the
 // full standing height. Mobs step up 0.5 m blocks exactly like the player.
 
+/**
+ * Standing height range a spawned mob is rolled into, in meters. Real people
+ * are not one size, and a crowd of identical silhouettes reads as clones, so
+ * each mob draws its own height at spawn. A type's `height` is the clearance
+ * its navmesh is built for (the tallest it may come out), not the height every
+ * one of them gets.
+ */
+export const MOB_HEIGHT_MIN = 1.6;
+export const MOB_HEIGHT_MAX = 1.9;
+
+/** A standing height for a freshly spawned mob. @param {() => number} [rng] */
+export function randomMobHeight(rng = Math.random) {
+  return MOB_HEIGHT_MIN + rng() * (MOB_HEIGHT_MAX - MOB_HEIGHT_MIN);
+}
+
 export const MOBS = Object.freeze({
   imp: Object.freeze({
     id: 'imp',
@@ -16,9 +31,11 @@ export const MOBS = Object.freeze({
     attackRange: 1.6, // m — arm reach
     attackCooldown: 1.1, // s between strikes
     aggroRadius: 18, // m
+    alertRadius: 12, // m — how far this mob HEARS a packmate's alarm cry
     halfWidth: 0.25,
     height: 1.7,
     markerColor: 0xff8833,
+    mass: 1, // knockback resistance — a heavier mob barely budges when shot
   }),
   brute: Object.freeze({
     id: 'brute',
@@ -29,9 +46,11 @@ export const MOBS = Object.freeze({
     attackRange: 1.9,
     attackCooldown: 1.6,
     aggroRadius: 22,
+    alertRadius: 14,
     halfWidth: 0.35,
     height: 2.0,
     markerColor: 0xbb2244,
+    mass: 2.5,
   }),
 });
 

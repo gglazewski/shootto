@@ -87,6 +87,13 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
 
       void main() {
         ${hasMap ? 'vec4 tex = texture2D(map, vUv);' : 'vec4 tex = vec4(1.0);'}
+        // Opaque pass: cutout shapes (chain-link, bars, boards) live here so
+        // they write depth and sort correctly — discard their holes. Cube
+        // tiles are fully opaque, so they never hit the discard.
+        ${hasMap && !transparent ? 'if (tex.a < 0.5) discard;' : ''}
+        // Transparent pass: drop fully clear texels so they neither tint nor
+        // haze what's behind; glass (alpha ~0.35) stays above the threshold.
+        ${hasMap && transparent ? 'if (tex.a < 0.05) discard;' : ''}
         float sky = vLight.x * uSkyIntensity;
         float block = vLight.y;
         float base = max(sky, block);

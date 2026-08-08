@@ -1,8 +1,10 @@
 // EquipmentRegistry.js — data model + registry for equippable items.
 //
-// An equippable item is a small voxel sculpture (8^3 micro grid, like a
-// placeable object) that the player can hold and fight with in the game. In
-// addition to the shape it carries gameplay-relevant editor fields:
+// An equippable item is a voxel sculpture the player can hold and fight with
+// in the game. It is built in a per-item build volume (`grid`, default 8^3,
+// up to 32 cells per axis at a fixed 6.25 cm cell size — long guns and axes
+// just use a longer volume). In addition to the shape it carries
+// gameplay-relevant editor fields:
 //   - kind:  what the item is — 'weapon' (held and fought with) or 'ammo'
 //            (a resource type a weapon consumes).
 //   - grip:  the micro-voxel cell where the player's hand grips the item,
@@ -49,6 +51,29 @@ export const DEFAULT_WEAPON = Object.freeze({
 /** Default aim spread (radians) for ranged weapons when the profile omits it. */
 export const RANGED_SPREAD = 0.02;
 
+// Build-volume limits. The default 8^3 volume matches the classic fixed grid
+// (0.5 m at the 6.25 cm equipment cell size); long weapons extend an axis.
+export const DEFAULT_EQUIP_GRID = Object.freeze([8, 8, 8]);
+export const MIN_EQUIP_GRID = 4;
+export const MAX_EQUIP_GRID = 32;
+
+/** Preset build volumes offered by the F3 editor (cells; 1 cell = 6.25 cm). */
+export const EQUIP_GRID_PRESETS = Object.freeze([
+  { id: 'sidearm', name: 'Sidearm', dims: [8, 8, 8] },      // 0.5 m — pistol, knife
+  { id: 'longgun', name: 'Long gun', dims: [8, 8, 16] },    // 1.0 m — shotgun, rifle
+  { id: 'spear', name: 'Spear', dims: [8, 8, 24] },         // 1.5 m — spear, pike
+  { id: 'axe', name: 'Axe', dims: [8, 16, 8] },             // 1.0 m tall — axe, club
+]);
+
+/** Normalize a build volume to integer [gx, gy, gz] within the limits. */
+export function normalizeGrid(g) {
+  if (!Array.isArray(g) || g.length !== 3) return [...DEFAULT_EQUIP_GRID];
+  return g.map((v) => {
+    const n = Math.round(Number(v));
+    return Number.isFinite(n) ? Math.max(MIN_EQUIP_GRID, Math.min(MAX_EQUIP_GRID, n)) : 8;
+  });
+}
+
 const REGISTRY = new Map();
 
 /**
@@ -70,6 +95,7 @@ export function emptyEquipItem(name = 'New Item') {
     id: null,
     name,
     kind: 'weapon',
+    grid: [...DEFAULT_EQUIP_GRID],
     microVoxels: [],
     grip: null,
     yaw: 0,
@@ -138,6 +164,7 @@ export function registerEquipItem(item) {
   if (!item || !item.id) return null;
   const copy = structuredClone(item);
   copy.kind = normalizeKind(copy.kind);
+  copy.grid = normalizeGrid(copy.grid);
   copy.stats = normalizeStats(copy.stats);
   copy.weapon = normalizeWeapon(copy.weapon);
   copy.yaw = clampNum(copy.yaw, 0, 360, 0);
@@ -203,6 +230,7 @@ export function serializeEquipItem(item) {
       id: item.id ?? null,
       name: item.name,
       kind: normalizeKind(item.kind),
+      grid: normalizeGrid(item.grid),
       microVoxels: item.microVoxels,
       grip: item.grip ?? null,
       yaw: item.yaw ?? 0,
@@ -218,22 +246,26 @@ export function serializeEquipItem(item) {
 /** Build a normalized EquipDef from a plain object (registry/file entry). */
 function parseEquipDef(entry) {
   if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || !entry.id) return null;
+  const grid = normalizeGrid(entry.grid);
   const microVoxels = (Array.isArray(entry.microVoxels) ? entry.microVoxels : [])
     .filter(
       (v) =>
         v && Number.isInteger(v.x) && Number.isInteger(v.y) && Number.isInteger(v.z) &&
+        v.x >= 0 && v.x < grid[0] && v.y >= 0 && v.y < grid[1] && v.z >= 0 && v.z < grid[2] &&
         Array.isArray(v.color) && v.color.length >= 3,
     )
     .map((v) => ({ x: v.x, y: v.y, z: v.z, color: [v.color[0], v.color[1], v.color[2]] }));
   const g = entry.grip;
+  const clampCell = (v, axis) => Math.max(0, Math.min(grid[axis] - 1, v));
   const grip =
     g && Number.isInteger(g.x) && Number.isInteger(g.y) && Number.isInteger(g.z)
-      ? { x: g.x, y: g.y, z: g.z }
+      ? { x: clampCell(g.x, 0), y: clampCell(g.y, 1), z: clampCell(g.z, 2) }
       : null;
   return {
     id: entry.id,
     name: typeof entry.name === 'string' && entry.name ? entry.name : entry.id,
     kind: normalizeKind(entry.kind),
+    grid,
     microVoxels,
     grip,
     yaw: clampNum(entry.yaw, 0, 360, 0),

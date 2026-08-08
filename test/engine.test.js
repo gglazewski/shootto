@@ -2,12 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { World, anchorFor, cellsFor } from '../src/engine/World.js';
-import { SIZE } from '../src/engine/VoxelTypes.js';
+import { SIZE, getBlock } from '../src/engine/VoxelTypes.js';
 import { spanFor, anchorFor as shapeAnchor } from '../src/engine/VoxelShape.js';
 import { CELL_SIZE as SPACE_CELL_SIZE, worldToCell as spaceWorldToCell } from '../src/engine/Space.js';
 import { buildChunkMesh } from '../src/engine/ChunkMeshBuilder.js';
 import { raycastVoxel, worldToCell, CELL_SIZE } from '../src/engine/VoxelRaycaster.js';
 import { serialize, deserialize } from '../src/persistence/WorldSerializer.js';
+import { bulletWorld } from '../src/editor/itemPick.js';
+import { Blinkers } from '../src/engine/Blinkers.js';
 
 const tile = () => 0;
 
@@ -207,6 +209,89 @@ test('glass-to-glass faces are culled', () => {
   assert.equal(m.indices.length, 0);
 });
 
+test('voxel rotation permutes side tiles and spins the top UVs', () => {
+  const atlas = { width: 8, height: 4, tileSize: 16 };
+  const tileIdx = { py: 0, ny: 1, px: 2, nx: 3, pz: 4, nz: 5 };
+  const tileFn = (type, face) => tileIdx[face];
+  const w = new World();
+  w.place('wood', SIZE.SMALL, 0, 0, 0, 1); // one CCW quarter turn
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tileFn, atlas);
+  // quads are emitted in FACE_TABLE order: px, nx, py, ny, pz, nz
+  const tileOf = (q) => {
+    let min = Infinity;
+    for (let i = 0; i < 4; i++) min = Math.min(min, m.uvs[q * 8 + i * 2]);
+    return Math.floor(min * 8 + 0.01);
+  };
+  assert.equal(tileOf(0), tileIdx.pz, 'world +x shows the pre-rotation +z tile');
+  assert.equal(tileOf(1), tileIdx.nz, 'world -x shows the pre-rotation -z tile');
+  assert.equal(tileOf(4), tileIdx.nx, 'world +z shows the pre-rotation -x tile');
+  assert.equal(tileOf(5), tileIdx.px, 'world -z shows the pre-rotation +x tile');
+  assert.equal(tileOf(2), tileIdx.py, 'top keeps its own tile (UVs spin instead)');
+
+  // Top UVs spin: same block unrotated vs rotated — identical geometry,
+  // different UV ordering on the y faces.
+  const w0 = new World();
+  w0.place('grass', SIZE.SMALL, 0, 0, 0);
+  const w1 = new World();
+  w1.place('grass', SIZE.SMALL, 0, 0, 0, 1);
+  const m0 = buildChunkMesh(w0, lit, [0, 0, 0], 16, tile, atlas);
+  const m1 = buildChunkMesh(w1, lit, [0, 0, 0], 16, tile, atlas);
+  assert.deepEqual([...m0.positions], [...m1.positions], 'rotation never moves geometry');
+  assert.notDeepEqual([...m0.uvs], [...m1.uvs], 'rotation must change the top-face UVs');
+});
+
+test('voxel rotation round-trips through the serializer and is omitted when 0', () => {
+  const w = new World();
+  w.place('asphalt_line', SIZE.SMALL, 0, 0, 0, 3);
+  w.place('asphalt_line', SIZE.SMALL, 1, 0, 0);
+  const text = serialize(w);
+  const raw = JSON.parse(text);
+  const rotated = raw.blocks.find((b) => b.x === 0);
+  const plain = raw.blocks.find((b) => b.x === 1);
+  assert.equal(rotated.rotation, 3);
+  assert.ok(!('rotation' in plain), 'rotation 0 is not written');
+  const { world: w2, errors } = deserialize(text);
+  assert.deepEqual(errors, []);
+  assert.equal(w2.get(0, 0, 0).rotation, 3);
+  assert.equal(w2.get(1, 0, 0).rotation ?? 0, 0);
+});
+
+test('pane voxel emits one centered double-winded quad, depth-written', () => {
+  const w = new World();
+  w.place('fence', SIZE.SMALL, 0, 0, 0);
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
+  // One quad, both windings, in the OPAQUE buffer (cutout via shader
+  // discard) so overlapping panes never alpha-blend in the wrong order.
+  assert.equal(m.transparent, null, 'nothing in the blended pass');
+  assert.equal(m.indices.length, 2 * 6, 'front + back winding');
+  assert.equal(m.positions.length, 2 * 4 * 3);
+  // rotation 0: the pane runs along x at the z center (0.25m world units)
+  for (let i = 2; i < m.positions.length; i += 3) {
+    assert.equal(m.positions[i], 0.25, 'every vertex sits on the z-center plane');
+  }
+});
+
+test('pane rotation turns the pane onto the other axis', () => {
+  const w = new World();
+  w.place('fence', SIZE.SMALL, 0, 0, 0, 1);
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
+  for (let i = 0; i < m.positions.length; i += 3) {
+    assert.equal(m.positions[i], 0.25, 'rotated pane sits on the x-center plane');
+  }
+});
+
+test('BIG pane voxel emits one full-size pane, not one per sub-cell', () => {
+  const w = new World();
+  w.place('fence', SIZE.BIG, 0, 0, 0);
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
+  assert.equal(m.indices.length, 2 * 6);
+  let maxY = -Infinity;
+  for (let i = 1; i < m.positions.length; i += 3) {
+    maxY = Math.max(maxY, m.positions[i]);
+  }
+  assert.equal(maxY, 1, 'pane spans the whole 1m block');
+});
+
 test('dark corners produce a dimmer light value', () => {
   const w = new World();
   // a solid wall at x=0 (all y,z), lit sky above via a tall empty column
@@ -222,7 +307,177 @@ test('dark corners produce a dimmer light value', () => {
   assert.ok(m.lights.every((v) => v >= 0 && v <= 1));
 });
 
+test('blinkers toggle lights over time and saves normalize the dark phase', () => {
+  const w = new World();
+  w.place('lamp_blink', SIZE.SMALL, 0, 5, 0);
+  const blk = new Blinkers(w);
+  blk.rescan();
+  assert.equal(blk.list.length, 1);
+  const seen = new Set();
+  for (let i = 0; i < 400; i++) { // 20s of simulated time at 50ms steps
+    blk.update(0.05);
+    seen.add(w.get(0, 5, 0).type);
+  }
+  assert.ok(seen.has('lamp_blink') && seen.has('lamp_blink_off'), 'light toggles between phases');
+  assert.ok(w.edits.length > 1, 'each toggle pushes a light-edit record');
+  // a save taken mid-blink stores the canonical lit id, never the hidden phase
+  w.get(0, 5, 0).type = 'lamp_blink_off';
+  const raw = JSON.parse(serialize(w));
+  assert.equal(raw.blocks[0].type, 'lamp_blink');
+});
+
+test('blinking light blocks pair with hidden off states', () => {
+  for (const [on, off] of [['lamp_blink', 'lamp_blink_off'], ['neon_blink', 'neon_blink_off']]) {
+    const lit = getBlock(on);
+    const dark = getBlock(off);
+    assert.equal(lit.blinkOff, off);
+    assert.equal(dark.blinkOn, on);
+    assert.ok(lit.light > 0, `${on} emits light`);
+    assert.ok(!dark.light, `${off} emits none`);
+    assert.ok(dark.hidden, `${off} stays out of the palette`);
+    assert.ok(!lit.hidden);
+  }
+});
+
+// --- decals ---
+
+test('decal lifecycle: attach to a face, look up, remove, go with the block', () => {
+  const w = new World();
+  assert.ok(!w.placeDecal('decal_blood', 0, 0, 0, 'py'), 'no block -> no decal');
+  w.place('concrete', SIZE.SMALL, 0, 0, 0);
+  assert.ok(w.placeDecal('decal_blood', 0, 0, 0, 'py', 2));
+  assert.ok(!w.placeDecal('decal_crack', 0, 0, 0, 'py'), 'face already taken');
+  assert.ok(w.placeDecal('decal_crack', 0, 0, 0, 'px'), 'other faces stay free');
+  assert.equal(w.decalAt(0, 0, 0, 'py').decalId, 'decal_blood');
+  assert.equal(w.decalAt(0, 0, 0, 'py').rotation, 2);
+  const removed = w.removeDecal(0, 0, 0, 'px');
+  assert.equal(removed.decalId, 'decal_crack');
+  assert.equal(w.decalAt(0, 0, 0, 'px'), null);
+  w.remove(0, 0, 0);
+  assert.equal(w.decalAt(0, 0, 0, 'py'), null, 'removing the block removes its decals');
+});
+
+test('mesher pins a decal quad onto its face; buried faces emit nothing', () => {
+  const w = new World();
+  w.place('concrete', SIZE.SMALL, 0, 0, 0);
+  w.placeDecal('decal_blood', 0, 0, 0, 'py');
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
+  assert.equal(m.indices.length, 6 * 6 + 6, 'six faces plus one decal quad');
+  // the decal quad floats just above the top face (y = 0.5m + eps)
+  let maxY = -Infinity;
+  for (let i = 1; i < m.positions.length; i += 3) maxY = Math.max(maxY, m.positions[i]);
+  assert.ok(maxY > 0.5 && maxY < 0.52, `decal must sit a hair off the face (got ${maxY})`);
+
+  // decal on a face buried by a neighbor -> the face is culled, decal too
+  const w2 = new World();
+  w2.place('concrete', SIZE.SMALL, 0, 0, 0);
+  w2.place('concrete', SIZE.SMALL, 1, 0, 0);
+  w2.placeDecal('decal_blood', 0, 0, 0, 'px');
+  const m2 = buildChunkMesh(w2, lit, [0, 0, 0], 16, tile);
+  assert.equal(m2.indices.length, 10 * 6, 'no decal quad for a hidden face');
+});
+
+test('multi-cell decal covers its footprint and needs full backing', () => {
+  const w = new World();
+  // a 4x2-cell wall segment at z=0, front faces visible on nz
+  for (let x = 0; x < 4; x++) for (let y = 0; y < 2; y++) w.place('brick', SIZE.SMALL, x, y, 0);
+  // graffiti spans [4,2]: fits exactly at anchor (0,0,0) on nz
+  assert.ok(w.canPlaceDecal('decal_graffiti', 0, 0, 0, 'nz'));
+  assert.ok(!w.canPlaceDecal('decal_graffiti', 1, 0, 0, 'nz'), 'footprint would hang off the wall');
+  assert.ok(w.placeDecal('decal_graffiti', 0, 0, 0, 'nz'));
+  // every covered cell face resolves to the same decal
+  const d = w.decalAt(0, 0, 0, 'nz');
+  assert.equal(w.decalAt(3, 1, 0, 'nz'), d);
+  assert.ok(!w.canPlaceDecal('decal_blood', 2, 1, 0, 'nz'), 'covered faces are taken');
+  // removal via ANY covered cell removes the whole footprint
+  w.removeDecal(2, 0, 0, 'nz');
+  assert.equal(w.decalAt(0, 0, 0, 'nz'), null);
+
+  // odd rotations swap the footprint (4x2 -> 2x4): needs a taller wall
+  assert.ok(!w.canPlaceDecal('decal_graffiti', 0, 0, 0, 'nz', 1), '2x4 does not fit a 2-high wall');
+  for (let x = 0; x < 4; x++) for (let y = 2; y < 4; y++) w.place('brick', SIZE.SMALL, x, y, 0);
+  assert.ok(w.canPlaceDecal('decal_graffiti', 0, 0, 0, 'nz', 1), '2x4 fits the 4-high wall');
+
+  // removing ANY backing voxel drops the whole decal
+  assert.ok(w.placeDecal('decal_graffiti', 0, 0, 0, 'nz'));
+  w.remove(3, 1, 0);
+  assert.equal(w.decalAt(0, 0, 0, 'nz'), null);
+});
+
+test('mesher emits one sub-rect quad per covered face of a big decal', () => {
+  const w = new World();
+  for (let x = 0; x < 4; x++) for (let y = 0; y < 2; y++) w.place('brick', SIZE.SMALL, x, y, 0);
+  w.placeDecal('decal_graffiti', 0, 0, 0, 'nz');
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile, { width: 8, height: 11, tileSize: 16 });
+  // 8 wall blocks: front faces 8, back 8, tops 4, bottoms 8?? — count decal
+  // quads instead: total faces without decal + 8 decal quads
+  const w2 = new World();
+  for (let x = 0; x < 4; x++) for (let y = 0; y < 2; y++) w2.place('brick', SIZE.SMALL, x, y, 0);
+  const m2 = buildChunkMesh(w2, lit, [0, 0, 0], 16, tile, { width: 8, height: 11, tileSize: 16 });
+  assert.equal(m.indices.length - m2.indices.length, 8 * 6, 'one decal quad per covered cell face');
+  // decal quads float 1cm off the nz faces (z = -0.01m); each must sample a
+  // DIFFERENT sub-rect of the artwork (uv continuity across the footprint)
+  const decalUVs = new Set();
+  let decalQuads = 0;
+  for (let q = 0; q < m.indices.length / 6; q++) {
+    const vi = m.indices[q * 6];
+    if (Math.abs(m.positions[vi * 3 + 2] + 0.01) < 1e-6) {
+      decalQuads++;
+      decalUVs.add(`${m.uvs[vi * 2]},${m.uvs[vi * 2 + 1]}`);
+    }
+  }
+  assert.equal(decalQuads, 8);
+  assert.equal(decalUVs.size, 8, 'every covered cell samples its own uv sub-rect');
+});
+
+test('decals round-trip through the serializer and need their block', () => {
+  const w = new World();
+  w.place('concrete', SIZE.SMALL, 0, 0, 0);
+  w.placeDecal('decal_bullets', 0, 0, 0, 'pz', 1);
+  const { world: w2, errors } = deserialize(serialize(w));
+  assert.deepEqual(errors, []);
+  const d = w2.decalAt(0, 0, 0, 'pz');
+  assert.equal(d.decalId, 'decal_bullets');
+  assert.equal(d.rotation, 1);
+
+  // a decal whose block is gone from the file is skipped with a warning
+  const raw = JSON.parse(serialize(w));
+  raw.blocks = [];
+  const { world: w3, errors: e3 } = deserialize(JSON.stringify(raw));
+  assert.equal(w3.decals.size, 0);
+  assert.equal(e3.length, 1);
+  assert.match(e3[0], /no block there/);
+});
+
+test('copyFrom is the one world-copy path: rotation and decals survive', () => {
+  const src = new World();
+  src.place('asphalt_line', SIZE.SMALL, 0, 0, 0, 3);
+  src.place('concrete', SIZE.SMALL, 1, 0, 0);
+  src.placeDecal('decal_blood', 1, 0, 0, 'py', 2);
+  src.setSpawn(0, 2, 0);
+  src.spawnYaw = 90;
+  const dst = new World();
+  dst.place('grass', SIZE.SMALL, 9, 9, 9); // pre-existing content is replaced
+  dst.copyFrom(src);
+  assert.equal(dst.get(9, 9, 9), null);
+  assert.equal(dst.get(0, 0, 0).rotation, 3, 'block rotation survives the copy');
+  assert.equal(dst.decalAt(1, 0, 0, 'py').decalId, 'decal_blood', 'decals survive the copy');
+  assert.equal(dst.decalAt(1, 0, 0, 'py').rotation, 2);
+  assert.deepEqual(dst.spawn, [0, 2, 0]);
+  assert.equal(dst.spawnYaw, 90);
+});
+
 // --- raycasting ---
+
+test('attack rays pass through shoot-through blocks and hit what is behind', () => {
+  const w = new World();
+  w.place('fence', SIZE.SMALL, 2, 0, 0);
+  w.place('concrete', SIZE.SMALL, 5, 0, 0);
+  const plain = raycastVoxel(w, [0.5, 0.5, 0.5], [1, 0, 0]);
+  assert.deepEqual(plain.cell, [2, 0, 0], 'a plain ray stops at the fence');
+  const shot = raycastVoxel(bulletWorld(w), [0.5, 0.5, 0.5], [1, 0, 0]);
+  assert.deepEqual(shot.cell, [5, 0, 0], 'a bullet passes the fence and hits the wall');
+});
 
 test('ray hits the first voxel and returns the entry normal', () => {
   const w = new World();

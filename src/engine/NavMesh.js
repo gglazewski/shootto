@@ -15,6 +15,7 @@
 import { CELL_SIZE } from './Space.js';
 import { aabbCells } from './Physics.js';
 import { raycastVoxel, worldToCell } from './VoxelRaycaster.js';
+import { opacityFor } from './VoxelTypes.js';
 
 const key3 = (x, z, y) => `${x},${z},${y}`;
 const key2 = (x, z) => `${x},${z}`;
@@ -317,6 +318,50 @@ export class NavMesh {
   }
 
   /**
+   * True when a mob can WALK the straight x/z segment from (x0, z0) — feet at
+   * cell level `yCell0` — to (x1, z1): at every sample along the line, every
+   * cell the mob's footprint overlaps holds a walkable node within one step of
+   * the running level. Steps up/down of one stepHeight are followed (the
+   * running level tracks the surface), bigger climbs, drops and walls fail.
+   *
+   * This is the check behind path string-pulling: unlike hasLOS (an eye-level
+   * ray), it respects the mob's width — a line that passes within half a
+   * footprint of a wall corner is rejected, so smoothing can never cut a
+   * corner into geometry.
+   */
+  hasWalkableLine(x0, z0, yCell0, x1, z1) {
+    if (!this.valid) return false;
+    const dx = x1 - x0;
+    const dz = z1 - z0;
+    const len = Math.hypot(dx, dz);
+    const steps = Math.max(1, Math.ceil(len / (CELL_SIZE * 0.45)));
+    const hw = this._hw;
+    let yCell = yCell0;
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const x = x0 + dx * t;
+      const z = z0 + dz * t;
+      // Same boundary convention as aabbCells: a box edge exactly ON a cell
+      // boundary does not enter the next cell.
+      const cx0 = Math.floor((x - hw) / CELL_SIZE);
+      const cx1 = Math.ceil((x + hw) / CELL_SIZE) - 1;
+      const cz0 = Math.floor((z - hw) / CELL_SIZE);
+      const cz1 = Math.ceil((z + hw) / CELL_SIZE) - 1;
+      for (let cx = cx0; cx <= cx1; cx++) {
+        for (let cz = cz0; cz <= cz1; cz++) {
+          const node = this.nearestNodeAtCell(cx, cz, yCell);
+          if (!node || Math.abs(node.y - yCell) > this.stepCells) return false;
+        }
+      }
+      // The footprint's centre cell carries the running surface level.
+      const centre = this.nearestNodeAtCell(Math.floor(x / CELL_SIZE), Math.floor(z / CELL_SIZE), yCell);
+      if (!centre) return false;
+      yCell = centre.y;
+    }
+    return true;
+  }
+
+  /**
    * True when nothing solid blocks the straight line between two world points.
    * The origin/target cells themselves are ignored (mobs stand next to walls).
    */
@@ -330,7 +375,9 @@ export class NavMesh {
  * Shared, world-free line-of-sight check: does the straight line between two
  * world-space points pass through a solid cell in `world`? `world` only needs
  * get(x, y, z). MobManager uses this to compute ONE ray per group of mobs
- * instead of one per mob.
+ * instead of one per mob. See-through voxels (glass, chain-link fence, bars —
+ * light opacity < 255) don't block sight, so mobs spot the player through
+ * windows and fences even though the blocks stop movement.
  */
 export function hasLineOfSight(world, x1, y1, z1, x2, y2, z2) {
   const dx = x2 - x1;
@@ -341,7 +388,14 @@ export function hasLineOfSight(world, x1, y1, z1, x2, y2, z2) {
   const origin = worldToCell([x1, y1, z1]);
   const dir = [dx / len, dy / len, dz / len];
   const targetCells = len / CELL_SIZE;
-  const hit = raycastVoxel(world, origin, dir, Math.ceil(targetCells) + 2);
+  const sightWorld = {
+    get(x, y, z) {
+      const v = world.get(x, y, z);
+      // Cells without a block type (placed items) stay opaque to sight.
+      return v && v.type && opacityFor(v.type) < 255 ? null : v;
+    },
+  };
+  const hit = raycastVoxel(sightWorld, origin, dir, Math.ceil(targetCells) + 2);
   if (!hit) return true;
   return hit.dist >= targetCells - 0.5;
 }

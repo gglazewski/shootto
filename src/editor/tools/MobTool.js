@@ -8,6 +8,7 @@
 
 import { Tool } from '../Tool.js';
 import { Notice } from '../Notice.js';
+import { addMobSpawnCommand, removeMobSpawnCommand } from '../commands.js';
 import { getMob, listMobs } from '../../engine/mobTypes.js';
 
 export class MobTool extends Tool {
@@ -41,9 +42,14 @@ export class MobTool extends Tool {
       const hit = this.pick();
       if (hit) {
         const cell = this.targetCell(hit);
-        if (this.ctx.world.removeMobSpawnAt(cell[0], cell[1], cell[2])) {
-          this.lastAction = `Mob removed at ${cell.join(',')}`;
-          Notice.info('Mob spawn removed');
+        const spawn = this.ctx.world.mobSpawnAt(cell[0], cell[1], cell[2]);
+        if (spawn) {
+          const cmd = removeMobSpawnCommand(this.ctx.world, spawn);
+          if (cmd.do()) {
+            this.ctx.history.push(cmd);
+            this.lastAction = `Mob removed at ${cell.join(',')}`;
+            Notice.info('Mob spawn removed');
+          }
         }
       }
       return;
@@ -56,10 +62,12 @@ export class MobTool extends Tool {
       Notice.warn('Cannot place a mob inside a block');
       return;
     }
-    if (!this.ctx.world.addMobSpawn(this.typeId, cell[0], cell[1], cell[2])) {
+    const cmd = addMobSpawnCommand(this.ctx.world, { type: this.typeId, cell });
+    if (!cmd.do()) {
       Notice.warn('A mob spawn is already here');
       return;
     }
+    this.ctx.history.push(cmd);
     this.lastAction = `Mob ${this.typeId} at ${cell.join(',')}`;
     Notice.info(`Spawned ${getMob(this.typeId)?.name ?? this.typeId}`);
   }

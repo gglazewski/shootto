@@ -8,6 +8,7 @@
 
 import { Tool } from '../Tool.js';
 import { Notice } from '../Notice.js';
+import { placeItemCommand, removeItemCommand } from '../commands.js';
 import { itemAwarePick } from '../itemPick.js';
 import { getItem } from '../../engine/ItemRegistry.js';
 import { getEquipItem } from '../../engine/EquipmentRegistry.js';
@@ -61,9 +62,14 @@ export class ItemTool extends Tool {
       Notice.warn('Cannot place item — space is blocked');
       return;
     }
-    if (world.placeItem(this.item?.id, this.size, anchor[0], anchor[1], anchor[2], this.rotation)) {
+    const cmd = placeItemCommand(
+      world,
+      { itemId: this.item?.id, size: this.size, anchor, rotation: this.rotation },
+      () => this.ctx.onItemChange?.(),
+    );
+    if (cmd.do()) {
+      this.ctx.history.push(cmd);
       this.lastAction = `Placed ${this.item?.name ?? this.item?.id}`;
-      this.ctx.onItemChange?.();
     }
   }
 
@@ -73,9 +79,11 @@ export class ItemTool extends Tool {
     if (!hit) return;
     const item = world.itemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
     if (!item) return;
-    world.removeItemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
-    this.lastAction = `Removed ${resolveItem(item.itemId)?.name ?? item.itemId}`;
-    this.ctx.onItemChange?.();
+    const cmd = removeItemCommand(world, item, () => this.ctx.onItemChange?.());
+    if (cmd.do()) {
+      this.ctx.history.push(cmd);
+      this.lastAction = `Removed ${resolveItem(item.itemId)?.name ?? item.itemId}`;
+    }
   }
 
   update(dt) {

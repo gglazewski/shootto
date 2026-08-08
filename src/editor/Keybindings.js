@@ -28,9 +28,20 @@ export const KEYBINDINGS = Object.freeze({
   'redo': { key: 'KeyZ', mods: ['Mod', 'Shift'], preventDefault: true },
 });
 
+/**
+ * `e.code` names the physical key position (QWERTY naming), so on other
+ * layouts the keycap label moves: a German QWERTZ keyboard reports the key
+ * labelled Z as code KeyY — and Ctrl+Z would never match. Letter specs
+ * therefore also accept the typed character, so shortcuts follow the label.
+ */
+function keyMatches(wanted, e) {
+  if (e.code === wanted) return true;
+  return wanted.startsWith('Key') && e.key?.toLowerCase() === wanted.slice(3).toLowerCase();
+}
+
 function matches(spec, e) {
-  if (typeof spec === 'string') return e.code === spec;
-  if (e.code !== spec.key) return false;
+  if (typeof spec === 'string') return keyMatches(spec, e);
+  if (!keyMatches(spec.key, e)) return false;
   const mods = spec.mods ?? [];
   for (const m of mods) {
     if (m === 'Mod' && !(e.ctrlKey || e.metaKey)) return false;

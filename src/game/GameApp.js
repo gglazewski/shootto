@@ -12,6 +12,7 @@
 
 import * as THREE from '../../vendor/three.module.js';
 import { World } from '../engine/World.js';
+import { Blinkers } from '../engine/Blinkers.js';
 import { Renderer } from '../engine/Renderer.js';
 import { CELL_SIZE, MAX_RAY_DISTANCE } from '../engine/Space.js';
 import { createAtlasTexture } from '../textures/AtlasTexture.three.js';
@@ -25,7 +26,7 @@ import { serializeBundle, deserializeBundle } from '../persistence/WorldBundle.j
 import { serializeRegistry, deserializeRegistry, getItem } from '../engine/ItemRegistry.js';
 import { deserializeEquipRegistry, getEquipItem } from '../engine/EquipmentRegistry.js';
 import { ammoName } from '../engine/AmmoTypes.js';
-import { microCellSizeFor, lightLevelForMeters, rotateMicroPoint } from '../engine/ItemTypes.js';
+import { microCellSizeFor, lightLevelForMeters, rotateMicroPoint, MICRO_GRID } from '../engine/ItemTypes.js';
 import { spanFor } from '../engine/VoxelShape.js';
 import { BUNDLED_WORLD } from '../bundledWorld.js';
 import { SLOT_COUNT, readSlot, writeSlot, makeSlot } from './SaveSlots.js';
@@ -33,14 +34,31 @@ import { PlayerStats, MAX_HEALTH, EQUIPMENT_SLOTS } from './PlayerStats.js';
 import { weaponFor, FISTS } from './weapons.js';
 import { PlayerHand } from './PlayerHand.js';
 import { SmokeParticles } from './SmokeParticles.js';
+import { BloodFX } from './BloodFX.js';
+import { BloodDecals } from './BloodDecals.js';
 import { MuzzleFX } from './MuzzleFX.js';
 import { MobManager } from './MobManager.js';
-import { itemAwarePick } from '../editor/itemPick.js';
+import { itemAwarePick, bulletWorld } from '../editor/itemPick.js';
 import { buildItemSwatch } from '../editor/items/itemSwatch.js';
 import { TouchControls } from './TouchControls.js';
+import { PickupFX } from './PickupFX.js';
 
 /** Fallback reload time (seconds) when a weapon profile has none set. */
 const RELOAD_TIME = 1.4;
+
+// Aim bloom: each shot widens the current spread by BLOOM_KICK (radians), and
+// it recovers toward the weapon's base spread at BLOOM_DECAY per second. Fire
+// faster than it recovers and the crosshair opens up; wait for a full recovery
+// and the next shot starts tight again.
+const BLOOM_KICK = 0.01;   // radians added to the shot cone per shot fired
+const BLOOM_DECAY = 0.014; // radians of bloom recovered per second
+// Crosshair pixels of offset per radian of (base + bloom) spread. 0.02 rad
+// (the default pistol) opens the reticle a few pixels; heavy bloom reads wide.
+const SPREAD_PX_PER_RAD = 300;
+
+// Stopping power: seconds a gun hit stops a mob (it can't move or attack).
+// The physical shove itself scales with the weapon's knockback (see weapons).
+const STAGGER_TIME = 0.3;
 
 export class GameApp {
   /**
@@ -60,6 +78,7 @@ export class GameApp {
 
     // --- engine (same render pipeline as the editor) ---
     this.world = new World();
+    this.blinkers = new Blinkers(this.world);
     this.webgl = new THREE.WebGLRenderer({ antialias: !this.isTouch });
     if (this.isTouch) this.webgl.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.container.appendChild(this.webgl.domElement);
@@ -113,6 +132,10 @@ export class GameApp {
       lightField: this.renderer.light,
       material: this.renderer.itemMaterial,
     });
+    // Blood splatter when a mob is hit (spawned in front of its billboard).
+    this.blood = new BloodFX({ THREE, scene: this.renderer.scene });
+    // Blood stains stamped onto walls/floors through the decal system.
+    this.bloodDecals = new BloodDecals({ world: this.world });
     this.mobs = new MobManager({
       THREE,
       scene: this.renderer.scene,
@@ -137,6 +160,16 @@ export class GameApp {
     this.renderer.scene.add(this._pickupMarker, this._pickupOutline);
     this._pickupTarget = null;
 
+    // Flying copy of a picked-up item: it arcs up and floats to the player
+    // before the item is actually granted (see _pickup / _grantPickup).
+    this.pickupFX = new PickupFX({
+      THREE,
+      scene: this.renderer.scene,
+      camera: this.renderer.camera,
+      lightField: this.renderer.light,
+      material: this.renderer.itemMaterial,
+    });
+
     // Muzzle by-products: sparks + smoke when a ranged weapon fires. The flash
     // itself lives on the held weapon (PlayerHand.muzzleFlash) so it sticks to
     // the barrel while the player moves.
@@ -155,6 +188,16 @@ export class GameApp {
     this._reloadTimer = 0;
     this._reloadWeapon = null;
 
+    // Aim bloom: transient spread added per shot, decaying back toward the
+    // weapon's base spread (see _aimDir / _shoot / _updateCrosshair).
+    this._bloom = 0;
+    this._bloomWeapon = null; // id of the weapon the bloom belongs to
+
+    // Pickups waiting to float to the player: rapid E presses queue items up
+    // so each one is granted in turn as its flight lands (see _pickup /
+    // _pumpPickupQueue).
+    this._pickupQueue = [];
+
     // --- UI ---
     this.ui = {
       menu: this.doc.querySelector('#menu'),
@@ -162,6 +205,7 @@ export class GameApp {
       hud: this.doc.querySelector('#hud'),
       toast: this.doc.querySelector('#toast'),
       pickup: this.doc.querySelector('#pickup'),
+      crosshair: this.doc.querySelector('#crosshair'),
       slotsMenu: this.doc.querySelector('#slots-menu'),
       slotsPause: this.doc.querySelector('#slots-pause'),
       healthFill: this.doc.querySelector('#health-fill'),
@@ -213,21 +257,39 @@ export class GameApp {
       // Touch fire button held: attack every frame (cooldown throttles it).
       if (this.touch?.attacking) this._attack();
       this._updatePickup();
-      this.mobs.update(dt, this.walk.position);
+      this.mobs.update(dt, this.walk.position, this._viewFacing());
     } else {
       this._hidePickup();
     }
     if (this._attackCooldown > 0) this._attackCooldown = Math.max(0, this._attackCooldown - dt);
+    if (this._bloom > 0) this._bloom = Math.max(0, this._bloom - BLOOM_DECAY * dt);
+    this._updateCrosshair();
     if (this._reloading) {
       this._reloadTimer -= dt;
       if (this._reloadTimer <= 0) this._finishReload();
     }
     this.hand.update(dt);
     this.smoke.update(dt);
+    this.blood.update(dt);
     this.muzzleFX.update(dt);
+    this.pickupFX.update(dt);
     this.itemRenderer.update();
     this._updateFlashLight();
+    this.blinkers.update(dt);
     this.renderer.render(dt);
+  }
+
+  /** Player view direction on the ground plane ({x,z} unit vector), used by
+   *  mob flankers to approach from outside the view cone. Null when looking
+   *  straight up/down (no meaningful ground direction). */
+  _viewFacing() {
+    const dir = this.renderer.camera.getWorldDirection(this._facingScratch ??= new THREE.Vector3());
+    const len = Math.hypot(dir.x, dir.z);
+    if (len < 1e-3) return null;
+    this._facingOut ??= { x: 0, z: 0 };
+    this._facingOut.x = dir.x / len;
+    this._facingOut.z = dir.z / len;
+    return this._facingOut;
   }
 
   /** Push the muzzle flash (if any) into the light engine so the world around
@@ -282,20 +344,18 @@ export class GameApp {
     }
   }
 
-  /** Replace the live world with `loaded`'s voxels/items/spawn and rebuild. */
+  /** Replace the live world with `loaded` and rebuild. Uses the one shared
+   *  copy path (World.copyFrom), so block rotation, decals, items and spawns
+   *  all survive into the game exactly as the editor placed them. */
   _applyWorld(loaded) {
-    this.world.clear();
-    loaded.forEachVoxel((v) => this.world.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2]));
-    loaded.forEachItem((it) => this.world.placeItem(it.itemId, it.size, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0));
-    loaded.forEachMobSpawn((s) => this.world.addMobSpawn(s.type, s.x, s.y, s.z));
-    if (loaded.spawn) {
-      this.world.setSpawn(loaded.spawn[0], loaded.spawn[1], loaded.spawn[2]);
-      this.world.spawnYaw = loaded.spawnYaw ?? 0;
-    }
+    this.world.copyFrom(loaded);
+    this.blinkers.rescan();
     this.renderer.clearChunks();
     this.renderer.loadWorldBounds();
     this.itemRenderer.rebuildAll();
     this.smoke.clear();
+    this.blood.clear();
+    this.bloodDecals.reset();
     this.mobs.rebuild();
     this._refreshItemLights();
   }
@@ -364,11 +424,30 @@ export class GameApp {
   }
 
   /** Show the equipped item in the hand (empty slot = fists). Called whenever
-   *  the HUD refreshes, i.e. on equip, slot switch, pickup, load, new game. */
+   *  the HUD refreshes, i.e. on equip, slot switch, pickup, load, new game.
+   *  Switching weapons also resets the aim bloom, so a fresh weapon starts
+   *  tight. */
   _updateHeldItem() {
     const id = this.stats.activeItemId;
+    if (id !== this._bloomWeapon) {
+      this._bloomWeapon = id ?? null;
+      this._bloom = 0;
+    }
     const def = id ? (getItem(id) ?? getEquipItem(id)) : null;
     this.hand.setHeldItem(def);
+  }
+
+  /** Reflect the current aim spread in the crosshair: the four segments open
+   *  up as the weapon's base spread grows and as firing adds bloom, and close
+   *  back down as the bloom recovers (see BLOOM_* / SPREAD_PX_PER_RAD).
+   *  Fists/melee and perfectly accurate weapons stay tight. */
+  _updateCrosshair() {
+    const el = this.ui.crosshair;
+    if (!el) return;
+    const weapon = this.stats.activeItemId ? weaponFor(this.stats.activeItemId) : FISTS;
+    const spread = (weapon.spread ?? 0) + this._bloom;
+    const px = Math.round(spread * SPREAD_PX_PER_RAD);
+    el.style.setProperty('--spread', `${px}px`);
   }
 
   /** Render the four equipment slots (bottom hotbar) with item icons like the
@@ -446,20 +525,22 @@ export class GameApp {
       return;
     }
     this.hand.attack(weapon.anim);
-    const impact = this._attackImpact(weapon);
-    if (impact) this._resolveImpact(impact, weapon.damage);
+    const dir = this._aimDir(weapon);
+    const impact = this._attackImpact(weapon, dir);
+    if (impact) this._resolveImpact(impact, weapon, dir);
   }
 
   /**
    * Aim direction for a weapon's shot: the camera's forward vector nudged by a
-   * random angle within `weapon.spread` radians, so shots land in a cone around
-   * the crosshair instead of dead-center every time. Zero-spread weapons
-   * (fists/melee) return the exact camera direction. The same direction feeds
-   * the voxel raycast, the mob raycast and the muzzle flash, so they all agree.
+   * random angle within the weapon's current spread (base + aim bloom, see
+   * _shoot / _updateCrosshair), so shots land in a cone around the crosshair
+   * instead of dead-center every time — a cone that grows as you fire. The
+   * zero base-spread of fists/melee stays exact. The same direction feeds the
+   * voxel raycast, the mob raycast and the muzzle flash, so they all agree.
    */
   _aimDir(weapon) {
     const dir = this.renderer.camera.getWorldDirection(new THREE.Vector3());
-    const spread = weapon.spread ?? 0;
+    const spread = (weapon.spread ?? 0) + this._bloom;
     if (spread <= 0) return dir;
     // Uniform over the disc (sqrt for area-uniform scatter).
     const angle = Math.random() * Math.PI * 2;
@@ -494,21 +575,74 @@ export class GameApp {
     return voxelHit ? { pos: voxelHit } : null;
   }
 
-  /** Apply an attack impact: damage a mob (with kill credit) or puff smoke. */
-  _resolveImpact(impact, damage) {
+  /** Apply an attack impact: damage a mob (with kill credit) or puff smoke.
+   *  `dir` is the shot/attack direction — gun hits carry their stopping power
+   *  along it (see _hitImpact). */
+  _resolveImpact(impact, weapon, dir) {
     if (impact.mob) {
-      this._damageMob(impact.mob, damage);
+      this._damageMob(impact.mob, weapon.damage, weapon, dir);
       return;
     }
     this.smoke.puff(impact.pos);
   }
 
   /** Damage a mob; count and puff smoke when it dies. */
-  _damageMob(mob, damage) {
-    const died = mob.takeDamage(damage);
-    this.smoke.puff([mob.pos.x, mob.pos.y + mob.height * 0.5, mob.pos.z]);
+  _damageMob(mob, damage, weapon, dir) {
+    // The victim learns where the shot came from (its packmates hear about it
+    // through the alarm), so mobs hunt the shooter's position, not a ghost.
+    const impact = this._hitImpact(weapon, dir, mob);
+    const died = mob.takeDamage(damage, this.walk.position, impact);
+    this._spawnBlood(mob, dir);
+    this.bloodDecals.splatter(mob, dir, died);
     if (died) this.mobs.kills++;
     this._updateHud();
+  }
+
+  /** Blood splatter at the mob's near side, in front of the billboard so the
+   *  camera-facing sprite never hides it. Droplets spray toward the viewer. */
+  _spawnBlood(mob, dir) {
+    const cam = this.renderer.camera;
+    // Toward the camera on the ground plane (the sprite faces the camera).
+    let bx = cam.position.x - mob.pos.x;
+    let bz = cam.position.z - mob.pos.z;
+    const h = Math.hypot(bx, bz) || 1;
+    bx /= h;
+    bz /= h;
+    const off = mob.halfWidth + 0.15;
+    const pos = new THREE.Vector3(
+      mob.pos.x + bx * off,
+      mob.pos.y + mob.height * 0.45,
+      mob.pos.z + bz * off,
+    );
+    // Splatter mostly toward the viewer, nudge the spray a touch along the
+    // shot so a side hit reads as blood flying across.
+    this.blood.burst(pos, { x: bx + dir.x * 0.3, y: 0.4, z: bz + dir.z * 0.3 });
+  }
+
+  /** Stopping power of a hit on a mob: gun hits stagger it (stop its movement
+   *  and cancel any attack wind-up); powerful shots also knock it back along
+   *  the bullet path. Melee swings only flinch — no impact. */
+  _hitImpact(weapon, dir, mob) {
+    if (weapon.kind !== 'ranged') return null;
+    const kb = weapon.knockback ?? 0;
+    if (kb <= 0) return { stagger: STAGGER_TIME };
+    // Shove along the shot on the ground plane. Looking straight down/up has
+    // no horizontal direction to speak of — knock the mob away from the
+    // player instead.
+    let kx = dir.x;
+    let kz = dir.z;
+    const h = Math.hypot(kx, kz);
+    if (h < 1e-3) {
+      kx = mob.pos.x - this.walk.position.x;
+      kz = mob.pos.z - this.walk.position.z;
+      const h2 = Math.hypot(kx, kz) || 1;
+      kx /= h2;
+      kz /= h2;
+    } else {
+      kx /= h;
+      kz /= h;
+    }
+    return { stagger: STAGGER_TIME, knockX: kx * kb, knockZ: kz * kb };
   }
 
   /** A mob landed a strike on the player. */
@@ -577,13 +711,18 @@ export class GameApp {
     if (ammo.max > 0) ammo.current = Math.max(0, ammo.current - 1);
     this.hand.attack('gun', { recoil: weapon.recoil });
     this.hand.muzzleFlash();
+    // Aim with the PRE-shot bloom (what earlier shots accumulated) so a fresh
+    // gun fires exactly at the crosshair; the kick below widens the cone for
+    // the NEXT shot. It recovers back to the weapon's base spread while you're
+    // not firing (_frame decays _bloom).
     const dir = this._aimDir(weapon);
+    this._bloom += BLOOM_KICK;
     const muzzle = this.hand.heldMuzzleWorld(this._muzzlePos);
     if (muzzle) {
       this.muzzleFX.burst(muzzle, dir);
     }
     const impact = this._attackImpact(weapon, dir);
-    if (impact) this._resolveImpact(impact, weapon.damage);
+    if (impact) this._resolveImpact(impact, weapon, dir);
     if (ammo.max > 0 && ammo.current <= 0 && this._carriedAmmo(ammo) > 0) this._startReload(weapon);
     this._updateHud();
   }
@@ -646,10 +785,11 @@ export class GameApp {
    *  null when nothing is aimed at or it is out of reach. The walk length is
    *  capped by maxCells (defaults to the raycaster maximum), so a weapon's
    *  range directly controls how far a shot can land. `dir` overrides the aim
-   *  direction (weapon spread). */
+   *  direction (weapon spread). Shoot-through blocks (chain-link fence, bars,
+   *  barricades) are invisible to this ray — attacks pass through them. */
   _aim(maxCells = MAX_RAY_DISTANCE, dir) {
     const { camera } = this.renderer;
-    const hit = itemAwarePick(this.world, THREE, this.renderer.camera, maxCells, dir);
+    const hit = itemAwarePick(bulletWorld(this.world), THREE, this.renderer.camera, maxCells, dir);
     if (!hit || hit.dist > maxCells) return null;
     // The raycaster's `dist` is the cell distance along the ray to the surface
     // it entered — the exact impact point, not the middle of the voxel.
@@ -710,13 +850,39 @@ export class GameApp {
 
   /** Pick up the aimed equippable item. Ammo packs grant their ammo type
    *  (capped by max stack) rather than being equipped; everything else goes
-   *  into an equipment slot. */
+   *  into an equipment slot. The item detaches from the world immediately and
+   *  floats to the player first; the actual grant happens in _grantPickup once
+   *  it arrives, so it doesn't just vanish into the inventory. Rapid pickups
+   *  queue up — each item flies and is granted one at a time. */
   _pickup() {
     const target = this._pickupTarget;
     if (!target) return;
     const def = getEquipItem(target.item.itemId);
     if (!def) return;
-    this.world.removeItemAt(target.item.anchor[0], target.item.anchor[1], target.item.anchor[2]);
+    this._hidePickup();
+    const [ax, ay, az] = target.item.anchor;
+    this.world.removeItemAt(ax, ay, az);
+    const c = microCellSizeFor(target.item.size ?? 'small');
+    const half = (MICRO_GRID * c) / 2;
+    const start = new THREE.Vector3(ax * CELL_SIZE + half, ay * CELL_SIZE + half, az * CELL_SIZE + half);
+    this._pickupQueue.push({ def, start, yaw: target.item.rotation ?? 0 });
+    this._pumpPickupQueue();
+  }
+
+  /** Start the next queued pickup's flight if one isn't already airborne.
+   *  Each flight grants its item on arrival, then pumps the next one. */
+  _pumpPickupQueue() {
+    if (this.pickupFX.active || this._pickupQueue.length === 0) return;
+    const next = this._pickupQueue.shift();
+    this.pickupFX.fly(next.def, next.start, next.yaw, () => {
+      this._grantPickup(next.def);
+      this._pumpPickupQueue();
+    });
+  }
+
+  /** Grant a picked-up item that has floated to the player: ammo packs give
+   *  their ammo, everything else is equipped into a slot. */
+  _grantPickup(def) {
     if (def.kind === 'ammo') {
       const a = def.ammo ?? {};
       const type = a.type ?? '';
