@@ -203,7 +203,7 @@ export class LightField {
   _emissionCells(voxel) {
     const faces = emitFacesFor(voxel.type);
     const [ax, ay, az] = voxel.anchor;
-    if (!faces) return [...cellsFor(ax, ay, az, voxel.size)];
+    if (!faces) return [...cellsFor(ax, ay, az, voxel.size, voxel.rotation ?? 0)];
     const span = spanFor(voxel.size);
     const out = [];
     for (const face of faces) {

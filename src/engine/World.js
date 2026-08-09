@@ -18,7 +18,7 @@ export { DEFAULT_CHUNK_SIZE, anchorFor, cellsFor };
 /**
  * @typedef {Object} Voxel
  * @property {string}  type
- * @property {'small'|'big'} size
+ * @property {'small'|'big'|'door'} size
  * @property {[number, number, number]} anchor
  */
 
@@ -81,10 +81,11 @@ export class World {
    * @returns {boolean} true when placed
    */
   place(type, size, ax, ay, az, rotation = 0) {
-    if (!this.isAreaFree(ax, ay, az, size)) return false;
+    const rot = ((rotation % 4) + 4) % 4;
+    if (!this.isAreaFree(ax, ay, az, size, rot)) return false;
     const voxel = { type, size, anchor: [ax, ay, az] };
-    if (rotation) voxel.rotation = ((rotation % 4) + 4) % 4;
-    const cells = [...cellsFor(ax, ay, az, size)];
+    if (rot) voxel.rotation = rot;
+    const cells = [...cellsFor(ax, ay, az, size, rot)];
     for (const [x, y, z] of cells) {
       this.cells.set(key(x, y, z), voxel);
       this.markDirty(x, y, z);
@@ -93,9 +94,10 @@ export class World {
     return true;
   }
 
-  /** True when every cell of the cuboid is empty (no voxel, no item). */
-  isAreaFree(ax, ay, az, size) {
-    for (const [x, y, z] of cellsFor(ax, ay, az, size)) {
+  /** True when every cell of the cuboid is empty (no voxel, no item).
+   *  Rotation matters only for non-square footprints (doors). */
+  isAreaFree(ax, ay, az, size, rotation = 0) {
+    for (const [x, y, z] of cellsFor(ax, ay, az, size, rotation)) {
       if (this.cells.has(key(x, y, z))) return false;
       if (this.itemCells.has(key(x, y, z))) return false;
     }
@@ -113,7 +115,7 @@ export class World {
     const voxel = this.get(x, y, z);
     if (!voxel) return null;
     const [ax, ay, az] = voxel.anchor;
-    const cells = [...cellsFor(ax, ay, az, voxel.size)];
+    const cells = [...cellsFor(ax, ay, az, voxel.size, voxel.rotation ?? 0)];
     for (const [cx, cy, cz] of cells) {
       this.cells.delete(key(cx, cy, cz));
       this.markDirty(cx, cy, cz);

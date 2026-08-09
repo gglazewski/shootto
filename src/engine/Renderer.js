@@ -10,6 +10,7 @@
 // ghost, spawn marker) which use stock materials.
 
 import { ChunkMesh } from './ChunkMesh.js';
+import { Sky } from './Sky.js';
 import { LightField } from './LightField.js';
 import { createChunkMaterial } from './chunkShader.js';
 import { CELL_SIZE } from './Space.js';
@@ -49,6 +50,10 @@ export class Renderer {
     this.camera.position.set(4, 12, 4);
     this.camera.lookAt(0, 4, 0);
 
+    // Procedural sky: dome + sun/moon/clouds, driven by the day/night cycle.
+    this.sky = new Sky({ THREE, config: config.sky ?? CONFIG.sky });
+    this.scene.add(this.sky.group);
+
     // Editor overlay lights (no effect on the chunk shader).
     this.scene.add(new THREE.AmbientLight(0xffffff, cfg.lighting.ambient));
     const sun = new THREE.DirectionalLight(0xffffff, cfg.lighting.sun);
@@ -70,7 +75,10 @@ export class Renderer {
 
     /** @type {LightField} */
     this.light = new LightField(world);
-    this._skyTime = 0;
+    // Seed the cycle clock so the sky starts at the configured time of day.
+    this._skyTime = this.lighting.dayNightSpeed
+      ? (this.lighting.dayNightStart ?? 0) / this.lighting.dayNightSpeed
+      : 0;
   }
 
   resize(w, h) {
@@ -236,15 +244,19 @@ export class Renderer {
     const L = this.lighting;
     if (!L.dayNight) return;
     this._skyTime += dt;
-    // phase 1 = full day; start at day (angle offset of PI/2).
-    const phase = 0.5 + 0.5 * Math.sin(this._skyTime * L.dayNightSpeed * Math.PI * 2 + Math.PI / 2);
+    // phase 1 = full day; start at day (angle offset of PI/2). The same angle
+    // drives the visual sky (sun/moon position, dome tint, stars, clouds).
+    const angle = this._skyTime * L.dayNightSpeed * Math.PI * 2 + Math.PI / 2;
+    const phase = 0.5 + 0.5 * Math.sin(angle);
     const intensity = 0.15 + 0.85 * phase; // 0.15 .. 1.0
     this.material.uniforms.uSkyIntensity.value = intensity;
     this.materialTransparent.uniforms.uSkyIntensity.value = intensity;
     this.itemMaterial.uniforms.uSkyIntensity.value = intensity;
+    // Backdrop color behind the dome (visible only if the dome is hidden).
     const day = new this.THREE.Color(0x87ceeb);
     const night = new this.THREE.Color(...L.nightSky);
     this.scene.background.copy(day).lerp(night, 1 - phase);
+    this.sky.update(dt, this.camera.position, angle, phase);
   }
 
   /**

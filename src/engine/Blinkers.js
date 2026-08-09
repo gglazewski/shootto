@@ -83,7 +83,7 @@ export class Blinkers {
       const v = b.voxel;
       v.type = on ? b.onType : b.offType;
       const [ax, ay, az] = v.anchor;
-      this.world.edits.push({ cells: [...cellsFor(ax, ay, az, v.size)], remove: false, type: v.type });
+      this.world.edits.push({ cells: [...cellsFor(ax, ay, az, v.size, v.rotation ?? 0)], remove: false, type: v.type });
       this.world.markDirty(ax, ay, az);
     }
   }

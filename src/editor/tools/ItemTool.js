@@ -48,6 +48,18 @@ export class ItemTool extends Tool {
     return itemAwarePick(this.ctx.world, this.ctx.THREE, this.ctx.camera);
   }
 
+  /** Items are free objects, not grid blocks: anchor at small-cell resolution
+   *  (no parity snap). The footprint extends `span` cells in +x/+y/+z from the
+   *  anchor, so against a negative-facing surface the anchor shifts back to
+   *  keep the whole footprint adjacent to the clicked face. */
+  placementAnchor(hit, size) {
+    const span = spanFor(size);
+    return hit.cell.map((c, i) => {
+      const n = hit.normal[i];
+      return c + (n > 0 ? 1 : n < 0 ? -span : 0);
+    });
+  }
+
   onMouseDown(button) {
     if (button === 2) this._remove();
     else if (button === 0) this._place();
@@ -99,17 +111,14 @@ export class ItemTool extends Tool {
       ghost.hide();
       return;
     }
-    const item = this.ctx.world.itemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
-    if (item) {
-      // Aiming at a placed item -> show its footprint as a removal outline.
-      this._hidePreview();
-      ghost.hide();
-      ghost.showRemoval(item.anchor, item.size);
-      return;
-    }
     const anchor = this.placementAnchor(hit, this.size);
     const blocked = !this.ctx.world.isAreaFree(anchor[0], anchor[1], anchor[2], this.size);
     ghost.hide();
+    // Aiming at a placed item: keep its footprint outlined (RMB removes it)
+    // but still preview the placement against the hovered face — items stack
+    // on items (a cup on a table) just like on blocks.
+    const item = this.ctx.world.itemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
+    if (item) ghost.showRemoval(item.anchor, item.size);
     this._showPreview(anchor, blocked);
   }
 

@@ -272,6 +272,26 @@
     }
     .ie-check { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
     .ie-check input { accent-color: #6c9; }
+
+    /* --- text sign modal --- */
+    .sign-row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }
+    .sign-row .label { min-width: 92px; color: #aab; font-size: 12px; }
+    .sign-row input[type="text"], .sign-row select {
+      flex: 1; padding: 5px 10px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #e8e8e8; font-size: 13px; outline: none;
+    }
+    .sign-row input[type="text"]:focus { border-color: #6c9; }
+    .sign-row input[type="color"] {
+      width: 46px; height: 28px; padding: 0; border: 1px solid #3a3f47;
+      border-radius: 6px; background: transparent; cursor: pointer;
+    }
+    .sign-preview {
+      display: block; margin: 12px auto; image-rendering: pixelated;
+      background:
+        repeating-conic-gradient(#3a3f47 0% 25%, #2a2e35 0% 50%) 0 0/16px 16px;
+      border: 1px solid #3a3f47; border-radius: 4px; max-width: 100%;
+    }
+    .sign-buttons { display: flex; gap: 8px; justify-content: flex-end; }
     #ie-light-strength { width: 170px; }
     #ie-light-strength-val { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
 
@@ -326,7 +346,7 @@
     .cat-btn.danger:hover { background: rgba(90,30,30,0.9); border-color: #a44; }
     .cat-btn.danger.armed { background: rgba(140,40,40,0.95); border-color: #d66; color: #fff; }
     .cat-grid {
-      display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+      display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
       gap: 10px; overflow-y: auto; min-height: 0; padding: 2px;
       align-content: start;
     }
@@ -342,7 +362,11 @@
     .cat-name { font-size: 12px; color: #eee; text-align: center; max-width: 100%;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .cat-meta { font-size: 10px; color: #9aa; text-align: center; }
-    .cat-actions { display: flex; gap: 4px; margin-top: 4px; }
+    .cat-actions {
+      display: flex; gap: 4px; margin-top: 4px; flex-wrap: wrap;
+      justify-content: center; max-width: 100%;
+    }
+    .cat-actions .cat-btn { padding: 3px 7px; font-size: 11px; }
     .cat-close { margin-top: 14px; align-self: center; }
   </style>
 </head>

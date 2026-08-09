@@ -59,7 +59,7 @@ export class DecalTool extends Tool {
     if (!this.decalId) return;
     const t = this._target();
     if (!t) return;
-    if (shapeFor(t.voxel.type) === 'pane') {
+    if (shapeFor(t.voxel.type) !== 'cube') {
       Notice.warn('Decals need a full block face');
       return;
     }
@@ -97,7 +97,7 @@ export class DecalTool extends Tool {
       ghost.hide();
       return;
     }
-    const blocked = shapeFor(t.voxel.type) === 'pane'
+    const blocked = shapeFor(t.voxel.type) !== 'cube'
       || !this.ctx.world.canPlaceDecal(this.decalId, t.cell[0], t.cell[1], t.cell[2], t.face, this.rotation);
     ghost.showDecal(t.cell, t.face, this.decalId, this.rotation, blocked);
   }

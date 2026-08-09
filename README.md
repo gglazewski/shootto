@@ -16,6 +16,10 @@ Voxels come in two sizes: **small (0.5 m)** for half-walls and fine detail, and
 
 ## The game
 
+**Setting:** the game takes place in Poland in the mid-1990s — post-communist
+concrete estates, bazaars, kiosks and crumbling industry set the visual tone
+for maps, blocks and decals.
+
 Alongside the editor there is a playable game page (`game.html`, built to
 `build/game-play.js`) that runs your world. It shares the editor's
 `localStorage`, so anything the editor saves — the map (`voxelmap.save`) and
@@ -435,6 +439,17 @@ mesher emits one sub-rect quad per covered face (so culling, AO and light
 stay per-face), and `decalFootprint()` keeps the artwork's width horizontal
 on every wall. One footprint = one decal: removing it from any covered cell
 (or breaking any backing block) removes the whole thing.
+
+**Text signs** are decals authored in the editor: the "＋ New Sign…" card in
+the Decals section opens a dialog (text, band height 1–2 cells, width auto
+or fixed 1–8, text/background colors, or transparent background for painted
+lettering) with a live preview. Text renders through a 5x7 pixel font
+(`textures/PixelFont.js`) with Polish diacritics (SKLEP, RZEŹNIK, KWIATY…);
+`engine/TextDecals.js` registers the sign as a runtime decal + runtime atlas
+tile (content-addressed id, so the same spec is reused), and the atlas
+texture is rebuilt in place. Signs persist as an additive `textDecals` array
+of specs next to the `decals` placements and re-register on load — in the
+editor, the game, and save-slot bundles alike.
 
 ## Voxel-size rules
 

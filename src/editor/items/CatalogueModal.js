@@ -55,9 +55,6 @@ export class CatalogueModal {
       this._query = this.search.value.trim().toLowerCase();
       this._render();
     });
-    this.search.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this.grid.querySelector('.cat-item')?.click();
-    });
     bar.appendChild(this.search);
 
     this._chips = [];
@@ -117,9 +114,13 @@ export class CatalogueModal {
 
     // Capture-phase so the modal owns the keyboard while open — the editor
     // underneath must not react to shortcuts (letters are tools, Esc exits).
+    // stopPropagation in the capture phase also prevents target listeners, so
+    // Enter/Space activation is handled here rather than on the elements
+    // (button default actions still fire — stopPropagation doesn't stop them).
     // F-keys pass through so mode toggles keep working.
     this._onKey = (e) => {
       if (!this.isOpen || /^F\d+$/.test(e.key)) return;
+      const active = this.doc.activeElement;
       if (e.key === 'Escape') {
         e.preventDefault();
         if (this.search.value) {
@@ -130,8 +131,13 @@ export class CatalogueModal {
         } else {
           this.hide();
         }
+      } else if (e.key === 'Enter' && active === this.search) {
+        this.grid.querySelector('.cat-item')?.click(); // open the first match
+      } else if ((e.key === 'Enter' || e.key === ' ') && active?.classList?.contains('cat-item')) {
+        e.preventDefault();
+        active.click();
       } else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey
-          && this.doc.activeElement !== this.search) {
+          && active !== this.search) {
         this.search.focus(); // type anywhere to search
       }
       e.stopPropagation();
@@ -250,12 +256,6 @@ export class CatalogueModal {
     card.appendChild(actions);
 
     card.addEventListener('click', () => this.cb.onCard?.(item.id));
-    card.addEventListener('keydown', (e) => {
-      if ((e.key === 'Enter' || e.key === ' ') && e.target === card) {
-        e.preventDefault();
-        this.cb.onCard?.(item.id);
-      }
-    });
     return card;
   }
 }

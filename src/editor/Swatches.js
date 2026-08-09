@@ -12,17 +12,23 @@ import { tileFor, getDecal } from '../engine/VoxelTypes.js';
  */
 export function buildSwatch(blockId, scale = 4) {
   const tile = tileFor(blockId, 'py') ?? tileFor(blockId, 'px');
+  const [w, h] = tilePixelDims(tile);
   const pixels = generateTilePixels(tile);
   const canvas = document.createElement('canvas');
   canvas.width = TILE_SIZE * scale;
   canvas.height = TILE_SIZE * scale;
   const ctx = canvas.getContext('2d');
   const tmp = document.createElement('canvas');
-  tmp.width = TILE_SIZE;
-  tmp.height = TILE_SIZE;
-  tmp.getContext('2d').putImageData(new ImageData(pixels, TILE_SIZE, TILE_SIZE), 0, 0);
+  tmp.width = w;
+  tmp.height = h;
+  tmp.getContext('2d').putImageData(new ImageData(pixels, w, h), 0, 0);
   ctx.imageSmoothingEnabled = false;
-  ctx.drawImage(tmp, 0, 0, TILE_SIZE * scale, TILE_SIZE * scale);
+  // Multi-slot art (doors, 32x64) letterboxes into the square swatch,
+  // keeping its aspect so the leaf stays recognizable.
+  const fit = Math.min(canvas.width / w, canvas.height / h);
+  const dw = w * fit;
+  const dh = h * fit;
+  ctx.drawImage(tmp, (canvas.width - dw) / 2, (canvas.height - dh) / 2, dw, dh);
   return canvas;
 }
 

@@ -27,7 +27,9 @@ import { serializeRegistry, deserializeRegistry, getItem } from '../engine/ItemR
 import { deserializeEquipRegistry, getEquipItem } from '../engine/EquipmentRegistry.js';
 import { ammoName } from '../engine/AmmoTypes.js';
 import { microCellSizeFor, lightLevelForMeters, rotateMicroPoint, MICRO_GRID } from '../engine/ItemTypes.js';
-import { spanFor } from '../engine/VoxelShape.js';
+import { spanFor, spanVecFor } from '../engine/VoxelShape.js';
+import { isPassable } from '../engine/VoxelTypes.js';
+import { isDoorVoxel, isOpenDoor, toggleDoor } from '../engine/Doors.js';
 import { BUNDLED_WORLD } from '../bundledWorld.js';
 import { SLOT_COUNT, readSlot, writeSlot, makeSlot } from './SaveSlots.js';
 import { PlayerStats, MAX_HEALTH, EQUIPMENT_SLOTS } from './PlayerStats.js';
@@ -82,8 +84,14 @@ export class GameApp {
     this.webgl = new THREE.WebGLRenderer({ antialias: !this.isTouch });
     if (this.isTouch) this.webgl.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.container.appendChild(this.webgl.domElement);
-    const { texture, tileIndexFor, atlas } = createAtlasTexture(THREE);
-    this.renderer = new Renderer({ THREE, webgl: this.webgl, world: this.world, atlasTexture: texture, tileIndexFor, atlas });
+    const { texture, tileIndexFor, atlas, rebuild } = createAtlasTexture(THREE);
+    this.rebuildAtlas = rebuild;
+    // The game starts shortly after nightfall (the editor keeps its day start),
+    // so a fresh run faces most of the night before the first dawn.
+    this.renderer = new Renderer({
+      THREE, webgl: this.webgl, world: this.world, atlasTexture: texture, tileIndexFor, atlas,
+      config: { lighting: { dayNightStart: 0.4 } },
+    });
 
     this.walk = new WalkControls({
       THREE,
@@ -276,7 +284,8 @@ export class GameApp {
     this.itemRenderer.update();
     this._updateFlashLight();
     this.blinkers.update(dt);
-    this.renderer.render(dt);
+    // Day/night time only advances while actually playing (frozen in menu/pause).
+    this.renderer.render(this.mode === 'playing' ? dt : 0);
   }
 
   /** Player view direction on the ground plane ({x,z} unit vector), used by
@@ -349,6 +358,9 @@ export class GameApp {
    *  all survive into the game exactly as the editor placed them. */
   _applyWorld(loaded) {
     this.world.copyFrom(loaded);
+    // Maps can carry text sign decals registered during deserialization —
+    // fold their runtime tiles into the atlas before chunks are meshed.
+    this.rebuildAtlas();
     this.blinkers.rescan();
     this.renderer.clearChunks();
     this.renderer.loadWorldBounds();
@@ -824,27 +836,65 @@ export class GameApp {
     ];
   }
 
-  // --- item pickup (aim at a placed equippable item, press E) ---
+  // --- interact: item pickup + doors (aim, press E) ---
 
-  /** The placed equippable item under the crosshair, or null. Only items from
-   *  the equipment registry (F3 editor) are pickable — placeable objects are
-   *  world decoration and stay put. Pickups are short-range (5 m), so the
-   *  per-frame aim ray stays cheap. */
+  /** What the E key would act on under the crosshair: a placed equippable
+   *  item ({cell, item}), a door voxel ({cell, door}), or null. Pickable
+   *  items only come from the equipment registry (F3 editor) — placeable
+   *  objects are world decoration and stay put. Short-range (5 m), so the
+   *  per-frame aim ray stays cheap.
+   *
+   *  The primary ray treats OPEN doors as air: their footprint fills the
+   *  whole doorway, and it must not eat pickups sitting just beyond it. A
+   *  second ray (only when the first found nothing) hits those open cells so
+   *  the door can be closed again. */
   _pickTarget() {
-    const hit = itemAwarePick(this.world, THREE, this.renderer.camera, 10);
-    if (!hit) return null;
-    const item = this.world.itemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
-    if (!item || !getEquipItem(item.itemId)) return null;
-    return { cell: hit.cell, item };
+    const doorTransparent = {
+      get: (x, y, z) => {
+        const v = this.world.get(x, y, z);
+        return v && isPassable(v.type) ? null : v;
+      },
+      itemAt: (x, y, z) => this.world.itemAt(x, y, z),
+    };
+    const hit = itemAwarePick(doorTransparent, THREE, this.renderer.camera, 10);
+    if (hit) {
+      const voxel = this.world.get(hit.cell[0], hit.cell[1], hit.cell[2]);
+      if (isDoorVoxel(voxel)) return { cell: hit.cell, door: voxel };
+      const item = this.world.itemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
+      if (item && getEquipItem(item.itemId)) return { cell: hit.cell, item };
+      return null;
+    }
+    const openHit = itemAwarePick(this.world, THREE, this.renderer.camera, 10);
+    if (!openHit) return null;
+    const voxel = this.world.get(openHit.cell[0], openHit.cell[1], openHit.cell[2]);
+    if (isDoorVoxel(voxel)) return { cell: openHit.cell, door: voxel };
+    return null;
   }
 
   /** Track what the crosshair is aiming at: show the highlight + prompt on a
-   *  pickable item, clear both otherwise. Called every frame while playing. */
+   *  pickable item or door, clear both otherwise. Called every frame while
+   *  playing. */
   _updatePickup() {
     const target = this._pickTarget();
     this._pickupTarget = target;
     if (!target) {
       this._hidePickup();
+      return;
+    }
+    if (target.door) {
+      const [sx, sy, sz] = spanVecFor(target.door.size, target.door.rotation ?? 0);
+      const ax = target.door.anchor[0] * CELL_SIZE;
+      const ay = target.door.anchor[1] * CELL_SIZE;
+      const az = target.door.anchor[2] * CELL_SIZE;
+      for (const g of [this._pickupMarker, this._pickupOutline]) {
+        g.visible = true;
+        g.scale.set(sx * CELL_SIZE, sy * CELL_SIZE, sz * CELL_SIZE);
+        g.position.set(ax + (sx * CELL_SIZE) / 2, ay + (sy * CELL_SIZE) / 2, az + (sz * CELL_SIZE) / 2);
+      }
+      if (this.ui.pickup) {
+        this.ui.pickup.innerHTML = `Press <kbd>E</kbd> to ${isOpenDoor(target.door) ? 'close' : 'open'} the door`;
+        this.ui.pickup.classList.remove('hidden');
+      }
       return;
     }
     const def = getEquipItem(target.item.itemId);
@@ -879,6 +929,10 @@ export class GameApp {
   _pickup() {
     const target = this._pickupTarget;
     if (!target) return;
+    if (target.door) {
+      this._toggleDoor(target.door);
+      return;
+    }
     const def = getEquipItem(target.item.itemId);
     if (!def) return;
     this._hidePickup();
@@ -889,6 +943,14 @@ export class GameApp {
     const start = new THREE.Vector3(ax * CELL_SIZE + half, ay * CELL_SIZE + half, az * CELL_SIZE + half);
     this._pickupQueue.push({ def, start, yaw: target.item.rotation ?? 0 });
     this._pumpPickupQueue();
+  }
+
+  /** Toggle a door voxel and refresh the mob navmeshes: a closed door seals
+   *  the doorway (mobs can't open doors — they re-route or give up), an
+   *  opened one lets them path through. */
+  _toggleDoor(voxel) {
+    if (!toggleDoor(this.world, voxel)) return;
+    this.mobs.refreshNav();
   }
 
   /** Start the next queued pickup's flight if one isn't already airborne.

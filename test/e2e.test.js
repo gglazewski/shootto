@@ -1263,10 +1263,20 @@ T('item catalogue lists saved items and supports select, edit and delete', async
   await page.waitForTimeout(120);
   await page.evaluate(() => window.__voxelgame.ui.cb.items());
   await page.waitForTimeout(120);
+  // Delete is a two-step confirm: first click arms the button, second deletes.
   await page.evaluate(() => {
     const btns = [...document.querySelectorAll('#item-catalogue .cat-item .cat-actions .cat-btn')];
     btns.find((b) => b.textContent === 'Delete').click();
   });
+  await page.waitForTimeout(50);
+  const armedText = await page.evaluate(() => {
+    const btns = [...document.querySelectorAll('#item-catalogue .cat-item .cat-actions .cat-btn')];
+    const b = btns.find((x) => x.classList.contains('danger'));
+    const text = b.textContent;
+    b.click();
+    return text;
+  });
+  assert.equal(armedText, 'Sure?', 'first Delete click must arm, not delete');
   await page.waitForTimeout(150);
   const afterDelete = await page.evaluate(() => ({
     inCatalogue: document.querySelectorAll('#item-catalogue .cat-item').length,

@@ -347,6 +347,9 @@ T('smoke is lit by the world — dark in a sealed room, bright in open sky', asy
   const out = await page.evaluate(() => {
     const g = window.__voxelgame;
     g.newGame();
+    // The game starts at night; force midday so "open sky" is actually bright.
+    g.renderer._skyTime = 0;
+    g.renderer._updateSky(0);
     g.world.clear();
     g.renderer.clearChunks();
 

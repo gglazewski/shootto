@@ -11,7 +11,9 @@ import { Tool } from '../Tool.js';
 import { placeCommand, removeCommand, multiPlaceCommand, multiRemoveCommand } from '../commands.js';
 import { orthogonalLineAnchors } from './line.js';
 import { spanFor } from '../../engine/VoxelShape.js';
+import { getBlock } from '../../engine/VoxelTypes.js';
 import { worldToCell } from '../../engine/VoxelRaycaster.js';
+import { itemAwarePick } from '../itemPick.js';
 import { Notice } from '../Notice.js';
 
 export class BuildTool extends Tool {
@@ -27,13 +29,22 @@ export class BuildTool extends Tool {
     return this.ctx.state.get('blockId');
   }
 
+  /** Blocks with a pinned size (doors are always SIZE.DOOR) override the
+   *  small/big toggle. */
   get size() {
-    return this.ctx.state.get('size');
+    return getBlock(this.type)?.fixedSize ?? this.ctx.state.get('size');
   }
 
   /** Yaw of the pending placement in quarter turns (R cycles it). */
   get rotation() {
     return this.ctx.state.get('blockRotation') ?? 0;
+  }
+
+  /** Item-aware pick: placed objects stop the aim ray, so blocks can be
+   *  built on top of a table the same as on top of another block. Removal
+   *  still only touches voxels (world.get on an item cell is null). */
+  pick() {
+    return itemAwarePick(this.ctx.world, this.ctx.THREE, this.ctx.camera);
   }
 
   setType(type) {
@@ -205,11 +216,11 @@ export class BuildTool extends Tool {
       const voxel = world.get(hit.cell[0], hit.cell[1], hit.cell[2]);
       if (this.isShift && this.lastRemoved && voxel) this._showEraseLine(voxel);
       else ghost.hideCells();
-      if (voxel) ghost.showRemoval(voxel.anchor, voxel.size);
+      if (voxel) ghost.showRemoval(voxel.anchor, voxel.size, voxel.rotation ?? 0);
       return;
     }
     const anchor = this.placementAnchor(hit, this.size);
-    const blocked = !world.isAreaFree(anchor[0], anchor[1], anchor[2], this.size);
+    const blocked = !world.isAreaFree(anchor[0], anchor[1], anchor[2], this.size, this.rotation);
     ghost.showPlacement(anchor, this.size, blocked, { blockId: this.type, rotation: this.rotation });
 
     const voxel = world.get(hit.cell[0], hit.cell[1], hit.cell[2]);
@@ -218,7 +229,7 @@ export class BuildTool extends Tool {
       // place. The aim cube stays visible so the axis snap is readable —
       // the line end shows where the line lands, the cube where you aim.
       const cells = orthogonalLineAnchors(this.lastPlaced, anchor, this.size);
-      const flags = cells.map((c) => !world.isAreaFree(c[0], c[1], c[2], this.size));
+      const flags = cells.map((c) => !world.isAreaFree(c[0], c[1], c[2], this.size, this.rotation));
       ghost.showCells(cells, this.size, flags, { keepPlacement: true });
     } else if (this.isShift && this.lastRemoved && voxel) {
       this._showEraseLine(voxel);
@@ -226,7 +237,7 @@ export class BuildTool extends Tool {
       ghost.hideCells();
     }
 
-    if (voxel) ghost.showRemoval(voxel.anchor, voxel.size);
+    if (voxel) ghost.showRemoval(voxel.anchor, voxel.size, voxel.rotation ?? 0);
   }
 
   /** All-red cell preview of the erase line from the last removed voxel. */

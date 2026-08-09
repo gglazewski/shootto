@@ -16,7 +16,9 @@
 import { Tool } from '../Tool.js';
 import { multiPlaceCommand, multiRemoveCommand } from '../commands.js';
 import { spanFor, anchorFor } from '../../engine/VoxelShape.js';
+import { getBlock } from '../../engine/VoxelTypes.js';
 import { worldToCell } from '../../engine/VoxelRaycaster.js';
+import { itemAwarePick } from '../itemPick.js';
 import { Notice } from '../Notice.js';
 
 /** Ray-plane intersection in cell units, or null when parallel/behind. */
@@ -51,6 +53,12 @@ export class SquareTool extends Tool {
     return this.ctx.state.get('blockRotation') ?? 0;
   }
 
+  /** Item-aware pick, same as BuildTool: a drag can start on a placed
+   *  object's face (build a floor on top of a table). */
+  pick() {
+    return itemAwarePick(this.ctx.world, this.ctx.THREE, this.ctx.camera);
+  }
+
   onMouseDown(button) {
     if (button === 2) {
       // RMB cancels an in-progress place drag; on its own it starts an
@@ -73,6 +81,11 @@ export class SquareTool extends Tool {
       return;
     }
     if (button !== 0) return;
+    // Pinned-size blocks (doors) don't tile into rectangles.
+    if (getBlock(this.type)?.fixedSize) {
+      Notice.warn('Doors are placed one at a time with the Build tool');
+      return;
+    }
     // LMB cancels an in-progress erase drag (mirror of RMB on a place drag).
     if (this._drag?.erase) {
       this._drag = null;

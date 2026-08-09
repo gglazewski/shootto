@@ -12,6 +12,7 @@
 
 import { World } from '../engine/World.js';
 import { assertValidBlockId, getBlock, SIZE, isDecalId, FACES } from '../engine/VoxelTypes.js';
+import { createTextDecal, textSpecOf } from '../engine/TextDecals.js';
 import { isItemId } from '../engine/ItemRegistry.js';
 import { isEquipId } from '../engine/EquipmentRegistry.js';
 import { isMobId } from '../engine/mobTypes.js';
@@ -26,8 +27,10 @@ export function serialize(world) {
   world.forEachVoxel((v) => {
     // rotation is additive and omitted when 0, so old readers and untouched
     // maps stay byte-identical. A blinking light caught in its dark phase is
-    // normalized back to its lit id — maps always store the canonical block.
-    const type = getBlock(v.type)?.blinkOn ?? v.type;
+    // normalized back to its lit id, an open door back to its closed id —
+    // maps always store the canonical block.
+    const def = getBlock(v.type);
+    const type = def?.blinkOn ?? def?.doorClosed ?? v.type;
     blocks.push({
       x: v.anchor[0], y: v.anchor[1], z: v.anchor[2], size: v.size, type,
       ...(v.rotation ? { rotation: v.rotation } : {}),
@@ -48,12 +51,24 @@ export function serialize(world) {
   const mobs = [];
   world.forEachMobSpawn((s) => mobs.push({ type: s.type, x: s.x, y: s.y, z: s.z }));
   // `decals` is additive — readers that ignore it still load the map.
+  // Text signs also write their specs (`textDecals`) so a loading engine can
+  // re-register the runtime decals the placements reference; the field is
+  // omitted when no sign is placed, keeping untouched maps byte-identical.
   const decals = [];
-  world.forEachDecal((d) => decals.push({
-    id: d.decalId, x: d.cell[0], y: d.cell[1], z: d.cell[2], face: d.face,
-    ...(d.rotation ? { rotation: d.rotation } : {}),
-  }));
-  return JSON.stringify({ format: FORMAT, version: VERSION, cellSize: CELL_SIZE, spawn, spawnYaw: world.spawnYaw ?? 0, blocks, items, mobs, decals }, null, 2);
+  const textDecals = new Map();
+  world.forEachDecal((d) => {
+    decals.push({
+      id: d.decalId, x: d.cell[0], y: d.cell[1], z: d.cell[2], face: d.face,
+      ...(d.rotation ? { rotation: d.rotation } : {}),
+    });
+    const spec = textSpecOf(d.decalId);
+    if (spec && !textDecals.has(d.decalId)) textDecals.set(d.decalId, { id: d.decalId, ...spec });
+  });
+  return JSON.stringify({
+    format: FORMAT, version: VERSION, cellSize: CELL_SIZE, spawn, spawnYaw: world.spawnYaw ?? 0,
+    blocks, items, mobs, decals,
+    ...(textDecals.size ? { textDecals: [...textDecals.values()] } : {}),
+  }, null, 2);
 }
 
 /** @returns {{world: World, errors: string[]}} */
@@ -88,7 +103,7 @@ export function deserialize(text) {
       errors.push('Skipped malformed block entry');
       continue;
     }
-    const size = b.size === SIZE.BIG ? SIZE.BIG : SIZE.SMALL;
+    const size = b.size === SIZE.BIG || b.size === SIZE.DOOR ? b.size : SIZE.SMALL;
     try {
       assertValidBlockId(b.type);
     } catch (e) {
@@ -114,6 +129,20 @@ export function deserialize(text) {
       const rotation = typeof it.rotation === 'number' ? it.rotation : 0;
       if (!world.placeItem(it.itemId, size, it.x, it.y, it.z, rotation)) {
         errors.push(`Skipped overlapping item ${it.itemId} at ${it.x},${it.y},${it.z}`);
+      }
+    }
+  }
+  // Re-register text sign decals BEFORE placing decals, so placements that
+  // reference them pass the isDecalId check. Ids are pinned from the file:
+  // a sign keeps its identity even if the hash scheme evolves.
+  if (Array.isArray(data.textDecals)) {
+    for (const t of data.textDecals) {
+      if (!t || typeof t.id !== 'string' || typeof t.text !== 'string' || !/^decal_text_[a-z0-9]+$/.test(t.id)) {
+        errors.push('Skipped malformed text decal definition');
+        continue;
+      }
+      if (!createTextDecal(t, { id: t.id })) {
+        errors.push(`Skipped text decal ${t.id}: empty text`);
       }
     }
   }

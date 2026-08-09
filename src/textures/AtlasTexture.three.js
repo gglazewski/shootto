@@ -9,14 +9,26 @@ import { tileFor, getDecal } from '../engine/VoxelTypes.js';
 
 /**
  * Browser: build a THREE texture + a face->index resolver for meshing.
+ * The returned `rebuild()` re-renders the atlas in place after runtime
+ * tiles were registered (text signs): the name->index map is mutated, not
+ * replaced, so every captured `tileIndexFor` closure stays valid — callers
+ * only need to remesh chunks afterwards.
  * @param {import('three')} THREE
  */
 export function createAtlasTexture(THREE) {
-  const { width, height, data, map, atlas } = renderAtlasRGBA(tilesForBlocks());
   const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  canvas.getContext('2d').putImageData(new ImageData(data, width, height), 0, 0);
+  const map = new Map();
+  let atlasDims = { width: 0, height: 0 };
+  const paint = () => {
+    const r = renderAtlasRGBA(tilesForBlocks());
+    canvas.width = r.width;
+    canvas.height = r.height;
+    canvas.getContext('2d').putImageData(new ImageData(r.data, r.width, r.height), 0, 0);
+    map.clear();
+    for (const [name, index] of r.map) map.set(name, index);
+    atlasDims = r.atlas;
+  };
+  paint();
   const texture = new THREE.CanvasTexture(canvas);
   texture.magFilter = THREE.NearestFilter;
   texture.minFilter = THREE.NearestFilter;
@@ -25,5 +37,9 @@ export function createAtlasTexture(THREE) {
   // Resolves block ids (per-face tiles) AND decal ids (single tile), so the
   // mesher can look up decal quads through the same callback.
   const tileIndexFor = (typeId, face) => map.get(getDecal(typeId)?.tile ?? tileFor(typeId, face));
-  return { texture, tileIndexFor, atlas: { ...atlas, tileSize: TILE_SIZE } };
+  const rebuild = () => {
+    paint();
+    texture.needsUpdate = true;
+  };
+  return { texture, tileIndexFor, atlas: { ...atlasDims, tileSize: TILE_SIZE }, rebuild };
 }

@@ -26,7 +26,8 @@
 //    giving smooth interpolated lighting across faces.
 
 import { CELL_SIZE } from './Space.js';
-import { opacityFor, isTransparent, shapeFor, getDecal } from './VoxelTypes.js';
+import { opacityFor, isTransparent, isMixedAlpha, shapeFor, getDecal, getBlock } from './VoxelTypes.js';
+import { spanVecFor } from './VoxelShape.js';
 
 // Face table: for each face, the outward normal n, the in-plane basis u/v
 // (unit axis steps with u x v === n) and the origin corner o. Corners:
@@ -111,15 +112,23 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
 
   const face = (fx, fy, fz, voxel) => {
     const selfTransparent = isTransparent(voxel.type);
+    // Mixed-alpha art (framed window, glazed doors) is meshed into BOTH
+    // passes: the opaque cutout pass depth-writes the solid texels (frame
+    // occludes correctly) and discards the glass (alpha < 0.5); the
+    // transparent pass blends the glass and re-blends the solid texels over
+    // themselves at equal depth (a no-op).
+    const mixed = isMixedAlpha(voxel.type);
     const buf = selfTransparent ? transparentBuf : opaqueBuf;
+    const bufs = mixed ? [opaqueBuf, transparentBuf] : [buf];
     const rot = voxel.rotation ?? 0;
     for (const name of Object.keys(FACE_TABLE)) {
       const f = FACE_TABLE[name];
       const nx = fx + f.n[0], ny = fy + f.n[1], nz = fz + f.n[2];
       const neighbor = world.get(nx, ny, nz);
       // Cull when the neighbor blocks this face: opaque neighbor always hides
-      // it; two transparent voxels hide each other (glass-on-glass).
-      if (neighbor && (isOpaqueVoxel(neighbor) || selfTransparent)) continue;
+      // it; two transparent voxels hide each other (glass-on-glass), as do
+      // two mixed-alpha voxels of the same type (window-on-window).
+      if (neighbor && (isOpaqueVoxel(neighbor) || selfTransparent || (mixed && neighbor.type === voxel.type))) continue;
 
       const tile = tileIndexFor(voxel.type, rot ? rotatedFace(name, rot) : name);
       const tileW = 1 / AW;
@@ -141,8 +150,8 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         { u: 0, v: 1, x: f.o[0] + f.v[0], y: f.o[1] + f.v[1], z: f.o[2] + f.v[2] },
       ];
 
-      const first = buf.positions.length / 3;
       const cornerData = [];
+      const quad = []; // per-corner vertex data, emitted into every target buffer
       for (const c of corners) {
         const cx = fx + c.x, cy = fy + c.y, cz = fz + c.z;
         // Classic face AO: sample the three cells that meet at this corner on
@@ -181,10 +190,14 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         const dv = 0.5 + t[2] * (cu - 0.5) + t[3] * (cv - 0.5);
         const u = baseU + htU + du * (tileW - 2 * htU);
         const v = baseV + htV + dv * (tileH - 2 * htV);
-        pushCorner(buf, cx, cy, cz, f.n[0], f.n[1], f.n[2], u, v, b, b, b, ls, lb);
+        quad.push([cx, cy, cz, f.n[0], f.n[1], f.n[2], u, v, b, b, b, ls, lb]);
         cornerData.push({ cx, cy, cz, b, ls, lb, u0: c.u, v0: c.v });
       }
-      buf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
+      for (const target of bufs) {
+        const first = target.positions.length / 3;
+        for (const q of quad) pushCorner(target, ...q);
+        target.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
+      }
 
       // Decal covering this face: a second quad a hair off the surface,
       // reusing the face's AO/light so it blends in. Only visible faces get
@@ -237,6 +250,11 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
   // (colors stay 1); light is sampled inside the voxel's own cells (the
   // field is defined there since panes are transparent to light).
   const pane = (voxel, ax, ay, az) => {
+    // Transparent panes (glass) go to the alpha-blended pass; that material
+    // is double-sided, so a single winding suffices. Cutout panes (fences,
+    // bars) stay in the opaque pass, double-winded as before.
+    const paneTransparent = isTransparent(voxel.type);
+    const paneBuf = paneTransparent ? transparentBuf : opaqueBuf;
     const span = voxel.size === 'big' ? 2 : 1;
     const tile = tileIndexFor(voxel.type, 'px');
     const tileW = 1 / AW;
@@ -253,9 +271,9 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
       : [[ax + half, ay, az], [ax + half, ay, az + span], [ax + half, ay + span, az + span], [ax + half, ay + span, az]];
     const n = alongX ? [0, 0, 1] : [1, 0, 0];
     const uv = [[0, 0], [1, 0], [1, 1], [0, 1]]; // uv-v follows world +y
-    for (const flip of [1, -1]) {
+    for (const flip of paneTransparent ? [1] : [1, -1]) {
       const order = flip === 1 ? [0, 1, 2, 3] : [0, 3, 2, 1];
-      const first = opaqueBuf.positions.length / 3;
+      const first = paneBuf.positions.length / 3;
       for (const i of order) {
         const c = corners[i];
         const lx = cc(c[0], ax), ly = cc(c[1], ay), lz = cc(c[2], az);
@@ -263,9 +281,94 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         const lb = block(lx, ly, lz) / 15;
         const u = baseU + htU + uv[i][0] * (tileW - 2 * htU);
         const v = baseV + htV + uv[i][1] * (tileH - 2 * htV);
-        pushCorner(opaqueBuf, c[0], c[1], c[2], n[0] * flip, n[1] * flip, n[2] * flip, u, v, 1, 1, 1, ls, lb);
+        pushCorner(paneBuf, c[0], c[1], c[2], n[0] * flip, n[1] * flip, n[2] * flip, u, v, 1, 1, 1, ls, lb);
       }
-      opaqueBuf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
+      paneBuf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
+    }
+  };
+
+  // shape:'door' — a slab with real thickness, emitted once per voxel at its
+  // anchor (like panes). Closed: the leaf spans the whole 2x4-cell opening,
+  // centered in the 1-cell depth. Open: the leaf swings 90° around the hinge
+  // at the anchor-side jamb — rotation 0/2 = closed leaf along x opening
+  // toward +z/-z, 1/3 = along z opening toward +x/-x. The two big faces map
+  // the door's multi-slot art (see tileSpan) with one shared world->u
+  // mapping, so the back face is the mirror view of the front, exactly like
+  // a real door; the thin edges collapse their UVs onto the art's border
+  // texels and read as frame color. No AO (like panes); light is sampled
+  // from the voxel's own footprint cells.
+  const DOOR_THICK = 0.24; // leaf thickness in cells (12 cm)
+  const door = (voxel, ax, ay, az) => {
+    const rot = voxel.rotation ?? 0;
+    const open = !!getBlock(voxel.type)?.doorClosed;
+    const [sx, sy, sz] = spanVecFor(voxel.size, rot);
+    const W = Math.max(sx, sz); // leaf width in cells
+    const H = sy;
+    const T = DOOR_THICK;
+    const alongX = (rot & 1) === 0;
+    let min, max, wAxis;
+    if (!open) {
+      min = alongX ? [ax, ay, az + 0.5 - T / 2] : [ax + 0.5 - T / 2, ay, az];
+      max = alongX ? [ax + W, ay + H, az + 0.5 + T / 2] : [ax + 0.5 + T / 2, ay + H, az + W];
+      wAxis = alongX ? 0 : 2;
+    } else if (alongX) {
+      const z0 = rot === 0 ? az + 0.5 - T / 2 : az + 0.5 + T / 2 - W;
+      min = [ax, ay, z0];
+      max = [ax + T, ay + H, z0 + W];
+      wAxis = 2;
+    } else {
+      const x0 = rot === 1 ? ax + 0.5 - T / 2 : ax + 0.5 + T / 2 - W;
+      min = [x0, ay, az];
+      max = [x0 + W, ay + H, az + T];
+      wAxis = 0;
+    }
+    // Swinging toward -z/-x puts the hinge at the leaf's max end, so the art
+    // runs backwards along the leaf there (handle stays at the free edge).
+    const flipU = open && (rot === 2 || rot === 3);
+
+    const [cw, ch] = getBlock(voxel.type)?.tileSpan ?? [1, 1];
+    const tile = tileIndexFor(voxel.type, 'px');
+    const tileW = 1 / AW;
+    const tileH = 1 / AH;
+    const rectW = cw * tileW;
+    const rectH = ch * tileH;
+    const baseU = (tile % AW) * tileW;
+    const baseV = 1 - (Math.floor(tile / AW) + ch) * tileH;
+    const htU = 0.5 / (AW * tileSize);
+    const htV = 0.5 / (AH * tileSize);
+
+    const d = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
+    const clamp = (p, lo, hi) => Math.max(lo, Math.min(hi, Math.floor(p)));
+    // Glazed doors (mixedAlpha) render like framed windows: the opaque pass
+    // draws the leaf and discards the glass texels, the transparent pass
+    // blends the glass in.
+    const doorBufs = isMixedAlpha(voxel.type) ? [opaqueBuf, transparentBuf] : [opaqueBuf];
+    for (const name of Object.keys(FACE_TABLE)) {
+      const f = FACE_TABLE[name];
+      const quad = [];
+      for (const c of [{ u: 0, v: 0 }, { u: 1, v: 0 }, { u: 1, v: 1 }, { u: 0, v: 1 }]) {
+        const px = min[0] + (f.o[0] + c.u * f.u[0] + c.v * f.v[0]) * d[0];
+        const py = min[1] + (f.o[1] + c.u * f.u[1] + c.v * f.v[1]) * d[1];
+        const pz = min[2] + (f.o[2] + c.u * f.u[2] + c.v * f.v[2]) * d[2];
+        // light from the nearest footprint cell (the field is defined there
+        // since doors are transparent to light)
+        const lx = clamp(px, ax, ax + sx - 1);
+        const ly = clamp(py, ay, ay + sy - 1);
+        const lz = clamp(pz, az, az + sz - 1);
+        const ls = sky(lx, ly, lz) / 15;
+        const lb = block(lx, ly, lz) / 15;
+        const pw = wAxis === 0 ? px : pz;
+        const fu = flipU ? (max[wAxis] - pw) / W : (pw - min[wAxis]) / W;
+        const fv = (py - ay) / H;
+        const u = baseU + htU + fu * (rectW - 2 * htU);
+        const v = baseV + htV + fv * (rectH - 2 * htV);
+        quad.push([px, py, pz, f.n[0], f.n[1], f.n[2], u, v, 1, 1, 1, ls, lb]);
+      }
+      for (const target of doorBufs) {
+        const first = target.positions.length / 3;
+        for (const q of quad) pushCorner(target, ...q);
+        target.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
+      }
     }
   };
 
@@ -274,6 +377,11 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
       for (let z = oz; z < oz + size; z++) {
         const voxel = world.get(x, y, z);
         if (!voxel) continue;
+        if (shapeFor(voxel.type) === 'door') {
+          const [ax, ay, az] = voxel.anchor ?? [x, y, z];
+          if (x === ax && y === ay && z === az) door(voxel, ax, ay, az);
+          continue;
+        }
         if (shapeFor(voxel.type) === 'pane') {
           // Emit at the anchor cell only (worlds without anchors fall back to
           // per-cell emission, which only matters for synthetic test worlds).

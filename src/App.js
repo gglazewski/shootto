@@ -50,6 +50,8 @@ import { itemAwarePick, collisionWorld } from './editor/itemPick.js';
 import { InputDispatcher } from './editor/Input.js';
 import { ToolRing } from './editor/ToolRing.js';
 import { Notice, onNotice } from './editor/Notice.js';
+import { SignModal } from './editor/SignModal.js';
+import { createTextDecal } from './engine/TextDecals.js';
 import { GameLoop } from './GameLoop.js';
 import { PersistenceService } from './PersistenceService.js';
 import { CONFIG } from './config.js';
@@ -71,7 +73,8 @@ export class App {
     this.blinkers = new Blinkers(this.world);
     this.webgl = new THREE.WebGLRenderer({ antialias: true });
     this.container.appendChild(this.webgl.domElement);
-    const { texture, tileIndexFor, atlas } = createAtlasTexture(THREE);
+    const { texture, tileIndexFor, atlas, rebuild } = createAtlasTexture(THREE);
+    this.rebuildAtlas = rebuild;
     this.renderer = new Renderer({ THREE, webgl: this.webgl, world: this.world, atlasTexture: texture, tileIndexFor, atlas });
 
     // --- editor state / history ---
@@ -256,6 +259,21 @@ export class App {
     this.inventory.onSelectItem = (id) => this.state.set('itemId', id);
     this.inventory.onSelectEquip = (id) => this.state.set('itemId', id);
     this.inventory.onSelectDecal = (id) => this.state.set('decalId', id);
+
+    // --- text signs (created from the Decals section) ---
+    this.signModal = new SignModal({ doc });
+    this.inventory.onCreateSign = () => this.signModal.show();
+    this.signModal.onCreate = (spec) => {
+      const sign = createTextDecal(spec);
+      if (!sign) return;
+      this.rebuildAtlas();
+      this._refreshDecalItems();
+      this.state.set('decalId', sign.id); // in hand, decal tool active
+      Notice.info(`Sign ready — click a wall to place it`);
+    };
+    this.signModal.onClose = () => {
+      if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
+    };
     // Closing the inventory (selection, E, or backdrop click) re-locks the
     // pointer so editing resumes right away.
     this.inventory.onClose = () => {
@@ -391,6 +409,12 @@ export class App {
   /** Hotbar entry for a block id (from the toolbar's block swatch list). */
   _blockEntry(id) {
     return this.toolbar.items.find((it) => it.id === id) ?? null;
+  }
+
+  /** Re-list decals in the inventory (after a text sign was registered). */
+  _refreshDecalItems() {
+    const decalItems = listDecalIds().map((id) => ({ id, name: getDecal(id).name }));
+    this.inventory.updateDecalItems(buildDecalSwatchList(decalItems));
   }
 
   /** Hotbar entry for a decal id (fresh preview canvas). */
@@ -792,6 +816,10 @@ export class App {
   replaceWorldVoxels(loaded) {
     this.history.clear();
     this.world.copyFrom(loaded);
+    // The map may have registered text sign decals during deserialization —
+    // fold their runtime tiles into the atlas before chunks are meshed.
+    this.rebuildAtlas();
+    this._refreshDecalItems();
     this.renderer.clearChunks();
     this.renderer.loadWorldBounds();
     this.itemRenderer.rebuildAll();

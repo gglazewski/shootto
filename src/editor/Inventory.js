@@ -28,6 +28,8 @@ export class Inventory {
     this.onSelectItem = null;
     this.onSelectEquip = null;
     this.onSelectDecal = null;
+    /** Called when the "New Sign…" card in the Decals section is clicked. */
+    this.onCreateSign = null;
     /** Called whenever the panel closes (selection, E, or backdrop click). */
     this.onClose = null;
     /** The block/object currently under the cursor: { kind, id } or null. */
@@ -60,32 +62,14 @@ export class Inventory {
     }
     panel.appendChild(grid);
 
-    if (decalItems.length) {
-      const decalSection = document.createElement('h3');
-      decalSection.className = 'inv-section';
-      decalSection.textContent = 'Decals';
-      panel.appendChild(decalSection);
-      const decalGrid = document.createElement('div');
-      decalGrid.className = 'inventory-grid decal-grid';
-      for (const item of decalItems) {
-        const btn = document.createElement('button');
-        btn.className = 'inv-item';
-        btn.dataset.id = item.id;
-        btn.dataset.kind = 'decal';
-        btn.title = item.name;
-        btn.appendChild(item.canvas);
-        const label = document.createElement('span');
-        label.textContent = item.name;
-        btn.appendChild(label);
-        btn.addEventListener('click', () => {
-          if (this.onSelectDecal) this.onSelectDecal(item.id);
-          this.hide();
-        });
-        btn.addEventListener('mouseenter', () => this.setHovered('decal', item.id));
-        decalGrid.appendChild(btn);
-      }
-      panel.appendChild(decalGrid);
-    }
+    const decalSection = document.createElement('h3');
+    decalSection.className = 'inv-section';
+    decalSection.textContent = 'Decals';
+    panel.appendChild(decalSection);
+    this.decalGrid = document.createElement('div');
+    this.decalGrid.className = 'inventory-grid decal-grid';
+    panel.appendChild(this.decalGrid);
+    this._renderDecalItems();
 
     const hint = document.createElement('div');
     hint.className = 'inv-hint';
@@ -130,6 +114,53 @@ export class Inventory {
   updateObjectItems(objectItems) {
     this.objectItems = objectItems ?? [];
     this._renderObjectItems();
+  }
+
+  /** Replace the list of registered decals (e.g. after a text sign was
+   *  created or a map with signs loaded) and re-render the decal grid. */
+  updateDecalItems(decalItems) {
+    this.decalItems = decalItems ?? [];
+    this._renderDecalItems();
+  }
+
+  _renderDecalItems() {
+    this.decalGrid.innerHTML = '';
+    for (const item of this.decalItems) {
+      const btn = document.createElement('button');
+      btn.className = 'inv-item';
+      btn.dataset.id = item.id;
+      btn.dataset.kind = 'decal';
+      btn.title = item.name;
+      btn.appendChild(item.canvas);
+      const label = document.createElement('span');
+      label.textContent = item.name;
+      btn.appendChild(label);
+      btn.addEventListener('click', () => {
+        if (this.onSelectDecal) this.onSelectDecal(item.id);
+        this.hide();
+      });
+      btn.addEventListener('mouseenter', () => this.setHovered('decal', item.id));
+      this.decalGrid.appendChild(btn);
+    }
+    // "New Sign" card: opens the text sign dialog (wired by the app).
+    const add = document.createElement('button');
+    add.className = 'inv-item inv-item-add';
+    add.title = 'Create a text sign (SKLEP, KWIATY…)';
+    const plus = document.createElement('span');
+    plus.textContent = '＋';
+    plus.style.fontSize = '28px';
+    plus.style.lineHeight = '48px';
+    add.appendChild(plus);
+    const label = document.createElement('span');
+    label.textContent = 'New Sign…';
+    add.appendChild(label);
+    add.addEventListener('click', () => {
+      if (this.onCreateSign) {
+        this.hide();
+        this.onCreateSign();
+      }
+    });
+    this.decalGrid.appendChild(add);
   }
 
   /** Replace the list of registered equippable items and re-render. */

@@ -18,7 +18,8 @@ export const CONFIG = Object.freeze({
     ambient: 0.55, // legacy, used by overlay lights only now
     sun: 0.85, // legacy, used by overlay lights only now
     dayNight: true,
-    dayNightSpeed: 0.05, // cycles/sec
+    dayNightSpeed: 1 / 600, // cycles/sec — one full day/night cycle per 10 real minutes
+    dayNightStart: 0, // starting point in the cycle: 0 = midday, 0.5 = midnight
     skyIntensity: 1, // current day/night multiplier (0..1)
     sunDirection: [0.5, 1.5, 0.4],
     sunColor: [1.0, 0.95, 0.85],
@@ -28,6 +29,19 @@ export const CONFIG = Object.freeze({
     lightScale: 1.0, // overall light intensity multiplier
     sunStrength: 0.35, // directional sun shading strength
     nightSky: [0.05, 0.07, 0.15], // scene background at night
+  },
+  sky: {
+    // visual sky (dome, sun, moon, clouds) — see engine/Sky.js
+    sunDistance: 1350, // must stay below camera.far
+    sunSize: 65,
+    moonSize: 48,
+    orbitTilt: 0.25, // z-lean of the sun/moon track so noon isn't dead overhead
+    cloudHeight: 140, // world y of the cloud layer
+    cloudHalfSize: 1600,
+    cloudScale: 620, // world units per noise tile (bigger = larger clouds)
+    cloudCoverage: 0.52, // noise threshold; higher = fewer clouds
+    wind: [5.5, 2.0], // world units/sec cloud drift
+    nightHorizon: [0.05, 0.07, 0.15], // matches lighting.nightSky
   },
   controls: {
     sensitivity: 0.0022,

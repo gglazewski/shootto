@@ -127,6 +127,29 @@ export class MobManager {
     });
   }
 
+  /** Rebuild the nav meshes over the current solid world without touching
+   *  the live mobs — doors opening and closing change what is walkable, and
+   *  mobs can't toggle doors themselves, so this is how a closed door makes
+   *  them re-route. Every mob is pointed at its type's fresh mesh and forced
+   *  to repath on its next update. */
+  refreshNav() {
+    for (const id of [...this.navs.keys()]) {
+      const def = getMob(id);
+      if (!def) continue;
+      const height = Math.max(def.height, MOB_HEIGHT_MAX);
+      this.navs.set(id, new NavMesh(this.solidWorld, { halfWidth: def.halfWidth, height }));
+    }
+    for (const mob of this.mobs) {
+      const nav = this.navs.get(mob.type.id);
+      if (!nav) continue;
+      mob.nav = nav;
+      mob.path = [];
+      mob.pathIndex = 0;
+      mob._repathTimer = 0;
+    }
+    this._losCache.clear();
+  }
+
   /**
    * Advance all mobs + their billboards.
    * @param {number} dt seconds

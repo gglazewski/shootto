@@ -8,7 +8,7 @@
 import { raycastVoxel, worldToCell } from '../engine/VoxelRaycaster.js';
 import { getItem } from '../engine/ItemRegistry.js';
 import { getEquipItem } from '../engine/EquipmentRegistry.js';
-import { isShootThrough } from '../engine/VoxelTypes.js';
+import { isShootThrough, isPassable } from '../engine/VoxelTypes.js';
 
 /** @returns {object} a world-like facade over voxels + placed items */
 export function itemAwareWorld(world) {
@@ -30,7 +30,9 @@ export function collisionWorld(world) {
   return {
     get(x, y, z) {
       const v = world.get(x, y, z);
-      if (v) return v;
+      // Passable blocks (open doors) occupy their cells but don't block —
+      // the player and mobs walk straight through the doorway.
+      if (v) return isPassable(v.type) ? null : v;
       const item = world.itemAt(x, y, z);
       if (!item) return null;
       // Pickable items (equipment registry) never block — you walk over a

@@ -8,7 +8,7 @@
 //  - an InstancedMesh of cubes for multi-cell previews (line / square tools).
 
 import { CELL_SIZE } from '../engine/Space.js';
-import { spanFor } from '../engine/VoxelShape.js';
+import { spanFor, spanVecFor } from '../engine/VoxelShape.js';
 import { buildChunkMesh, FACE_TABLE, decalFootprint } from '../engine/ChunkMeshBuilder.js';
 import { getDecal } from '../engine/VoxelTypes.js';
 
@@ -90,7 +90,7 @@ export class SelectionGhost {
    * otherwise it falls back to the plain translucent cube.
    */
   showPlacement(anchor, size, blocked, spec = null) {
-    const s = spanFor(size) * CELL_SIZE;
+    const [sx, sy, sz] = spanVecFor(size, spec?.rotation ?? 0).map((n) => n * CELL_SIZE);
     this.hideCells();
     if (this.texPlace && spec?.blockId) {
       const geo = this._previewGeometry(spec.blockId, size, spec.rotation ?? 0);
@@ -105,11 +105,11 @@ export class SelectionGhost {
     }
     if (this.texPlace) this.texPlace.visible = false;
     this.place.visible = true;
-    this.place.scale.set(s, s, s);
+    this.place.scale.set(sx, sy, sz);
     this.place.position.set(
-      anchor[0] * CELL_SIZE + s / 2,
-      anchor[1] * CELL_SIZE + s / 2,
-      anchor[2] * CELL_SIZE + s / 2,
+      anchor[0] * CELL_SIZE + sx / 2,
+      anchor[1] * CELL_SIZE + sy / 2,
+      anchor[2] * CELL_SIZE + sz / 2,
     );
     this.place.material.color.setHex(blocked ? BLOCKED_COLOR : PLACE_COLOR);
   }
@@ -121,15 +121,15 @@ export class SelectionGhost {
     const key = `${blockId}|${size}|${rotation}`;
     const cached = this._previewCache.get(key);
     if (cached) return cached;
-    const span = spanFor(size);
+    const [sx, sy, sz] = spanVecFor(size, rotation);
     const voxel = { type: blockId, size, rotation, anchor: [0, 0, 0] };
     const stub = {
       get: (x, y, z) =>
-        x >= 0 && x < span && y >= 0 && y < span && z >= 0 && z < span ? voxel : null,
+        x >= 0 && x < sx && y >= 0 && y < sy && z >= 0 && z < sz ? voxel : null,
     };
     let data;
     try {
-      data = buildChunkMesh(stub, null, [0, 0, 0], span, this._tileIndexFor, this._atlasDims);
+      data = buildChunkMesh(stub, null, [0, 0, 0], Math.max(sx, sy, sz), this._tileIndexFor, this._atlasDims);
     } catch {
       return null;
     }
@@ -211,14 +211,14 @@ export class SelectionGhost {
   }
 
   /** Show the removal outline around the hovered voxel. */
-  showRemoval(anchor, size) {
-    const s = spanFor(size) * CELL_SIZE;
+  showRemoval(anchor, size, rotation = 0) {
+    const [sx, sy, sz] = spanVecFor(size, rotation).map((n) => n * CELL_SIZE);
     this.remove.visible = true;
-    this.remove.scale.set(s, s, s);
+    this.remove.scale.set(sx, sy, sz);
     this.remove.position.set(
-      anchor[0] * CELL_SIZE + s / 2,
-      anchor[1] * CELL_SIZE + s / 2,
-      anchor[2] * CELL_SIZE + s / 2,
+      anchor[0] * CELL_SIZE + sx / 2,
+      anchor[1] * CELL_SIZE + sy / 2,
+      anchor[2] * CELL_SIZE + sz / 2,
     );
   }
 

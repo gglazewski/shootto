@@ -11,6 +11,8 @@ import { BuildTool } from '../src/editor/tools/BuildTool.js';
 import { SquareTool } from '../src/editor/tools/SquareTool.js';
 import { SpawnTool } from '../src/editor/tools/SpawnTool.js';
 import { MobTool } from '../src/editor/tools/MobTool.js';
+import { ItemTool } from '../src/editor/tools/ItemTool.js';
+import { registerItem } from '../src/engine/ItemRegistry.js';
 import { DecalTool, faceFromNormal } from '../src/editor/tools/DecalTool.js';
 import { orthogonalLineAnchors } from '../src/editor/tools/line.js';
 import { placeItemCommand, removeItemCommand } from '../src/editor/commands.js';
@@ -22,7 +24,7 @@ import { ToolRing } from '../src/editor/ToolRing.js';
 import { Toolbar } from '../src/editor/Toolbar.js';
 import { Notice, onNotice } from '../src/editor/Notice.js';
 import { tileFor } from '../src/engine/VoxelTypes.js';
-import { renderAtlasRGBA, generateTilePixels, tilesForBlocks, TILE_SIZE } from '../src/textures/TextureAtlas.js';
+import { renderAtlasRGBA, generateTilePixels, tilesForBlocks, listTileNames, TILE_SIZE, ATLAS_WIDTH, ATLAS_HEIGHT } from '../src/textures/TextureAtlas.js';
 
 // --- pure helpers ---
 
@@ -119,6 +121,54 @@ test('tool removes the whole voxel under the cursor', () => {
   const r = tool.remove();
   assert.equal(r.ok, true);
   assert.equal(world.count, 0);
+});
+
+test('build tool places a block on top of a placed object', () => {
+  const { world, camera, tool } = makeTool();
+  world.placeItem('crate', SIZE.SMALL, 0, 1, 0); // object resting on the grass
+  camera.position.set(0.25, 5, 0.25);
+  camera.lookAt(0.25, 0.75, 0.26); // aim down at the crate's top face
+  const r = tool.place();
+  assert.equal(r.ok, true);
+  assert.deepEqual(r.anchor, [0, 2, 0]);
+  assert.equal(world.get(0, 2, 0).type, 'sand');
+});
+
+test('build tool RMB on a placed object removes nothing', () => {
+  const { world, camera, tool } = makeTool();
+  world.placeItem('crate', SIZE.SMALL, 0, 1, 0);
+  camera.position.set(0.25, 5, 0.25);
+  camera.lookAt(0.25, 0.75, 0.26);
+  const r = tool.remove();
+  assert.equal(r.ok, false);
+  assert.ok(world.itemAt(0, 1, 0)); // the object survives
+  assert.equal(world.count, 1); // so does the grass under it
+});
+
+test('item tool stacks an item on top of a placed item', () => {
+  registerItem({ id: 'table', name: 'Table', size: SIZE.SMALL, microVoxels: [] });
+  registerItem({ id: 'cup', name: 'Cup', size: SIZE.SMALL, microVoxels: [] });
+  const world = new World();
+  world.place('grass', SIZE.SMALL, 0, 0, 0);
+  world.placeItem('table', SIZE.SMALL, 0, 1, 0);
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 5, 0.25);
+  camera.lookAt(0.25, 0.75, 0.26); // aim down at the table's top face
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({ THREE, scene });
+  const state = new EditorState({ itemId: 'cup' });
+  const tool = new ItemTool({ THREE, world, camera, scene, ghost, state, history: new History() });
+
+  // Hovering the table previews the placement above it AND outlines the
+  // table for removal — stacking must be visible, not just possible.
+  tool.update(0);
+  assert.equal(ghost.remove.visible, true);
+  assert.equal(tool._preview.group.visible, true);
+
+  tool.onMouseDown(0);
+  const cup = world.itemAt(0, 2, 0);
+  assert.ok(cup, 'cup lands on the cell above the table');
+  assert.equal(cup.itemId, 'cup');
 });
 
 test('updateGhost shows placement at target and removal outline', () => {
@@ -1057,10 +1107,10 @@ test('clearChunks empties the chunk cache', () => {
 test('atlas renders the expected dimensions and tile map', () => {
   const names = ['grass_top', 'sand'];
   const { width, height, data, map, atlas } = renderAtlasRGBA(names);
-  assert.equal(width, TILE_SIZE * 8);
-  assert.equal(height, TILE_SIZE * 14);
+  assert.equal(width, TILE_SIZE * ATLAS_WIDTH);
+  assert.equal(height, TILE_SIZE * ATLAS_HEIGHT);
   assert.equal(map.size, 2);
-  assert.deepEqual(atlas, { width: 8, height: 14 });
+  assert.deepEqual(atlas, { width: ATLAS_WIDTH, height: ATLAS_HEIGHT });
   assert.ok(data.length > 0);
 });
 
@@ -1076,7 +1126,7 @@ test('multi-slot decal tiles pack below the small tiles, aligned to slots', () =
 });
 
 test('block definitions reference only known tiles', () => {
-  const known = new Set(['grass_top', 'grass_side', 'dirt', 'stone', 'gravel', 'sand', 'concrete', 'asphalt', 'asphalt_line', 'brick', 'rubble', 'metal', 'sandbags', 'wood_side', 'wood_top', 'wood_side_light', 'wood_top_light', 'wood_side_dark', 'wood_top_dark', 'planks', 'planks_light', 'planks_dark', 'glass', 'chainlink', 'bars', 'boards', 'asphalt_corner', 'lamp', 'neon_red', 'lamp_off', 'neon_off', 'curb_side', 'curb_top', 'canopy', 'canopy_trim', 'tile_floor', 'plaster', 'shutter', 'decal_blood', 'decal_blood2', 'decal_blood3', 'decal_blood_pool', 'decal_crack', 'decal_bullets', 'decal_clothes', 'decal_glass', 'decal_papers', 'decal_cans', 'decal_stain', 'decal_food', 'decal_graffiti', 'decal_stop', 'decal_arrow']);
+  const known = new Set(listTileNames());
   for (const name of tilesForBlocks()) assert.ok(known.has(name), `unknown tile ${name}`);
 });
 

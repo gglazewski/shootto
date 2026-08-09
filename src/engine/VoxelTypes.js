@@ -6,6 +6,7 @@
 export const SIZE = Object.freeze({
   SMALL: 'small',
   BIG: 'big',
+  DOOR: 'door',
 });
 
 /**
@@ -19,14 +20,32 @@ export const SIZE = Object.freeze({
  *   transparent by the light field.
  * @property {number} [light]     block-light emitted by this voxel, 0..15
  * @property {boolean} [transparent]  true = rendered in the transparent pass
- * @property {'cube'|'pane'} [shape]  'cube' (default) = full block faces.
+ * @property {'cube'|'pane'|'door'} [shape]  'cube' (default) = full block faces.
  *   'pane' = a single centered quad (chain-link fence, bars, barricade
  *   boards); the tile's alpha channel cuts out the gaps and the voxel's
  *   rotation turns the pane (0/180 = along x, 90/270 = along z). Panes are
  *   depth-written cutouts (not alpha-blended), so they sort correctly
  *   against each other.
+ *   'door' = a centered slab with real thickness spanning a SIZE.DOOR
+ *   footprint (2 cells wide x 4 tall); rotation orients it like a pane and
+ *   picks the swing side of the open phase (see engine/Doors.js).
  * @property {boolean} [shootThrough]  true = attack rays (bullets, swings)
  *   pass through this block; it still blocks movement.
+ * @property {boolean} [mixedAlpha]  true = the tile art mixes opaque and
+ *   translucent texels (framed window, glazed doors). Meshed into both
+ *   passes: solid texels depth-write in the opaque cutout pass, glass
+ *   texels (alpha < 0.5) blend in the transparent pass.
+ * @property {boolean} [glass]  true = a glass surface: attacks pass through
+ *   and burst glass shards at the pane instead of puffing smoke.
+ * @property {boolean} [passable]  true = the block does not block movement
+ *   (open door phases). Collision facades return null for these cells.
+ * @property {string} [doorOpen]   block id of this door's open phase.
+ * @property {string} [doorClosed] back-reference from the open phase; also
+ *   the id a door is normalized to when a map is saved.
+ * @property {string} [fixedSize]  pins the build size for this block (doors
+ *   are always SIZE.DOOR regardless of the small/big toggle).
+ * @property {[number,number]} [tileSpan]  atlas slots [cols, rows] of this
+ *   block's tile art (doors: [2,4] = one 32x64 px artwork across the leaf).
  * @property {boolean} [hidden]  true = kept out of the editor palette
  *   (internal states like the blinking lights' off phase).
  * @property {'flicker'} [blink]  the game strobes this block between itself
@@ -63,7 +82,9 @@ const BLOCKS = [
   { id: 'planks', name: 'Planks', tiles: 'planks' },
   { id: 'planks_light', name: 'Light Planks', tiles: 'planks_light' },
   { id: 'planks_dark', name: 'Dark Planks', tiles: 'planks_dark' },
-  { id: 'glass', name: 'Glass', tiles: 'glass', opacity: 0, transparent: true },
+  // Glass is a pane (like fences): a centered quad, alpha-blended. Attacks
+  // pass through it and burst glass shards at the pane (`glass` flag).
+  { id: 'glass', name: 'Glass', tiles: 'glass', shape: 'pane', opacity: 0, transparent: true, shootThrough: true, glass: true },
   // Lights are directional (emitFaces): a ceiling panel shines DOWN only, a
   // neon tube sideways — embedded in a wall or roof they never light the far
   // side. Blinking variants (driven by engine/Blinkers.js in both the game
@@ -74,9 +95,44 @@ const BLOCKS = [
   { id: 'lamp_blink_off', name: 'Ceiling Light (off)', tiles: 'lamp_off', hidden: true, blinkOn: 'lamp_blink' },
   { id: 'neon_blink', name: 'Red Neon (blinking)', tiles: 'neon_red', light: 9, emitFaces: ['px', 'nx', 'pz', 'nz'], blink: 'flicker', blinkOff: 'neon_blink_off' },
   { id: 'neon_blink_off', name: 'Red Neon (off)', tiles: 'neon_off', hidden: true, blinkOn: 'neon_blink' },
+  // --- mid-90s Poland set: post-communist estates, bazaars, kiosks ---
+  { id: 'panel', name: 'Prefab Panel', tiles: 'panel' },
+  { id: 'plaster_pastel', name: 'Pastel Plaster', tiles: 'plaster_pastel' },
+  { id: 'lastryko', name: 'Terrazzo Floor', tiles: 'lastryko' },
+  { id: 'kiosk', name: 'Kiosk Panel', tiles: 'kiosk' },
+  { id: 'blacha', name: 'Corrugated Steel', tiles: 'blacha' },
+  { id: 'paving', name: 'Paving Slabs', tiles: { py: 'paving', ny: 'concrete', px: 'concrete', nx: 'concrete', pz: 'concrete', nz: 'concrete' } },
+  { id: 'brick_sooty', name: 'Sooty Brick', tiles: 'brick_sooty' },
+  { id: 'lino', name: 'Linoleum', tiles: 'lino' },
+  { id: 'neon_white', name: 'White Neon', tiles: 'neon_white', light: 10, emitFaces: ['px', 'nx', 'pz', 'nz'] },
+  { id: 'neon_white_blink', name: 'White Neon (blinking)', tiles: 'neon_white', light: 10, emitFaces: ['px', 'nx', 'pz', 'nz'], blink: 'flicker', blinkOff: 'neon_white_blink_off' },
+  { id: 'neon_white_blink_off', name: 'White Neon (off)', tiles: 'neon_white_off', hidden: true, blinkOn: 'neon_white_blink' },
+  // --- estate facades & garage colony (built from the examples/ photos) ---
+  { id: 'plaster_yellow', name: 'Pastel Plaster (yellow)', tiles: 'plaster_yellow' },
+  { id: 'plaster_orange', name: 'Pastel Plaster (orange)', tiles: 'plaster_orange' },
+  { id: 'plaster_green', name: 'Pastel Plaster (green)', tiles: 'plaster_green' },
+  { id: 'plaster_blue', name: 'Pastel Plaster (blue)', tiles: 'plaster_blue' },
+  { id: 'brick_yellow', name: 'Yellow Brick', tiles: 'brick_yellow' },
+  { id: 'papa', name: 'Roofing Felt', tiles: 'papa' },
+  { id: 'garage_brown', name: 'Garage Door (brown)', tiles: 'garage_brown' },
+  { id: 'garage_green', name: 'Garage Door (green)', tiles: 'garage_green' },
+  { id: 'garage_red', name: 'Garage Door (red)', tiles: 'garage_red' },
+  { id: 'window_white', name: 'Framed Window', tiles: 'window_white', opacity: 0, mixedAlpha: true, shootThrough: true, glass: true },
+  { id: 'balcony_rail', name: 'Balcony Balustrade', tiles: 'balcony_rail', shape: 'pane', opacity: 0 },
   { id: 'fence', name: 'Chain-link Fence', tiles: 'chainlink', shape: 'pane', opacity: 0, shootThrough: true },
+  { id: 'fence_wood', name: 'Wooden Fence', tiles: 'pickets', shape: 'pane', opacity: 0, shootThrough: true },
   { id: 'bars', name: 'Metal Bars', tiles: 'bars', shape: 'pane', opacity: 0, shootThrough: true },
   { id: 'barricade', name: 'Barricade Boards', tiles: 'boards', shape: 'pane', opacity: 0, shootThrough: true },
+  // --- doors (one voxel spanning 2x4 cells; open/closed = id swap like the
+  // blinking lights, driven by engine/Doors.js; zombies can't toggle them) ---
+  { id: 'door_wood', name: 'Entrance Door', tiles: 'door_wood', shape: 'door', opacity: 0, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_wood_open' },
+  { id: 'door_wood_open', name: 'Entrance Door (open)', tiles: 'door_wood', shape: 'door', opacity: 0, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_wood' },
+  { id: 'door_white', name: 'Interior Door', tiles: 'door_white', shape: 'door', opacity: 0, mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_white_open' },
+  { id: 'door_white_open', name: 'Interior Door (open)', tiles: 'door_white', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_white' },
+  { id: 'door_shop', name: 'Shop Door', tiles: 'door_shop', shape: 'door', opacity: 0, mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_shop_open' },
+  { id: 'door_shop_open', name: 'Shop Door (open)', tiles: 'door_shop', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_shop' },
+  { id: 'door_steel', name: 'Steel Door', tiles: 'door_steel', shape: 'door', opacity: 0, mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_steel_open' },
+  { id: 'door_steel_open', name: 'Steel Door (open)', tiles: 'door_steel', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_steel' },
 ];
 
 const REGISTRY = new Map(BLOCKS.map((b) => [b.id, b]));
@@ -138,7 +194,23 @@ export function isTransparent(id) {
   return REGISTRY.get(id)?.transparent === true;
 }
 
-/** Mesh shape of a block id: 'cube' (default) or 'pane' (centered quad). */
+/** True if a block's tile art mixes opaque and translucent texels (framed
+ *  windows, glazed doors). Such blocks are meshed into BOTH passes: the
+ *  opaque cutout pass draws the solid texels depth-written (correct
+ *  occlusion for the frame), the transparent pass alpha-blends the glass
+ *  texels (alpha < 0.5, which the opaque pass discards). */
+export function isMixedAlpha(id) {
+  return REGISTRY.get(id)?.mixedAlpha === true;
+}
+
+/** True if a block is a glass surface: attack rays pass through it and the
+ *  hit bursts glass shards instead of a smoke puff. */
+export function isGlass(id) {
+  return REGISTRY.get(id)?.glass === true;
+}
+
+/** Mesh shape of a block id: 'cube' (default), 'pane' (centered quad) or
+ *  'door' (centered slab with thickness). */
 export function shapeFor(id) {
   return REGISTRY.get(id)?.shape ?? 'cube';
 }
@@ -146,6 +218,11 @@ export function shapeFor(id) {
 /** True if attack rays pass through this block (it still blocks movement). */
 export function isShootThrough(id) {
   return REGISTRY.get(id)?.shootThrough === true;
+}
+
+/** True if this block does not block movement (open door phases). */
+export function isPassable(id) {
+  return REGISTRY.get(id)?.passable === true;
 }
 
 /** Register a block definition at runtime (mods/tests). Replaces any block
@@ -189,6 +266,17 @@ const DECALS = [
   { id: 'decal_graffiti', name: 'Graffiti', tile: 'decal_graffiti', span: [4, 2] },
   { id: 'decal_stop', name: 'STOP Marking', tile: 'decal_stop', span: [4, 4] },
   { id: 'decal_arrow', name: 'Road Arrow', tile: 'decal_arrow', span: [2, 4] },
+  // --- mid-90s Poland set ---
+  { id: 'decal_poster', name: 'Peeling Poster', tile: 'decal_poster', span: [2, 2] },
+  { id: 'decal_sklep', name: 'SKLEP Sign', tile: 'decal_sklep', span: [4, 1] },
+  { id: 'decal_club', name: 'Club Graffiti', tile: 'decal_club', span: [4, 2] },
+  { id: 'decal_damp', name: 'Damp Stain', tile: 'decal_damp', span: [2, 2] },
+  { id: 'decal_ads', name: 'Tear-off Ads', tile: 'decal_ads' },
+  { id: 'decal_zebra', name: 'Zebra Crossing', tile: 'decal_zebra', span: [2, 4] },
+  { id: 'decal_rug', name: 'Rug', tile: 'decal_rug', span: [2, 2] },
+  { id: 'decal_bottles', name: 'Bottles & Caps', tile: 'decal_bottles' },
+  { id: 'decal_curtain', name: 'Lace Curtain', tile: 'decal_curtain' },
+  { id: 'decal_hopscotch', name: 'Chalk Hopscotch', tile: 'decal_hopscotch', span: [1, 4] },
 ];
 
 const DECAL_REGISTRY = new Map(DECALS.map((d) => [d.id, d]));
@@ -209,4 +297,11 @@ export function listDecalIds() {
 /** True if the id resolves to a known decal. */
 export function isDecalId(id) {
   return DECAL_REGISTRY.has(id);
+}
+
+/** Register a decal definition at runtime (text signs, mods, tests).
+ *  Replaces any decal with the same id. The tile it references must exist
+ *  in the atlas (static or runtime-registered). */
+export function registerDecal(def) {
+  DECAL_REGISTRY.set(def.id, def);
 }
