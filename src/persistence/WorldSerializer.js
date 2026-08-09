@@ -126,7 +126,7 @@ export function deserialize(text) {
       errors.push('Skipped malformed block entry');
       continue;
     }
-    const size = b.size === SIZE.BIG || b.size === SIZE.DOOR || b.size === SIZE.DOOR3 ? b.size : SIZE.SMALL;
+    const size = b.size === SIZE.BIG || b.size === SIZE.DOOR || b.size === SIZE.DOOR3 || b.size === SIZE.SIDELIGHT ? b.size : SIZE.SMALL;
     try {
       assertValidBlockId(b.type);
     } catch (e) {

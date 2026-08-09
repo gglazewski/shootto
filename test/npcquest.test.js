@@ -43,6 +43,17 @@ test('the granny ships as a built-in NPC', () => {
   assert.ok(BUILTIN_NPCS.granny.dialog.length >= 2);
 });
 
+test('bolek — the player’s father — ships as a built-in NPC', () => {
+  fresh();
+  assert.ok(isNpcId('bolek'));
+  const bolek = getNpc('bolek');
+  assert.equal(bolek.name, 'Bolek');
+  assert.equal(bolek.skin, 'bolek', 'wears his own wheelchair sheet');
+  assert.ok(bolek.height < BUILTIN_NPCS.granny.height, 'seated, so shorter than the granny');
+  assert.ok(bolek.dialog.length >= 2);
+  assert.ok(bolek.topics.length >= 1);
+});
+
 test('registerNpc normalizes and rejects bad ids', () => {
   fresh();
   assert.equal(registerNpc({ id: 'Bad Id!' }), null);
@@ -65,7 +76,8 @@ test('NPC registry round-trips, and deletion is authoritative', () => {
   deserializeNpcRegistry(text);
   assert.ok(!isNpcId('granny'), '...but the saved roster wins on load');
   assert.ok(isNpcId('doc'));
-  assert.equal(listNpcs().length, 1);
+  assert.ok(isNpcId('bolek'), 'the untouched built-in rode along in the roster');
+  assert.equal(listNpcs().length, 2);
 });
 
 // --- quest registry ---
@@ -74,6 +86,26 @@ test('the granny questline ships built in', () => {
   fresh();
   assert.ok(getQuestline('granny').length >= 3);
   assert.equal(BUILTIN_QUESTLINES.granny.length, getQuestline('granny').length);
+});
+
+test('bolek’s questline opens with the trip downstairs', () => {
+  fresh();
+  const [first] = getQuestline('bolek');
+  assert.equal(first.id, 'bolek-downstairs');
+  assert.equal(first.objective.type, 'kill');
+  assert.equal(first.objective.count, 1);
+  assert.ok(first.offer.some((l) => l.includes('baseball bat')), 'dad reminds the player to take the bat');
+
+  // The line plays through: accept, put down what's downstairs, turn in.
+  const log = new QuestLog();
+  assert.equal(log.statusFor('bolek'), 'available');
+  log.accept('bolek');
+  const [event] = log.onKill('zombie');
+  assert.equal(event.ready, true, 'one kill fulfills the look-see');
+  const { reward } = log.complete('bolek');
+  assert.equal(reward.health, 25);
+  assert.equal(log.statusFor('bolek'), 'available', 'the stairwell tier unlocks');
+  assert.equal(log.questFor('bolek').id, 'bolek-stairwell');
 });
 
 test('normalizeQuest fills defaults and drops garbage', () => {
@@ -295,7 +327,7 @@ function makeNpcTool() {
 test('NPC tool places a spawn at the hovered face and removes it with RMB', () => {
   const { world, tool } = makeNpcTool();
   tool.onMouseDown(0);
-  assert.deepEqual(world.npcSpawnAt(0, 1, 0), { type: 'granny', x: 0, y: 1, z: 0 });
+  assert.deepEqual(world.npcSpawnAt(0, 1, 0), { type: 'bolek', x: 0, y: 1, z: 0 });
   assert.equal(world.get(0, 1, 0), null, 'NPC spawns are not voxels');
   tool.onMouseDown(0);
   assert.equal(world.npcSpawns.size, 1, 'duplicate rejected');
@@ -309,15 +341,19 @@ test('NPC tool edits are undoable', () => {
   history.undo();
   assert.equal(world.npcSpawnAt(0, 1, 0), null);
   history.redo();
-  assert.deepEqual(world.npcSpawnAt(0, 1, 0), { type: 'granny', x: 0, y: 1, z: 0 });
+  assert.deepEqual(world.npcSpawnAt(0, 1, 0), { type: 'bolek', x: 0, y: 1, z: 0 });
 });
 
 test('NPC tool cycles through registered types, including authored ones', () => {
   const { tool } = makeNpcTool();
   registerNpc({ id: 'doc', name: 'Doc', skin: 'granny', height: 1.7, dialog: ['hi'] });
   const first = tool.typeId;
-  tool.cycleType();
-  assert.notEqual(tool.typeId, first);
+  const seen = new Set([first]);
+  for (let i = 1; i < listNpcs().length; i++) {
+    tool.cycleType();
+    seen.add(tool.typeId);
+  }
+  assert.equal(seen.size, listNpcs().length, 'visits every registered type, authored included');
   tool.cycleType();
   assert.equal(tool.typeId, first, 'wraps around');
   fresh();

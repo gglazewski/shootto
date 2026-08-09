@@ -40,7 +40,25 @@ SHEETS = {
     'firefighter': ROOT / 'firefighter.png',
 }
 
+# NPC-only character sheets: a single band of two idle poses on the same
+# magenta backdrop — no walk/attack/death art, because NPCs only ever play
+# idle (see game/NPC.js). The two idles fill every frame of the strip so it
+# indexes exactly like a mob's, and NPC_ONLY_SHEETS tells the game to never
+# hand these skins to a random mob spawn.
+NPC_SHEETS = {
+    'bolek': ROOT / 'examples' / 'bolek.png',
+}
+NPC_POSES = [[['idle0'], ['idle1']]]
+NPC_FRAME_MAP = {
+    'idle0': 'idle0', 'idle1': 'idle1',
+    'walk0': 'idle0', 'walk1': 'idle1',
+    'attack0': 'idle0', 'attack1': 'idle1',
+    'hurt0': 'idle0', 'hurt1': 'idle1',
+    'dying0': 'idle0', 'dying1': 'idle1', 'dead': 'idle0',
+}
+
 BG = np.array([193, 0, 143], dtype=np.float32)  # the sheets' chroma-key magenta
+NPC_BG = np.array([254, 1, 252], dtype=np.float32)  # the NPC sheets' brighter magenta
 
 # Group layout: poses grouped into three horizontal bands, each band split into
 # a left and a right group, each group read left to right.
@@ -99,18 +117,18 @@ def despeckle(keep, min_area):
     return out
 
 
-def key_out(path):
+def key_out(path, bg=BG):
     """Chroma-key a sheet -> (rgb, alpha), with the backdrop un-mixed from edges."""
     src = np.array(Image.open(path).convert('RGB')).astype(np.float32)
-    dist = np.abs(src - BG).sum(axis=2)
+    dist = np.abs(src - bg).sum(axis=2)
     alpha = np.clip((dist - 70.0) / 90.0, 0.0, 1.0)
     a3 = alpha[:, :, None]
-    rgb = np.clip(np.where(a3 > 0.02, (src - (1.0 - a3) * BG) / np.maximum(a3, 0.02), 0.0), 0, 255)
+    rgb = np.clip(np.where(a3 > 0.02, (src - (1.0 - a3) * bg) / np.maximum(a3, 0.02), 0.0), 0, 255)
     return rgb, alpha
 
 
-def find_poses(alpha):
-    """Locate the pose blobs and name them by the POSES layout. -> {name: box}."""
+def find_poses(alpha, layout=POSES):
+    """Locate the pose blobs and name them by the `layout` groups. -> {name: box}."""
     S = 4
     h, w = alpha.shape
     hh, ww = h // S, w // S
@@ -135,11 +153,11 @@ def find_poses(alpha):
         else:
             bands.append([box])
 
-    if len(bands) != len(POSES):
-        raise SystemExit(f'expected {len(POSES)} pose bands, found {len(bands)}')
+    if len(bands) != len(layout):
+        raise SystemExit(f'expected {len(layout)} pose bands, found {len(bands)}')
 
     named = {}
-    for band, groups in zip(bands, POSES):
+    for band, groups in zip(bands, layout):
         mid = alpha.shape[1] / 2
         left = sorted([b for b in band if b[0] < mid], key=lambda b: b[0])
         right = sorted([b for b in band if b[0] >= mid], key=lambda b: b[0])
@@ -198,6 +216,25 @@ def cut(rgb, alpha, box):
     else:
         anchor = w / 2.0
     return c, a, anchor
+
+
+def rescale_pose(pose, factor):
+    """Scale a cut pose (rgb, alpha, anchor) by `factor`, LANCZOS-filtered."""
+    c, a, anchor = pose
+    h, w = a.shape
+    size = (max(1, round(w * factor)), max(1, round(h * factor)))
+    rgb = np.asarray(Image.fromarray(np.clip(c, 0, 255).astype(np.uint8)).resize(size, Image.LANCZOS), np.float32)
+    alpha = np.asarray(Image.fromarray((a * 255).astype(np.uint8)).resize(size, Image.LANCZOS), np.float32) / 255.0
+    return rgb, np.clip(alpha, 0.0, 1.0), anchor * factor
+
+
+def stand_target_px(mob_poses):
+    """Hi-res standing height NPC art is scaled to match: the tallest mob pose
+    cut this run, or the last run's SHEET_STAND_ROWS when everything carried."""
+    heights = [a.shape[0] for sheet in mob_poses for _, a, _ in sheet.values()]
+    if heights:
+        return max(heights)
+    return int(re.search(r'SHEET_STAND_ROWS = (\d+)', OUT.read_text()).group(1)) * F
 
 
 def strip_for(poses, frame_w, frame_h):
@@ -318,6 +355,24 @@ for name, path in SHEETS.items():
     else:
         raise SystemExit(f'{name}: no {path.name} and nothing to carry over')
 
+# NPC sheets: cut the two idles, scale them to the mob sheets' standing height
+# (the source art is drawn at a different resolution), and fill the whole
+# 12-frame order from them.
+npc_target = stand_target_px(list(cut_sheets.values()))
+for name, path in NPC_SHEETS.items():
+    if path.exists():
+        rgb, alpha = key_out(path, NPC_BG)
+        idles = {pose: cut(rgb, alpha, box) for pose, box in find_poses(alpha, NPC_POSES).items()}
+        factor = npc_target / max(a.shape[0] for _, a, _ in idles.values())
+        idles = {pose: rescale_pose(p, factor) for pose, p in idles.items()}
+        cut_sheets[name] = {frame: idles[src] for frame, src in NPC_FRAME_MAP.items()}
+        print(f'{name}: 2 idle poses from {path.name}, scaled x{factor:.3f}')
+    elif name in carried:
+        reused[name] = carried[name]
+        print(f'{name}: {path.name} is missing — carrying the strip from the last run')
+    else:
+        raise SystemExit(f'{name}: no {path.name} and nothing to carry over')
+
 # One frame box for every sheet: the largest pose (plus padding, rounded to F)
 # or the largest carried strip, whichever is bigger.
 wide = max([a.shape[1] for s in cut_sheets.values() for _, a, _ in s.values()] or [0])
@@ -326,7 +381,7 @@ FRAME_W = max([-(-(wide + 2 * PAD_X) // F)] + [w for w, _ in reused.values()])
 FRAME_H = max([-(-(tall + 2 * PAD_Y) // F)] + [s.shape[0] for _, s in reused.values()])
 
 strips = {}
-for name in SHEETS:
+for name in list(SHEETS) + list(NPC_SHEETS):
     if name in cut_sheets:
         strips[name] = strip_for(cut_sheets[name], FRAME_W, FRAME_H)
     else:
@@ -384,6 +439,9 @@ export const SHEET_FRAME_COUNT = {len(FRAME_ORDER)};
  */
 export const SHEET_STAND_ROWS = {STAND_ROWS};
 export const SHEET_GROUND_ROW = {GROUND_ROW};
+
+/** Character sheets that belong to NPCs only — random mob spawns skip them. */
+export const NPC_ONLY_SHEETS = Object.freeze({list(NPC_SHEETS)!r});
 
 const B64 = {{
 {',\n'.join(entries)},

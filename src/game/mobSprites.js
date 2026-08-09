@@ -17,6 +17,7 @@
 
 import {
   MOB_SHEET_URLS,
+  NPC_ONLY_SHEETS,
   SHEET_FRAME_W,
   SHEET_FRAME_H,
   SHEET_FRAME_COUNT,
@@ -40,16 +41,20 @@ export const FRAMES = Object.freeze({
 export const FRAME_COUNT = SHEET_FRAME_COUNT;
 
 /**
- * The characters that can walk out of a spawn point, in a fixed order so a
- * seeded pick stays stable between runs. Every mob type draws from all of them
- * — a spawn's type decides its stats and size, its skin only decides its look.
+ * Every drawn character sheet, in a fixed order so a seeded pick stays stable
+ * between runs. A spawn's type decides its stats and size, its skin only
+ * decides its look; NPCs pick from this full list too (see NpcRegistry).
  */
 export const MOB_SKINS = Object.freeze(Object.keys(MOB_SHEET_URLS));
 const DEFAULT_SKIN = MOB_SKINS[0];
 
+/** The characters a random spawn may wear — NPC-only sheets (Bolek in his
+ *  wheelchair) never shamble out of a spawn point. */
+export const SPAWN_SKINS = Object.freeze(MOB_SKINS.filter((s) => !NPC_ONLY_SHEETS.includes(s)));
+
 /** A random character for a freshly spawned mob. @param {() => number} [rng] */
 export function randomMobSkin(rng = Math.random) {
-  return MOB_SKINS[Math.floor(rng() * MOB_SKINS.length) % MOB_SKINS.length];
+  return SPAWN_SKINS[Math.floor(rng() * SPAWN_SKINS.length) % SPAWN_SKINS.length];
 }
 
 /** Decoded strips, shared by every sheet built from them. Keyed by skin name. */

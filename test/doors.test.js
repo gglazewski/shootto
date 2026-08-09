@@ -105,9 +105,13 @@ test('door tiles claim 2x4 atlas slots and the atlas still packs', () => {
   assert.deepEqual(tileSpan('door_wood'), [2, 4]);
   assert.deepEqual(tileSpan('door_white'), [2, 4]);
   assert.deepEqual(tileSpan('door_shop'), [2, 4]);
+  assert.deepEqual(tileSpan('door_blok'), [2, 4]);
+  assert.deepEqual(tileSpan('sidelight'), [1, 2]);
   const { map } = renderAtlasRGBA(); // throws if the atlas overflows
   assert.ok(map.has('door_wood'));
   assert.ok(map.has('door_shop'));
+  assert.ok(map.has('door_blok'));
+  assert.ok(map.has('sidelight'));
 });
 
 test('mesher emits a centered slab with thickness, swung when open', () => {
@@ -211,4 +215,70 @@ test('door defs are wired symmetrically', () => {
     assert.equal(shapeFor(id), 'door');
     assert.equal(shapeFor(closed.doorOpen), 'door');
   }
+});
+
+test('sidelight size spans 1x2x1 and turns with odd rotations', () => {
+  assert.deepEqual(spanVecFor(SIZE.SIDELIGHT, 0), [1, 2, 1]);
+  assert.deepEqual(spanVecFor(SIZE.SIDELIGHT, 1), [1, 2, 1]);
+  assert.equal(cellsFor(0, 0, 0, SIZE.SIDELIGHT, 0).length, 2);
+});
+
+test('sidelight is a fixed glazed panel, not a door', () => {
+  const def = getBlock('sidelight');
+  assert.equal(def.shape, 'door'); // meshed as a slab
+  assert.equal(def.fixedSize, SIZE.SIDELIGHT);
+  assert.equal(def.opacity, 0); // glazed: light passes
+  assert.equal(def.doorOpen, undefined);
+  assert.equal(def.doorClosed, undefined);
+  const world = new World();
+  assert.ok(world.place('sidelight', SIZE.SIDELIGHT, 0, 0, 0, 0));
+  const v = world.get(0, 0, 0);
+  assert.ok(!isDoorVoxel(v));
+  assert.ok(!canToggle(v, 'player'));
+  assert.equal(toggleDoor(world, v), false);
+});
+
+test('blok entrance is a 2x4 leaf beside fixed sidelights', () => {
+  const closed = getBlock('door_blok');
+  assert.equal(closed.fixedSize, SIZE.DOOR);
+  assert.deepEqual(closed.tileSpan, [2, 4]);
+  const open = getBlock('door_blok_open');
+  assert.equal(open.doorClosed, 'door_blok');
+  assert.equal(open.passable, true);
+
+  const world = new World();
+  // doorway: leaf at z=0..1, sidelights stacked in the z=2 column
+  assert.ok(world.place('door_blok', SIZE.DOOR, 0, 0, 0, 0));
+  assert.ok(world.place('sidelight', SIZE.SIDELIGHT, 2, 0, 0, 0));
+  assert.ok(world.place('sidelight', SIZE.SIDELIGHT, 2, 2, 0, 0));
+  const solid = collisionWorld(world);
+  assert.ok(solid.get(0, 0, 0)); // closed leaf blocks
+  assert.ok(solid.get(2, 0, 0)); // sidelight always blocks
+  const leaf = world.get(0, 0, 0);
+  assert.ok(toggleDoor(world, leaf));
+  assert.equal(solid.get(0, 0, 0), null); // open leaf is passable
+  assert.ok(solid.get(2, 0, 0)); // ...the sidelight is not
+});
+
+test('sidelight meshes as a thin glazed slab, 0.5m wide x 1m tall', () => {
+  const tileIndexFor = () => 0;
+  const atlas = { width: 8, height: 24 };
+  const voxel = { type: 'sidelight', size: SIZE.SIDELIGHT, rotation: 0, anchor: [0, 0, 0] };
+  const stub = { get: (x, y, z) => (x === 0 && y >= 0 && y < 2 && z === 0 ? voxel : null) };
+  const mesh = buildChunkMesh(stub, null, [0, 0, 0], 4, tileIndexFor, atlas);
+  const bounds = (positions, axis) => {
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = axis; i < positions.length; i += 3) {
+      lo = Math.min(lo, positions[i]);
+      hi = Math.max(hi, positions[i]);
+    }
+    return [lo, hi];
+  };
+  assert.deepEqual(bounds(mesh.positions, 0), [0, 0.5]);
+  assert.deepEqual(bounds(mesh.positions, 1), [0, 1]);
+  const [zLo, zHi] = bounds(mesh.positions, 2);
+  assert.ok(Math.abs(zHi - zLo - 0.12) < 1e-6, 'panel is 12cm thick');
+  // glazed panel: solid frame texels depth-write, glass blends
+  assert.ok(mesh.transparent, 'glass texels mesh into the transparent pass');
 });

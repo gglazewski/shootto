@@ -8,6 +8,7 @@ export const SIZE = Object.freeze({
   BIG: 'big',
   DOOR: 'door',
   DOOR3: 'door3',
+  SIDELIGHT: 'sidelight',
 });
 
 /**
@@ -27,9 +28,11 @@ export const SIZE = Object.freeze({
  *   rotation turns the pane (0/180 = along x, 90/270 = along z). Panes are
  *   depth-written cutouts (not alpha-blended), so they sort correctly
  *   against each other.
- *   'door' = a centered slab with real thickness spanning a SIZE.DOOR
- *   footprint (2 cells wide x 4 tall); rotation orients it like a pane and
- *   picks the swing side of the open phase (see engine/Doors.js).
+ *   'door' = a centered slab with real thickness spanning its footprint
+ *   (SIZE.DOOR 2x4, SIZE.SIDELIGHT 1x2, ...); rotation orients it like a
+ *   pane and picks the swing side of the open phase (see engine/Doors.js).
+ *   Also used for fixed glazing panels (no doorOpen/doorClosed pair) — the
+ *   blok sidelight is a static slab meshed by the same code.
  * @property {boolean} [shootThrough]  true = attack rays (bullets, swings)
  *   pass through this block; it still blocks movement.
  * @property {boolean} [mixedAlpha]  true = the tile art mixes opaque and
@@ -136,10 +139,13 @@ const BLOCKS = [
   { id: 'door_shop_open', name: 'Shop Door (open)', tiles: 'door_shop', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_shop' },
   { id: 'door_steel', name: 'Steel Door', tiles: 'door_steel', shape: 'door', mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_steel_open' },
   { id: 'door_steel_open', name: 'Steel Door (open)', tiles: 'door_steel', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_steel' },
-  // Wielka płyta stairwell entrance: 3x4 cells — the leaf plus a fixed
-  // wired-glass sidelight in one aluminium frame (pair with the domofon decal)
-  { id: 'door_blok', name: 'Blok Entrance Door', tiles: 'door_blok', shape: 'door', mixedAlpha: true, fixedSize: SIZE.DOOR3, tileSpan: [3, 4], doorOpen: 'door_blok_open' },
-  { id: 'door_blok_open', name: 'Blok Entrance Door (open)', tiles: 'door_blok', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR3, tileSpan: [3, 4], doorClosed: 'door_blok' },
+  // Wielka płyta stairwell entrance (pair with the domofon decal): the leaf
+  // is a regular 2x4 door; the fixed wired-glass sidelight beside it is its
+  // own block (1x2 panels stacked to the doorway height), so only the leaf
+  // swings when the door opens.
+  { id: 'door_blok', name: 'Blok Entrance Door', tiles: 'door_blok', shape: 'door', mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_blok_open' },
+  { id: 'door_blok_open', name: 'Blok Entrance Door (open)', tiles: 'door_blok', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_blok' },
+  { id: 'sidelight', name: 'Blok Sidelight', tiles: 'sidelight', shape: 'door', mixedAlpha: true, opacity: 0, fixedSize: SIZE.SIDELIGHT, tileSpan: [1, 2] },
 ];
 
 const REGISTRY = new Map(BLOCKS.map((b) => [b.id, b]));

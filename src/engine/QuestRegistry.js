@@ -20,6 +20,72 @@
 import { isAmmoId } from './AmmoTypes.js';
 
 export const BUILTIN_QUESTLINES = Object.freeze({
+  // Bolek — the player's father, in his wheelchair upstairs. His line opens
+  // the game: he sends the player downstairs to find out what the noise is
+  // (and won't stop reminding them to take the baseball bat on the way).
+  bolek: [
+    {
+      id: 'bolek-downstairs',
+      title: 'Trouble Downstairs',
+      giver: 'bolek',
+      objective: { type: 'kill', target: 'any', count: 1, noun: 'zombie' },
+      offer: [
+        'You hear that? Something’s been banging around downstairs since before dawn, and old Nowak’s dog won’t stop howling.',
+        'These wheels don’t do stairs, kid, so it has to be you. Go down and see what’s going on. Look, deal with it if you must — but come straight back.',
+        'And take the baseball bat by the door. Your old man doesn’t swing it like he used to, but it’ll serve you fine. Don’t you dare go down empty-handed.',
+      ],
+      offerPrompt: 'What’s that noise downstairs?',
+      turninPrompt: 'I checked downstairs.',
+      progressLine: 'You’re still up here? The bat, kid — it’s right there by the door. Grab it and go see what’s carrying on down there.',
+      ready: [
+        'Back in one piece — thank God. Well, out with it… The dead walking. So the radio wasn’t raving after all.',
+        'Sit a minute and let me look at you. Your mother would skin me alive if I sent you down there and didn’t patch you up after.',
+      ],
+      reward: { health: 25 },
+    },
+    {
+      id: 'bolek-stairwell',
+      title: 'Clear the Stairwell',
+      giver: 'bolek',
+      objective: { type: 'kill', target: 'any', count: 4, noun: 'zombies' },
+      offer: [
+        'If they’re inside the building, that door downstairs won’t hold long. And I’m in no shape to make a run for it — so we hold what we have.',
+        'Clear the stairwell, top to bottom. Four of them at least, by the sound of all that shuffling.',
+        'No heroics. Swing, step back, swing again — like I taught you with the wasps’ nest. Only slower, and uglier.',
+      ],
+      offerPrompt: 'What do we do now?',
+      turninPrompt: 'The stairwell is clear.',
+      progressLine: 'I can still hear them scraping down there. {n} of {count} gone quiet so far — keep at it, kid.',
+      ready: [
+        'Quiet. First proper quiet since this started — I’d forgotten what the building sounds like empty.',
+        'Here, I dug these out of the wardrobe while you were down there. From my army days. Never thought I’d be glad I hoarded them.',
+      ],
+      reward: { ammo: { type: 'pistol', amount: 15 } },
+    },
+    {
+      id: 'bolek-supplies',
+      title: 'Stock the Flat',
+      giver: 'bolek',
+      objective: { type: 'collect', kinds: ['ammo', 'armor'], count: 3, noun: 'supplies' },
+      offer: [
+        'We’re not going anywhere for a while, you and me. Which means we live on whatever you can carry up those stairs.',
+        'Work the flats and the yard while it’s calm. Ammunition, gear, anything useful — three good finds and we can breathe easier.',
+        'And eat something while you’re out. You take after your mother’s side — all bones and stubbornness.',
+      ],
+      offerPrompt: 'Do you need anything?',
+      turninPrompt: 'I brought supplies.',
+      progressLine: 'What have you found? {n} of {count}, by my count. Check under the stairs — people hide things under stairs.',
+      ready: [
+        'Good haul. We’ll make a proper pantry of this place yet.',
+        'Come here. You did well, kid — better than well. Your old man’s proud of you, wheels and all.',
+      ],
+      reward: { health: 100 },
+      epilogue: [
+        'Go on then — this town needs somebody on two good legs, and I need to know what’s past our street.',
+        'I’ll hold the fort. The dead can have the stairwell back over my dead body — and I mean that mostly as a figure of speech.',
+      ],
+    },
+  ],
   granny: [
     {
       id: 'granny-teapot',

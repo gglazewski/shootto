@@ -22,6 +22,38 @@ export const NPC_HEIGHT_MIN = 1.2;
 export const NPC_HEIGHT_MAX = 2.2;
 
 export const BUILTIN_NPCS = Object.freeze({
+  bolek: Object.freeze({
+    id: 'bolek',
+    name: 'Bolek',
+    skin: 'bolek',
+    // Seated in his wheelchair — the sprite fills the full standing rows, so
+    // height is his real-world seated height, head to wheel rims.
+    height: 1.35,
+    dialog: Object.freeze([
+      'Awake at last. I’ve been sitting here half the night listening to the world end and waiting for you to sleep through it.',
+      'Something’s wrong out there, kid. The phones are dead, the streetlights too — and the neighbors… the neighbors aren’t right.',
+      'Whatever this is, we handle it like we handle everything since your mother left for Halina’s: calm, careful, one thing at a time.',
+    ]),
+    greeting: 'Come here a moment, kid. These wheels don’t pace, so I do my worrying sitting still.',
+    topics: Object.freeze([
+      Object.freeze({
+        label: 'What happened to your legs?',
+        lines: Object.freeze([
+          'The scaffolding at the Zakłady, eleven years back. Three stories straight down, and the safety line was clipped to nothing.',
+          'I don’t miss the legs half as much as I miss the work. A man builds things his whole life, then one Tuesday he’s furniture.',
+          'Don’t make that face. I got the chair, the pension, and you — two out of three still work.',
+        ]),
+      }),
+      Object.freeze({
+        label: 'Where’s mom?',
+        lines: Object.freeze([
+          'At your aunt Halina’s, out in the country — went the week before all this started. First time in my life I’ve been glad she never listens to me.',
+          'Knowing her, she’s got the whole village fed, barricaded, and feeling guilty about something by now.',
+          'When the phones come back she’ll call, and we’ll tell her we had it all under control. Agreed?',
+        ]),
+      }),
+    ]),
+  }),
   granny: Object.freeze({
     id: 'granny',
     name: 'Granny',

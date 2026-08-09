@@ -80,6 +80,7 @@ const CHROME = [198, 200, 208];
 const FRAME = [172, 174, 180];
 const GLASS = [148, 186, 196];
 const TILE = [206, 218, 220];
+const BRASS = [192, 154, 78]; // mosiężne uchwyty
 
 // --- 1. Łóżko (bed), 1 x 1 x 2 m -------------------------------------------
 
@@ -205,6 +206,60 @@ function bathtub() {
   return c.def('wanna', 'Wanna');
 }
 
+// --- 6. Kredens (sideboard with glazed display top), 1.5 x 2 x 0.5 m -------
+
+function kredens() {
+  const c = new Canvas([3, 4, 1]); // 24 x 32 x 8
+  // plinth, inset at the front so the base reads as a skirting
+  c.box(1, 22, 0, 1, 1, 7, WOOD_D);
+  // lower carcass: sides, back, floor
+  c.box(0, 0, 2, 11, 0, 7, WOOD);
+  c.box(23, 23, 2, 11, 0, 7, WOOD);
+  c.box(1, 22, 2, 11, 7, 7, WOOD_D); // back panel
+  c.box(1, 22, 2, 2, 0, 7, WOOD_D); // carcass floor
+  // two cupboard doors, recessed one voxel behind the carcass edge
+  c.box(1, 22, 2, 7, 1, 2, WOOD_L);
+  c.clear(11, 12, 2, 7, 1, 1); // groove between the leaves
+  c.box(1, 22, 8, 8, 1, 2, WOOD_D); // rail under the drawer band
+  // three drawers above the doors
+  c.box(1, 22, 9, 11, 1, 2, WOOD_L);
+  c.clear(8, 8, 9, 11, 1, 1); // grooves between drawer fronts
+  c.clear(15, 15, 9, 11, 1, 1);
+  // brass drawer bars and door handles
+  c.box(3, 5, 10, 10, 0, 0, BRASS);
+  c.box(10, 13, 10, 10, 0, 0, BRASS);
+  c.box(18, 20, 10, 10, 0, 0, BRASS);
+  c.box(10, 10, 4, 6, 0, 0, BRASS);
+  c.box(13, 13, 4, 6, 0, 0, BRASS);
+  // countertop slab with a lighter worktop face
+  c.box(0, 23, 12, 12, 0, 7, WOOD_D);
+  c.box(0, 23, 13, 13, 0, 7, WOOD_L);
+  // open niche: side cheeks and back panel only
+  c.box(0, 0, 14, 18, 0, 7, WOOD);
+  c.box(23, 23, 14, 18, 0, 7, WOOD);
+  c.box(1, 22, 14, 18, 7, 7, WOOD);
+  // serwetka + kryształowy wazon in the niche
+  c.box(9, 14, 14, 14, 2, 5, LINEN);
+  c.box(11, 12, 15, 17, 3, 4, GLASS);
+  // upper display cabinet: shelf, sides, back
+  c.box(0, 23, 19, 19, 0, 7, WOOD);
+  c.box(0, 0, 20, 29, 0, 7, WOOD);
+  c.box(23, 23, 20, 29, 0, 7, WOOD);
+  c.box(1, 22, 20, 29, 7, 7, WOOD_D);
+  // glazed doors: wooden leaves with big panes, groove between them
+  c.box(1, 22, 20, 29, 1, 2, WOOD_L);
+  c.clear(11, 12, 20, 29, 1, 1);
+  c.box(2, 9, 21, 28, 1, 1, MIRROR); // left pane
+  c.box(14, 21, 21, 28, 1, 1, MIRROR); // right pane
+  // brass knobs on the meeting stiles
+  c.box(10, 10, 23, 24, 0, 0, BRASS);
+  c.box(13, 13, 23, 24, 0, 0, BRASS);
+  // top + cornice, like the wardrobe
+  c.box(0, 23, 30, 30, 0, 7, WOOD);
+  c.box(0, 23, 31, 31, 0, 7, WOOD_D);
+  return c.def('kredens', 'Kredens');
+}
+
 // --- ASCII preview (--preview) ---------------------------------------------
 
 /** Orthographic letter-per-color projections, for eyeballing a shape without
@@ -246,7 +301,7 @@ function preview(def) {
 
 // --- write one importable file per object -----------------------------------
 
-const defs = [bed(), wardrobe(), toilet(), shower(), bathtub()];
+const defs = [bed(), wardrobe(), toilet(), shower(), bathtub(), kredens()];
 
 if (process.argv.includes('--preview')) {
   for (const def of defs) preview(def);

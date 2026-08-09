@@ -8,7 +8,7 @@ import { SIZE } from '../src/engine/VoxelTypes.js';
 import { NavMesh } from '../src/engine/NavMesh.js';
 import { Mob } from '../src/game/Mob.js';
 import { frameFor } from '../src/game/MobRenderer.js';
-import { FRAMES, FRAME_COUNT, MOB_SKINS, randomMobSkin } from '../src/game/mobSprites.js';
+import { FRAMES, FRAME_COUNT, MOB_SKINS, SPAWN_SKINS, randomMobSkin } from '../src/game/mobSprites.js';
 import { getMob, randomMobHeight, MOB_HEIGHT_MIN, MOB_HEIGHT_MAX } from '../src/engine/mobTypes.js';
 import { CELL_SIZE } from '../src/engine/Space.js';
 import { collides } from '../src/engine/Physics.js';
@@ -207,21 +207,22 @@ test('death plays the collapse once and holds on the corpse', () => {
 });
 
 test('a spawned mob gets one of the drawn characters', () => {
-  assert.ok(MOB_SKINS.length > 1, 'there must be characters to pick between');
-  for (const skin of MOB_SKINS) assert.equal(typeof skin, 'string');
+  assert.ok(SPAWN_SKINS.length > 1, 'there must be characters to pick between');
+  for (const skin of SPAWN_SKINS) assert.equal(typeof skin, 'string');
 
-  // Every skin must be reachable, and none outside the pool.
+  // Every spawnable skin must be reachable, and none outside the pool — in
+  // particular never an NPC-only sheet like Bolek's wheelchair.
   const seen = new Set();
-  for (let i = 0; i < MOB_SKINS.length * 200; i++) {
+  for (let i = 0; i < SPAWN_SKINS.length * 200; i++) {
     const skin = randomMobSkin();
-    assert.ok(MOB_SKINS.includes(skin), `${skin} is not a known character`);
+    assert.ok(SPAWN_SKINS.includes(skin), `${skin} is not a spawnable character`);
     seen.add(skin);
   }
-  assert.equal(seen.size, MOB_SKINS.length, 'every character must be reachable');
+  assert.equal(seen.size, SPAWN_SKINS.length, 'every character must be reachable');
 
   // The rng is injectable, and an rng returning 1 must stay in range.
-  assert.equal(randomMobSkin(() => 0), MOB_SKINS[0]);
-  assert.ok(MOB_SKINS.includes(randomMobSkin(() => 1)));
+  assert.equal(randomMobSkin(() => 0), SPAWN_SKINS[0]);
+  assert.ok(SPAWN_SKINS.includes(randomMobSkin(() => 1)));
 });
 
 test('a mob carries the skin it was spawned with', () => {

@@ -891,11 +891,12 @@ const doorSteel = (x, y, s, rng) => {
   return [v + n, v + 4 + n, v + 10 + n, 255];
 };
 
-// Wielka płyta stairwell entrance (48x64: one 3x4-slot art): aluminium
-// frame, door leaf on the left — wired-glass upper glazing, solid lower
-// panel, kick plate — and a fixed wired-glass sidelight on the right.
+// Wielka płyta stairwell door leaf (32x64): the aluminium joinery every blok
+// entrance got — wired-glass upper glazing, sheet-metal lower panel, a kick
+// plate gone rusty at the sill and a black bakelite grip. The fixed sidelight
+// beside it is its own block (see sidelightPane).
 const doorBlok = (x, y, s, rng) => {
-  const h = (s / 3) * 4;
+  const h = s * 2;
   const n = (rng() - 0.5) * 8;
   const alu = (v) => [v + n, v + 2 + n, v + 7 + n, 255];
   const wired = () => {
@@ -903,24 +904,52 @@ const doorBlok = (x, y, s, rng) => {
     const g = wire ? 148 : 176;
     return [g + n, g + 4 + n, g - 6 + n, wire ? 255 : 115]; // glass between the wires — translucent
   };
-  if (x < 2 || x >= s - 2 || y < 2 || y >= h - 2) return alu(90); // outer frame
-  if (x >= 30 && x <= 32) return alu(x === 31 ? 132 : 104);       // mullion
-  if (x > 32) {                                                    // sidelight
-    if (x === 33 || x === s - 3 || y === 2 || y === h - 3) return alu(120);
-    if (y >= 30 && y <= 32) return alu(y === 31 ? 148 : 118);     // mid rail
-    return wired();
+  const grime = hash2(x, 3) < 0.2 && y > 8 ? -hash2(x, y) * 22 : 0; // rain runs
+  if (x < 2 || x >= s - 2 || y < 2 || y >= h - 2) return alu(88 + grime); // outer frame
+  if (x < 4 || x >= s - 4 || y < 4 || y >= h - 4) return alu(132 + grime); // leaf frame
+  if (y >= h - 12) {                                          // kick plate
+    if (y >= h - 5 && hash2(x, y) < 0.4) return [104 + n, 74 + n, 52, 255]; // rust at the sill
+    return alu(y === h - 12 ? 146 : 106);
   }
-  // door leaf
-  if (x < 4 || x >= 28 || y < 4 || y >= h - 4) return alu(134);   // leaf frame
-  if (y >= h - 14) return alu(y === h - 14 ? 100 : 120 + ((x + y) % 2) * 5); // kick plate
-  if (y >= 31 && y <= 33 && x >= 21 && x <= 26) return [30 + n, 30 + n, 32 + n, 255]; // handle
-  if (y >= 29 && y <= 35 && x >= 24 && x <= 26) return [64 + n, 66 + n, 70 + n, 255]; // rose plate
-  if (y <= 27) {                                                  // upper glazing
-    if (y === 27 || x === 4 || x === 27) return alu(112);
-    return wired();
+  if (y >= 37 && y <= 40) return alu(y === 40 ? 96 : 124);    // mid rail
+  if (x >= 24 && x <= 27 && y >= 29 && y <= 36) {             // escutcheon plate
+    if (x >= 25 && x <= 26 && y >= 30 && y <= 34) return [24 + n, 24 + n, 26 + n, 255]; // bakelite grip
+    return [58 + n, 60 + n, 64 + n, 255];
+  }
+  if (y <= 36) {                                              // upper glazing
+    if (y === 36 || x === 4 || x === s - 5) return alu(112);  // glazing bead
+    const streak = (x + Math.floor(y * 0.6)) % 13 === 4 ? 34 : 0; // sky reflection
+    const [r, g, b, a] = wired();
+    return [r + streak, g + streak, b + streak, a];
   }
   const scuff = hash2(x * 3, y * 3) < 0.03 ? -20 : 0;
-  return alu(126 + scuff);                                        // lower panel
+  return alu(126 + scuff + grime);                            // lower panel
+};
+
+// Blok sidelight (16x32): the fixed wired-glass pane beside the stairwell
+// door, behind a flat-steel krata — grilles like this went up over every
+// ground-floor window and entrance glazing in the 90s.
+const sidelightPane = (x, y, s, rng) => {
+  const h = s * 2;
+  const n = (rng() - 0.5) * 8;
+  const alu = (v) => [v + n, v + 2 + n, v + 7 + n, 255];
+  if (x < 2 || x >= s - 2 || y < 2 || y >= h - 2) {           // outer frame
+    if (y >= h - 4 && hash2(x, y) < 0.35) return [106 + n, 76 + n, 54, 255]; // rust at the sill
+    return alu(90);
+  }
+  if (x === 2 || x === s - 3 || y === 2 || y === h - 3) return alu(116); // frame shadow
+  if (y === 15 || y === 16) return alu(y === 15 ? 138 : 108); // mid rail
+  const barV = (x >= 4 && x <= 5) || (x >= 10 && x <= 11);    // kraty bars
+  const barH = (y >= 7 && y <= 8) || (y >= 23 && y <= 24);
+  if (barV || barH) {
+    if (hash2(x * 7, y * 7) < 0.06) return [96 + n, 66 + n, 46, 255]; // rust flecks
+    const lit = barV && (x === 4 || x === 10) ? 16 : 0;       // lit bar edge
+    return [50 + lit + n, 58 + lit + n, 54 + lit + n, 255];   // dark painted steel
+  }
+  const wire = ((x + y) & 3) === 0 || ((x - y) & 3) === 0;    // wired glass
+  const g = wire ? 148 : 176;
+  const streak = (x + Math.floor(y * 0.6)) % 11 === 4 ? 30 : 0;
+  return [g + streak + n, g + 4 + streak + n, g - 6 + streak + n, wire ? 255 : 115];
 };
 
 // --- mid-90s Poland set: decals ---
@@ -1176,6 +1205,7 @@ const GENERATORS = Object.freeze({
   door_shop: doorShop,
   door_steel: doorSteel,
   door_blok: doorBlok,
+  sidelight: sidelightPane,
   decal_blood: decalBlood,
   decal_blood2: decalBlood2,
   decal_blood3: decalBlood3,

@@ -4,7 +4,10 @@
 //   SMALL -> 1x1x1 starting at its anchor cell.
 //   BIG   -> 2x2x2 starting at its anchor cell (anchors snap to even coords).
 //   DOOR  -> 2x4x1 (w x h x d); odd rotations turn the footprint onto z.
-//   DOOR3 -> 3x4x1; the wide blok-entrance door, turning like DOOR.
+//   DOOR3 -> 3x4x1; legacy wide blok-entrance door (old saves only), turning
+//            like DOOR.
+//   SIDELIGHT -> 1x2x1; the fixed wired-glass pane beside a blok door,
+//            turning like DOOR.
 //
 // This is the single home for the size -> span/parity rule. Everything else
 // (World storage, the ghost, the tools, the serializer) reads from here so a
@@ -18,6 +21,7 @@ const SIZES = Object.freeze({
   [SIZE.BIG]: Object.freeze({ span: [2, 2, 2], parity: 2 }),
   [SIZE.DOOR]: Object.freeze({ span: [2, 4, 1], parity: 1, turns: true }),
   [SIZE.DOOR3]: Object.freeze({ span: [3, 4, 1], parity: 1, turns: true }),
+  [SIZE.SIDELIGHT]: Object.freeze({ span: [1, 2, 1], parity: 1, turns: true }),
 });
 
 /** Resolve a size spec to its shape rule. String sizes come from the table;

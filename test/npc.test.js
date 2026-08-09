@@ -42,6 +42,13 @@ test('granny type exists and wears a real character sheet', () => {
   assert.ok(granny.dialog.length >= 2, 'has some chit chat');
 });
 
+test('bolek type exists and wears a real character sheet', () => {
+  const bolek = getNpcType('bolek');
+  assert.ok(bolek);
+  assert.ok(MOB_SKINS.includes(bolek.skin), 'skin must be a drawn character');
+  assert.ok(bolek.dialog.length >= 2, 'has some chit chat');
+});
+
 test('rebuild snaps an NPC onto the walkable floor', () => {
   const world = floorWorld();
   const { manager, renderer } = makeManager(world);
