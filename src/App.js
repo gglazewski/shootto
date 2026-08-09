@@ -8,7 +8,7 @@ import * as THREE from '../vendor/three.module.js';
 import { World } from './engine/World.js';
 import { Renderer } from './engine/Renderer.js';
 import { CELL_SIZE } from './engine/Space.js';
-import { listBlockIds, getBlock, SIZE, listDecalIds, getDecal } from './engine/VoxelTypes.js';
+import { listBlockIds, getBlock, SIZE, listDecalIds, getDecal, isPassable } from './engine/VoxelTypes.js';
 import { getItem, listItems, registerItem, removeItem, isItemId, deserializeRegistry } from './engine/ItemRegistry.js';
 import {
   getEquipItem,
@@ -19,7 +19,7 @@ import {
   deserializeEquipRegistry,
   deserializeEquipItem,
 } from './engine/EquipmentRegistry.js';
-import { microCellSizeFor, lightLevelForMeters, slugifyName, deserializeItem, rotateMicroPoint } from './engine/ItemTypes.js';
+import { MICRO_SIZE, gridOf, lightLevelForMeters, slugifyName, deserializeItem, rotateMicroPoint } from './engine/ItemTypes.js';
 import { createAtlasTexture } from './textures/AtlasTexture.three.js';
 import { Blinkers } from './engine/Blinkers.js';
 import { FlyControls } from './editor/FlyControls.js';
@@ -38,6 +38,12 @@ import { BuildTool } from './editor/tools/BuildTool.js';
 import { SquareTool } from './editor/tools/SquareTool.js';
 import { SpawnTool } from './editor/tools/SpawnTool.js';
 import { MobTool } from './editor/tools/MobTool.js';
+import { NpcTool, NPC_MARKER_COLOR } from './editor/tools/NpcTool.js';
+import { NpcQuestEditor } from './editor/npc/NpcQuestEditor.js';
+import { deserializeNpcRegistry } from './engine/NpcRegistry.js';
+import { deserializeQuestRegistry } from './engine/QuestRegistry.js';
+import { registerBuiltinQuestItems } from './engine/QuestItems.js';
+import { raycastVoxel, worldToCell } from './engine/VoxelRaycaster.js';
 import { ItemTool } from './editor/tools/ItemTool.js';
 import { DecalTool } from './editor/tools/DecalTool.js';
 import { ItemEditor } from './editor/items/ItemEditor.js';
@@ -47,10 +53,14 @@ import { EquipCatalogue } from './editor/items/EquipCatalogue.js';
 import { ItemRenderer } from './editor/ItemRenderer.js';
 import { buildItemSwatch } from './editor/items/itemSwatch.js';
 import { itemAwarePick, collisionWorld } from './editor/itemPick.js';
+import { isDoorVoxel, isOpenDoor, toggleDoor } from './engine/Doors.js';
 import { InputDispatcher } from './editor/Input.js';
 import { ToolRing } from './editor/ToolRing.js';
 import { Notice, onNotice } from './editor/Notice.js';
 import { SignModal } from './editor/SignModal.js';
+import { WorldBrowser } from './editor/WorldBrowser.js';
+import { SplashCamMarker } from './editor/SplashCamMarker.js';
+import { SplashMotionModal, SPLASH_MOTIONS } from './editor/SplashMotionModal.js';
 import { createTextDecal } from './engine/TextDecals.js';
 import { GameLoop } from './GameLoop.js';
 import { PersistenceService } from './PersistenceService.js';
@@ -97,6 +107,15 @@ export class App {
     this.ghost = new SelectionGhost({ THREE, scene: this.renderer.scene, atlasTexture: texture, tileIndexFor, atlas });
     this.spawnMarker = new SpawnMarker({ THREE, scene: this.renderer.scene, world: this.world });
     this.mobMarker = new MobMarker({ THREE, scene: this.renderer.scene, world: this.world });
+    // NPC spawn beacons: same renderer as mob markers, friendly-green tint.
+    this.npcMarker = new MobMarker({
+      THREE,
+      scene: this.renderer.scene,
+      world: this.world,
+      forEachSpawn: (w, fn) => w.forEachNpcSpawn(fn),
+      colorFor: () => NPC_MARKER_COLOR,
+    });
+    this.splashCamMarker = new SplashCamMarker({ THREE, scene: this.renderer.scene, world: this.world });
 
     // --- UI ---
     const items = listBlockIds()
@@ -121,6 +140,8 @@ export class App {
       saveKey: CONFIG.saveKey,
       itemSaveKey: CONFIG.itemSaveKey,
       equipSaveKey: CONFIG.equipSaveKey,
+      npcSaveKey: CONFIG.npcSaveKey,
+      questSaveKey: CONFIG.questSaveKey,
       notice: Notice,
     });
 
@@ -152,6 +173,30 @@ export class App {
       if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
     };
 
+    // --- world library (save/load/organize worlds on the server) ---
+    this.worldBrowser = new WorldBrowser({
+      doc,
+      container: this.doc.querySelector('#world-browser'),
+      callbacks: {
+        list: () => this.persistence.listWorlds(),
+        load: (path) => this.loadLibraryWorld(path),
+        save: (path) => this.persistence.saveWorld(path),
+        remove: (path) => this.persistence.deleteWorld(path),
+        move: (from, to) => this.persistence.moveWorld(from, to),
+        mkdir: (path) => this.persistence.mkdirWorlds(path),
+      },
+    });
+    this.worldBrowser.onClose = () => {
+      if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
+    };
+
+    // Clicking a splash-cam gizmo opens this picker for the shot's menu motion.
+    this.splashMotionModal = new SplashMotionModal({ doc, container: this.doc.querySelector('#splash-motion') });
+    this.splashMotionModal.onClose = () => {
+      if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
+    };
+    this._raycaster = new THREE.Raycaster();
+
     // --- equippable items (F3 editor) ---
     this.equipmentEditor = new EquipmentEditor({ THREE, camera: this.renderer.camera, doc });
     this.equipmentEditor.onClose = () => this.exitEquipEditor();
@@ -173,6 +218,17 @@ export class App {
       if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
     };
 
+    // --- NPC & quest editor (F4) ---
+    this.npcQuestEditor = new NpcQuestEditor({
+      doc,
+      onChange: () => this._saveNpcQuestRegistries(),
+    });
+    this.npcQuestEditor.onClose = () => {
+      if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
+    };
+    this.npcQuestEditor.onPickSpawn = (cb) => this._beginQuestSpawnPick(cb);
+    this._questSpawnPick = null; // pending "Select spawn" receiver, or null
+
     // --- tools ---
     const ctx = {
       THREE,
@@ -190,6 +246,7 @@ export class App {
     this.tools.register(new SquareTool(ctx));
     this.tools.register(new SpawnTool(ctx));
     this.tools.register(new MobTool(ctx));
+    this.tools.register(new NpcTool(ctx));
     this.tools.register(new ItemTool(ctx));
     this.tools.register(new DecalTool(ctx));
     this.tool = this.tools.get('build'); // back-compat alias (tests / debug)
@@ -219,7 +276,7 @@ export class App {
           this.state.set('decalId', null);
           const it = getItem(id) ?? getEquipItem(id);
           this.toolbar.selectItem(id);
-          this.ui.setSelection(`Item: ${it?.name ?? id}`, it?.size ?? 'small');
+          this.ui.setSelection(`Item: ${it?.name ?? id}`, gridOf(it).map((g) => g * MICRO_SIZE).join('×') + ' m');
           this.tools.activate('item');
         } else if (this.tools.active?.id === 'item') {
           this.toolbar.clearSelection();
@@ -290,6 +347,7 @@ export class App {
       undo: () => this.undo(),
       redo: () => this.redo(),
       items: () => this.openCatalogue(),
+      worlds: () => this.openWorldBrowser(),
     };
 
     // initial HUD state
@@ -299,6 +357,7 @@ export class App {
     // item registry from browser storage
     this._loadItemRegistry();
     this._loadEquipRegistry();
+    this._loadNpcQuestRegistries();
   }
 
   // --- actions ---
@@ -318,6 +377,103 @@ export class App {
 
   exportMap() {
     this.persistence.export();
+  }
+
+  openWorldBrowser() {
+    if (this.doc.exitPointerLock) this.doc.exitPointerLock();
+    this.worldBrowser.show();
+  }
+
+  /** Load a world from the server's library into the editor. */
+  async loadLibraryWorld(path) {
+    const text = await this.persistence.readWorld(path);
+    if (text == null) {
+      this.ui.toast(`Could not load worlds/${path}`, 2000);
+      return;
+    }
+    this.load(text);
+    this.ui.toast(`Loaded worlds/${path}`);
+  }
+
+  // --- splash cameras (F8: turn the current editor view into a menu shot) ---
+
+  /** Capture the editor camera as a splash camera and, when the world lives
+   *  in the library, register the shot in the menu's splash manifest. */
+  async captureSplashCam() {
+    const cam = this.renderer.camera;
+    const id = `cam_${Date.now().toString(36)}`;
+    this.world.addSplashCam({
+      id,
+      pos: [cam.position.x, cam.position.y, cam.position.z],
+      yaw: this.controls.yaw,
+      pitch: this.controls.pitch,
+      fov: cam.fov,
+      motion: 'orbit',
+    });
+    const worldPath = this.worldBrowser.currentPath;
+    if (!worldPath) {
+      this.ui.toast('Splash camera saved in this world — save it to the Worlds library to put it on the menu', 3200);
+      return;
+    }
+    // Persist the world (the cam lives in it) before pointing the menu at it.
+    if (!(await this.persistence.saveWorld(worldPath))) {
+      this.ui.toast('Splash camera saved, but the world could not be written to the library', 2600);
+      return;
+    }
+    const manifest = (await this.persistence.readSplash()) ?? { format: 'splashlist', version: 1, entries: [] };
+    if (!Array.isArray(manifest.entries)) manifest.entries = [];
+    manifest.entries.push({ world: worldPath, cam: id });
+    if (await this.persistence.writeSplash(manifest)) {
+      this.ui.toast(`Splash screen #${manifest.entries.length} added to the main menu`, 2200);
+    } else {
+      this.ui.toast('Splash camera saved, but the menu manifest could not be written', 2600);
+    }
+  }
+
+  /** LMB on a splash-cam gizmo: open the motion picker for that shot.
+   *  @returns {boolean} true when a gizmo was hit (the click is consumed) */
+  _clickSplashCam() {
+    const camId = this.splashCamMarker.pick(this._raycaster, this.renderer.camera);
+    if (!camId) return false;
+    const cam = this.world.splashCams.find((c) => c.id === camId);
+    if (!cam) return false;
+    if (document.pointerLockElement) document.exitPointerLock();
+    this.splashMotionModal.open(cam, async (motion) => {
+      cam.motion = motion;
+      const label = SPLASH_MOTIONS.find((m) => m.id === motion)?.label ?? motion;
+      this.ui.toast(`Splash motion: ${label}`, 1200);
+      // The shot lives in the world — persist so the menu plays the new motion.
+      const worldPath = this.worldBrowser.currentPath;
+      if (worldPath) await this.persistence.saveWorld(worldPath);
+    });
+    return true;
+  }
+
+  /** Remove the splash camera nearest to the editor view (Shift+F8). */
+  async deleteNearestSplashCam() {
+    const p = this.renderer.camera.position;
+    let best = null;
+    let bestD = Infinity;
+    this.world.forEachSplashCam((c) => {
+      const d = Math.hypot(c.pos[0] - p.x, c.pos[1] - p.y, c.pos[2] - p.z);
+      if (d < bestD) {
+        bestD = d;
+        best = c;
+      }
+    });
+    if (!best || bestD > 10) {
+      this.ui.toast('No splash camera nearby (fly within 10 m of its gizmo)', 2000);
+      return;
+    }
+    this.world.removeSplashCam(best.id);
+    this.ui.toast('Splash camera removed', 1400);
+    const manifest = await this.persistence.readSplash();
+    if (manifest?.entries?.some((e) => e.cam === best.id)) {
+      manifest.entries = manifest.entries.filter((e) => e.cam !== best.id);
+      await this.persistence.writeSplash(manifest);
+    }
+    const worldPath = this.worldBrowser.currentPath;
+    if (worldPath) await this.persistence.saveWorld(worldPath);
   }
 
   /** Save the world + objects to the deployment file (map/voxelbundle.json)
@@ -367,6 +523,7 @@ export class App {
     this.state.set('blockId', id);
     this.state.set('size', voxel.size);
     this.state.set('blockRotation', voxel.rotation ?? 0);
+    this.state.set('blockVariant', voxel.variant ?? null);
     this.ui.toast(`Picked: ${getBlock(id).name}`, 900);
   }
 
@@ -515,11 +672,60 @@ export class App {
   // --- equipment registry (F3 equippable items) ---
 
   _loadEquipRegistry() {
+    // Built-in quest items (granny's teapot) register first, so they're
+    // always placeable; an authored def saved under the same id wins.
+    registerBuiltinQuestItems();
     const text = this.persistence.readEquipRegistry();
     if (text && deserializeEquipRegistry(text).length) {
       Notice.info('Loaded saved item(s) for the items editor');
     }
     this._refreshInventoryEquip();
+  }
+
+  // --- NPC + quest registries (F4 editor) ---
+
+  /** Restore authored NPCs/questlines from browser storage. Nothing saved
+   *  yet → the built-in defaults (the granny) stand. */
+  _loadNpcQuestRegistries() {
+    const npcText = this.persistence.readNpcRegistry();
+    if (npcText) deserializeNpcRegistry(npcText);
+    const questText = this.persistence.readQuestRegistry();
+    if (questText) deserializeQuestRegistry(questText);
+  }
+
+  /** Persist both registries (every F4 panel mutation lands here). */
+  _saveNpcQuestRegistries() {
+    this.persistence.saveNpcRegistry();
+    this.persistence.saveQuestRegistry();
+  }
+
+  /** F4 "Select spawn": close the quest panel and let the next crosshair
+   *  click in the world pick the slay pack's spawn cell. The panel reopens
+   *  with the result (see _finishQuestSpawnPick, hooked into mousedown). */
+  _beginQuestSpawnPick(cb) {
+    this._questSpawnPick = cb;
+    this.npcQuestEditor.close(); // onClose re-locks the pointer for aiming
+    Notice.info('Aim and click a block — the pack spawns on the cell above it (RMB cancels)', 2600);
+  }
+
+  /** Resolve a pending spawn pick: LMB takes the cell adjacent to the hovered
+   *  face (where a mob's feet would go), RMB cancels. Reopens the panel. */
+  _finishQuestSpawnPick(button) {
+    const cb = this._questSpawnPick;
+    this._questSpawnPick = null;
+    if (button === 0) {
+      const origin = worldToCell(this.renderer.camera.position.toArray());
+      const dir = this.renderer.camera.getWorldDirection(new THREE.Vector3());
+      const hit = raycastVoxel(this.world, origin, [dir.x, dir.y, dir.z]);
+      if (hit) {
+        cb([hit.cell[0] + hit.normal[0], hit.cell[1] + hit.normal[1], hit.cell[2] + hit.normal[2]]);
+        Notice.info('Slay spawn set');
+      } else {
+        Notice.warn('No block hit — spawn point unchanged');
+      }
+    }
+    if (document.pointerLockElement) document.exitPointerLock();
+    this.npcQuestEditor.open();
   }
 
   /** Refresh the E inventory's Equippable Items section from the registry. */
@@ -605,10 +811,11 @@ export class App {
     this.world.forEachItem((placement) => {
       const def = getItem(placement.itemId);
       if (!def?.light) return;
-      const cellSize = microCellSizeFor(placement.size);
+      const cellSize = MICRO_SIZE;
+      const grid = gridOf(def);
       const l = def.light;
       const yaw = placement.rotation ?? 0;
-      const [lx, lz] = rotateMicroPoint(l.x, l.z, yaw);
+      const [lx, lz] = rotateMicroPoint(l.x, l.z, yaw, grid[0], grid[2]);
       lights.push({
         x: Math.floor(placement.anchor[0] + ((lx + 0.5) * cellSize) / CELL_SIZE),
         y: Math.floor(placement.anchor[1] + ((l.y + 0.5) * cellSize) / CELL_SIZE),
@@ -647,11 +854,17 @@ export class App {
     this.ghost.hide();
     this.spawnMarker.setVisible(false);
     this.mobMarker.setVisible(false);
+    this.npcMarker.setVisible(false);
+    this.splashCamMarker.setVisible(false);
     this.controls.keys.clear();
     this.controls.velocity.set(0, 0, 0);
 
     const cell = this._testSpawnCell();
     this.walk.spawnAt(cell[0], cell[1], cell[2], ((this.world.spawnYaw ?? 0) * Math.PI) / 180);
+
+    this._openedDoors = new Set();
+    this._testPrompt = null;
+    this.ui.setPrompt(null);
 
     this.mode = 'test';
     this.doc.body.classList.add('test-mode');
@@ -663,6 +876,12 @@ export class App {
     this.mode = 'edit';
     this.walk.keys.clear();
     this.walk.velocity.set(0, 0, 0);
+    // A playtest must not edit the map: put every door the player touched
+    // back the way the author left it.
+    for (const voxel of this._openedDoors ?? []) toggleDoor(this.world, voxel);
+    this._openedDoors = null;
+    this._testPrompt = null;
+    this.ui.setPrompt(null);
     this.doc.body.classList.remove('test-mode');
     if (this._savedEditorCam) {
       const cam = this.renderer.camera;
@@ -674,6 +893,52 @@ export class App {
       this._savedEditorCam = null;
     }
     this.ui.toast('Back to editor', 1200);
+  }
+
+  /** The door voxel under the crosshair in a test run, or null. Mirrors the
+   *  game's aim: the primary ray treats OPEN doors as air (their footprint
+   *  fills the whole doorway and would otherwise swallow everything beyond
+   *  it), so a second ray runs only when the first found nothing — that one
+   *  hits the open leaf so it can be closed again. */
+  _testPickDoor() {
+    const solid = {
+      get: (x, y, z) => {
+        const v = this.world.get(x, y, z);
+        return v && isPassable(v.type) ? null : v;
+      },
+      itemAt: (x, y, z) => this.world.itemAt(x, y, z),
+    };
+    for (const w of [solid, this.world]) {
+      const hit = itemAwarePick(w, THREE, this.renderer.camera, CONFIG.test.interactCells);
+      if (!hit) continue;
+      const voxel = this.world.get(hit.cell[0], hit.cell[1], hit.cell[2]);
+      if (isDoorVoxel(voxel)) return voxel;
+      // The first ray hit something solid that isn't a door — nothing to
+      // interact with, and the open-door pass would only see through it.
+      return null;
+    }
+    return null;
+  }
+
+  /** Per-frame while test-running: show/hide the "press E" prompt for whatever
+   *  the crosshair is on. The DOM is touched only when the text changes. */
+  _updateTestPrompt() {
+    const door = this._testPickDoor();
+    const text = door ? `Press <kbd>E</kbd> to ${isOpenDoor(door) ? 'close' : 'open'} the door` : null;
+    if (text === this._testPrompt) return;
+    this._testPrompt = text;
+    this.ui.setPrompt(text);
+  }
+
+  /** E in a test run: act on the aimed object (doors for now). */
+  _testInteract() {
+    const door = this._testPickDoor();
+    if (!door) return;
+    // Remembered so exitTestMode can undo it — a playtest leaves no trace.
+    if (!toggleDoor(this.world, door)) return;
+    if (this._openedDoors.has(door)) this._openedDoors.delete(door);
+    else this._openedDoors.add(door);
+    this._updateTestPrompt();
   }
 
   // --- item editor mode (F2) ---
@@ -699,6 +964,8 @@ export class App {
     this.ghost.hide();
     this.spawnMarker.setVisible(false);
     this.mobMarker.setVisible(false);
+    this.npcMarker.setVisible(false);
+    this.splashCamMarker.setVisible(false);
     this.controls.keys.clear();
     this.controls.velocity.set(0, 0, 0);
     if (document.pointerLockElement) document.exitPointerLock();
@@ -754,6 +1021,8 @@ export class App {
     this.ghost.hide();
     this.spawnMarker.setVisible(false);
     this.mobMarker.setVisible(false);
+    this.npcMarker.setVisible(false);
+    this.splashCamMarker.setVisible(false);
     this.controls.keys.clear();
     this.controls.velocity.set(0, 0, 0);
     if (document.pointerLockElement) document.exitPointerLock();
@@ -856,39 +1125,38 @@ export class App {
     }
   }
 
+  /** Adopt a parsed map. Only an unreadable file (`fatal`) is thrown away —
+   *  per-entry skips (a decal that lost its face, a block id this build no
+   *  longer knows) leave the rest of the map intact, so a single stale entry
+   *  must never cost the author their world. */
+  _adoptRestored(label, { world: loaded, errors, fatal }) {
+    if (fatal) {
+      Notice.warn(`${label} could not be read (${errors[0]}) — starting fresh`);
+      return false;
+    }
+    this.replaceWorldVoxels(loaded);
+    if (errors.length) Notice.warn(`${label} loaded — skipped ${errors.length} stale entry(s)`);
+    return true;
+  }
+
   async restore() {
     // 1. Author's in-progress browser save wins (fast, offline, works from file://).
     const saved = this.persistence.readSaved();
     if (saved) {
-      const { world: loaded, errors } = this.persistence.parse(saved);
-      if (!errors.length) {
-        this.replaceWorldVoxels(loaded);
-      } else {
-        Notice.warn(`Saved map had ${errors.length} problem(s) — starting fresh`);
-      }
+      this._adoptRestored('Saved map', this.persistence.parse(saved));
     } else {
       // 2. Next, the world file on disk (served by server.mjs), so edits the
       //    editor wrote to the repo are picked up by other machines/deploys.
       const serverText = await this.persistence.readServerWorld();
       if (serverText) {
-        const { world: loaded, errors } = this.persistence.parse(serverText);
-        if (!errors.length) {
-          this.replaceWorldVoxels(loaded);
-          // The bundle registered its objects; make them placeable.
+        // The bundle registered its objects; make them placeable.
+        if (this._adoptRestored('Server map', this.persistence.parse(serverText))) {
           this._refreshInventoryObjects();
-        } else {
-          Notice.warn(`Server map had ${errors.length} problem(s) — starting fresh`);
         }
       } else {
         // 3. Finally, the world baked into the build for deployed visitors.
         const bundled = this.persistence.loadBundled();
-        if (bundled.world) {
-          if (!bundled.errors.length) {
-            this.replaceWorldVoxels(bundled.world);
-          } else {
-            Notice.warn(`Bundled map had ${bundled.errors.length} problem(s) — starting fresh`);
-          }
-        }
+        if (bundled.world) this._adoptRestored('Bundled map', bundled);
       }
     }
     if (this.world.count === 0) this.seedGround();
@@ -972,11 +1240,19 @@ export class App {
       // Tools only edit in the world editor — test run is walk-only.
       if (this.mode !== 'edit') return;
       if (!this.controls.locked) return;
+      // A pending F4 "Select spawn" swallows the next click (LMB picks, RMB
+      // cancels) and reopens the quest panel.
+      if (this._questSpawnPick) {
+        this._finishQuestSpawnPick(button);
+        return;
+      }
       if (button === 1) {
         // Middle-click: pick the block/item under the crosshair.
         this.pickBlock();
         return;
       }
+      // Clicking a splash-cam gizmo edits the shot's motion instead of the world.
+      if (button === 0 && this._clickSplashCam()) return;
       this.tools.active?.onMouseDown(button);
     });
     sub('mouseup', ({ button, x, y }) => {
@@ -1017,6 +1293,17 @@ export class App {
       this.ui.setSelection(this.state.get('blockId'), s);
       this.ui.toast(`Voxel size: ${s}`, 700);
     }));
+    sub('variant.cycle', editorOnly(() => {
+      // V cycles the pending block's slab variant: full -> lower -> upper.
+      // Only cube-shaped blocks come in halves (panes and doors don't).
+      const id = this.state.get('blockId');
+      if (!id || (getBlock(id)?.shape ?? 'cube') !== 'cube') return;
+      const order = [null, 'lower', 'upper'];
+      const next = order[(order.indexOf(this.state.get('blockVariant') ?? null) + 1) % order.length];
+      this.state.set('blockVariant', next);
+      const label = next === 'lower' ? 'lower half' : next === 'upper' ? 'upper half' : 'full block';
+      this.ui.toast(`Block variant: ${label}`, 700);
+    }));
     sub('item.rotate', editorOnly(() => {
       // With the Spawn tool, R rotates the player's facing at the spawn point.
       if (this.tools.active?.id === 'spawn' && this.world.spawn) {
@@ -1045,13 +1332,20 @@ export class App {
         this.ui.toast(`Block rotation: ${rot * 90}°`, 700);
       }
     }));
-    sub('inventory.toggle', editorOnly(() => {
+    sub('inventory.toggle', () => {
+      // E is the interact key in a test run (doors), the inventory in the editor.
+      if (this.mode === 'test') {
+        this._testInteract();
+        return;
+      }
+      if (this.mode !== 'edit') return;
       const opened = this.inventory.toggle();
       // Free the mouse so the player can click a block in the grid.
       if (opened && document.pointerLockElement === this.webgl.domElement) document.exitPointerLock();
-    }));
+    });
     sub('mob.cycle', editorOnly(() => {
-      if (this.tools.active?.id === 'mob') this.tools.active.cycleType();
+      // G cycles the active spawn tool's type — mobs and NPCs alike.
+      if (this.tools.active?.id === 'mob' || this.tools.active?.id === 'npc') this.tools.active.cycleType();
     }));
     sub('help.toggle', editorOnly(() => {
       const shown = this.ui.toggleHelp();
@@ -1062,9 +1356,17 @@ export class App {
     sub('redo', editorOnly(() => this.redo()));
     sub('item.toggle', () => this.toggleItemEditor());
     sub('equip.toggle', () => this.toggleEquipEditor());
+    sub('npc.toggle', () => {
+      // F4: modal overlay, only from the world editor (not F2/F3/test modes).
+      if (this.mode !== 'edit') return;
+      const opened = this.npcQuestEditor.toggle();
+      if (opened && document.pointerLockElement === this.webgl.domElement) document.exitPointerLock();
+    });
     sub('test.toggle', () => {
       if (this.mode !== 'item' && this.mode !== 'equip') this.toggleTestMode();
     });
+    sub('splash.capture', editorOnly(() => this.captureSplashCam()));
+    sub('splash.delete', editorOnly(() => this.deleteNearestSplashCam()));
   }
 
   /** Index of the active tool in the registry (for the tool ring). */
@@ -1100,8 +1402,11 @@ export class App {
       this.tools.active?.update(dt);
       this.spawnMarker.update();
       this.mobMarker.update();
+      this.npcMarker.update();
+      this.splashCamMarker.update();
     } else if (this.mode === 'test') {
       this.walk.update(dt);
+      this._updateTestPrompt();
     }
     // Blinking lights strobe in the editor too; the periodic rescan picks up
     // newly placed/removed lamps without an explicit hook.
@@ -1151,6 +1456,8 @@ export class App {
       input: this.input,
       spawnMarker: this.spawnMarker,
       mobMarker: this.mobMarker,
+      npcMarker: this.npcMarker,
+      npcQuestEditor: this.npcQuestEditor,
       toolRing: this.toolRing,
       itemEditor: this.itemEditor,
       itemRenderer: this.itemRenderer,

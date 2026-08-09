@@ -81,14 +81,17 @@ export class MobRenderer {
     texture.repeat.set(1 / FRAME_COUNT, 1);
     texture.offset.set(0, 0);
 
+    // Alpha-tested cutout, so writing depth is safe. Mobs render before the
+    // glass pass (ChunkMesh gives transparent chunk meshes renderOrder 1):
+    // glass in front of a zombie tints it, a zombie in front of glass
+    // depth-rejects the pane behind — no more sprites glowing through glass.
     const material = new T.SpriteMaterial({
       map: texture,
       transparent: true,
       alphaTest: 0.4,
-      depthWrite: false,
+      depthWrite: true,
     });
     const sprite = new T.Sprite(material);
-    sprite.renderOrder = 1;
     this.scene.add(sprite);
     // The sheet canvas is blank until its art decodes (see mobSprites), so
     // re-upload it once that lands — otherwise the first mobs stay invisible.

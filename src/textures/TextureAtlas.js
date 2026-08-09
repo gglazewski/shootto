@@ -435,6 +435,25 @@ const decalFood = (x, y, s, rng) => {
   return [0, 0, 0, 0];
 };
 
+// 16x16 domofon: the brushed-steel entryphone panel at every blok entrance —
+// speaker grille up top, a column of call buttons with worn name strips.
+const decalDomofon = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 8;
+  if (x < 4 || x > 11 || y < 1 || y > 14) return [0, 0, 0, 0];
+  if (x === 4 || x === 11 || y === 1 || y === 14) return [88 + n, 90 + n, 96 + n, 255]; // bevel
+  if (y >= 3 && y <= 5) { // speaker grille
+    if (x >= 6 && x <= 9 && ((x + y) & 1) === 0) return [30, 30, 32, 255];
+    return [136 + n, 138 + n, 144 + n, 255];
+  }
+  if (y >= 7 && y <= 12 && !((y - 7) & 1)) { // button rows
+    if (x === 6) return hash2(3, y) < 0.3 ? [222 + n, 182, 92, 255] : [52 + n, 52 + n, 56, 255]; // call button (some lit)
+    if (x >= 8 && x <= 10) return [212 + n, 208 + n, 196 + n, 255]; // name strip
+    return [120 + n, 122 + n, 128 + n, 255];
+  }
+  const scuff = hash2(x * 3, y * 3) < 0.06 ? -18 : 0;
+  return [150 + scuff + n, 152 + scuff + n, 158 + scuff + n, 255]; // brushed face
+};
+
 // --- multi-cell decal art (span > 1x1; `s` is the art WIDTH in pixels) ---
 
 // 64x32 spray-paint tag: a wavy two-tone band with a dark outline and drips.
@@ -610,7 +629,7 @@ const doorWhite = (x, y, s, rng) => {
     if (y >= top && y < top + 7 && x >= 7 && x < s - 7) {
       if (y === top || y === top + 6 || x === 7 || x === s - 8) return [146 + n, 142 + n, 132 + n, 255];
       const frost = 212 + Math.sin(x * 1.9 + y * 2.1) * 9;
-      return [frost + n, frost + n, frost + 3 + n, 255];
+      return [frost + n, frost + n, frost + 3 + n, 120]; // frosted glass — translucent
     }
   }
   if (x >= s - 9 && x <= s - 4 && y >= 33 && y <= 34) return [64 + n, 58 + n, 50 + n, 255]; // handle
@@ -638,7 +657,7 @@ const doorShop = (x, y, s, rng) => {
   }
   const d = Math.floor(x + y * 0.5);
   const streak = d % 17 === 4 || d % 17 === 5 ? 24 : 0; // window reflections
-  return [42 + streak + n, 60 + streak + n, 64 + streak + n, 255];
+  return [42 + streak + n, 60 + streak + n, 64 + streak + n, 100]; // glazing — translucent
 };
 
 // --- mid-90s Poland set: blocks ---
@@ -862,7 +881,7 @@ const doorSteel = (x, y, s, rng) => {
     if (x === 10 || x === 15 || y === 10 || y === 40) return [58 + n, 60 + n, 64 + n, 255]; // slot frame
     const wire = ((x + y) & 3) === 0 || ((x - y) & 3) === 0; // wired glass mesh
     const g = wire ? 148 : 176;
-    return [g + n, g + 4 + n, g - 6 + n, 255];
+    return [g + n, g + 4 + n, g - 6 + n, wire ? 255 : 120]; // glass between the wires — translucent
   }
   if (Math.hypot(x - (s - 7), y - 33) < 1.8) return [26, 26, 28, 255]; // knob
   if (Math.hypot(x - (s - 7), y - 33) < 2.6) return [64 + n, 66 + n, 70 + n, 255]; // knob plate
@@ -870,6 +889,38 @@ const doorSteel = (x, y, s, rng) => {
   if (y >= h - 8 && hash2(x, y) < 0.25) return [96 + n, 76 + n, 58, 255]; // rust at the sill
   const v = 122 + Math.sin(y * 0.35) * 4 + scuff;
   return [v + n, v + 4 + n, v + 10 + n, 255];
+};
+
+// Wielka płyta stairwell entrance (48x64: one 3x4-slot art): aluminium
+// frame, door leaf on the left — wired-glass upper glazing, solid lower
+// panel, kick plate — and a fixed wired-glass sidelight on the right.
+const doorBlok = (x, y, s, rng) => {
+  const h = (s / 3) * 4;
+  const n = (rng() - 0.5) * 8;
+  const alu = (v) => [v + n, v + 2 + n, v + 7 + n, 255];
+  const wired = () => {
+    const wire = ((x + y) & 3) === 0 || ((x - y) & 3) === 0; // wired glass mesh
+    const g = wire ? 148 : 176;
+    return [g + n, g + 4 + n, g - 6 + n, wire ? 255 : 115]; // glass between the wires — translucent
+  };
+  if (x < 2 || x >= s - 2 || y < 2 || y >= h - 2) return alu(90); // outer frame
+  if (x >= 30 && x <= 32) return alu(x === 31 ? 132 : 104);       // mullion
+  if (x > 32) {                                                    // sidelight
+    if (x === 33 || x === s - 3 || y === 2 || y === h - 3) return alu(120);
+    if (y >= 30 && y <= 32) return alu(y === 31 ? 148 : 118);     // mid rail
+    return wired();
+  }
+  // door leaf
+  if (x < 4 || x >= 28 || y < 4 || y >= h - 4) return alu(134);   // leaf frame
+  if (y >= h - 14) return alu(y === h - 14 ? 100 : 120 + ((x + y) % 2) * 5); // kick plate
+  if (y >= 31 && y <= 33 && x >= 21 && x <= 26) return [30 + n, 30 + n, 32 + n, 255]; // handle
+  if (y >= 29 && y <= 35 && x >= 24 && x <= 26) return [64 + n, 66 + n, 70 + n, 255]; // rose plate
+  if (y <= 27) {                                                  // upper glazing
+    if (y === 27 || x === 4 || x === 27) return alu(112);
+    return wired();
+  }
+  const scuff = hash2(x * 3, y * 3) < 0.03 ? -20 : 0;
+  return alu(126 + scuff);                                        // lower panel
 };
 
 // --- mid-90s Poland set: decals ---
@@ -1124,6 +1175,7 @@ const GENERATORS = Object.freeze({
   door_white: doorWhite,
   door_shop: doorShop,
   door_steel: doorSteel,
+  door_blok: doorBlok,
   decal_blood: decalBlood,
   decal_blood2: decalBlood2,
   decal_blood3: decalBlood3,
@@ -1149,6 +1201,7 @@ const GENERATORS = Object.freeze({
   decal_bottles: decalBottles,
   decal_curtain: decalCurtain,
   decal_hopscotch: decalHopscotch,
+  decal_domofon: decalDomofon,
 });
 
 // Runtime tiles (text signs): registered after module load, rendered by the

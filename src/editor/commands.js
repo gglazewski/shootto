@@ -6,13 +6,13 @@
 
 /**
  * @param {object} world
- * @param {{type:string, size:string, anchor:[number,number,number], rotation?:number}} spec
+ * @param {{type:string, size:string, anchor:[number,number,number], rotation?:number, variant?:string|null}} spec
  */
-export function placeCommand(world, { type, size, anchor, rotation = 0 }) {
+export function placeCommand(world, { type, size, anchor, rotation = 0, variant = null }) {
   return {
     description: `Place ${type}`,
     do() {
-      return world.place(type, size, anchor[0], anchor[1], anchor[2], rotation);
+      return world.place(type, size, anchor[0], anchor[1], anchor[2], rotation, variant);
     },
     undo() {
       world.remove(anchor[0], anchor[1], anchor[2]);
@@ -31,7 +31,7 @@ export function removeCommand(world, voxel) {
       return !!world.remove(voxel.anchor[0], voxel.anchor[1], voxel.anchor[2]);
     },
     undo() {
-      world.place(voxel.type, voxel.size, voxel.anchor[0], voxel.anchor[1], voxel.anchor[2], voxel.rotation ?? 0);
+      world.place(voxel.type, voxel.size, voxel.anchor[0], voxel.anchor[1], voxel.anchor[2], voxel.rotation ?? 0, voxel.variant ?? null);
     },
   };
 }
@@ -76,15 +76,16 @@ export function removeDecalCommand(world, decal) {
  * @param {string} type
  * @param {string} size
  * @param {number} [rotation]  yaw quarter turns applied to every voxel
+ * @param {'lower'|'upper'|null} [variant]  slab variant applied to every voxel
  */
-export function multiPlaceCommand(world, anchors, type, size, rotation = 0) {
+export function multiPlaceCommand(world, anchors, type, size, rotation = 0, variant = null) {
   let placed = [];
   return {
     description: `Place ${anchors.length} ${type}`,
     do() {
       placed = [];
       for (const a of anchors) {
-        if (world.place(type, size, a[0], a[1], a[2], rotation)) placed.push(a);
+        if (world.place(type, size, a[0], a[1], a[2], rotation, variant)) placed.push(a);
       }
       return placed.length;
     },
@@ -118,7 +119,7 @@ export function multiRemoveCommand(world, voxels, { applied = false } = {}) {
     },
     undo() {
       for (const v of removed) {
-        world.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0);
+        world.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0, v.variant ?? null);
       }
       removed = [];
     },
@@ -127,14 +128,14 @@ export function multiRemoveCommand(world, voxels, { applied = false } = {}) {
 
 /**
  * @param {object} world
- * @param {{itemId:string, size:string, anchor:[number,number,number], rotation?:number}} spec
+ * @param {{itemId:string, cells:[number,number,number], anchor:[number,number,number], rotation?:number}} spec
  * @param {() => void} [onChange]  items feed the light field; called after every apply
  */
-export function placeItemCommand(world, { itemId, size, anchor, rotation = 0 }, onChange) {
+export function placeItemCommand(world, { itemId, cells, anchor, rotation = 0 }, onChange) {
   return {
     description: `Place item ${itemId}`,
     do() {
-      const ok = world.placeItem(itemId, size, anchor[0], anchor[1], anchor[2], rotation);
+      const ok = world.placeItem(itemId, cells, anchor[0], anchor[1], anchor[2], rotation);
       if (ok) onChange?.();
       return ok;
     },
@@ -147,11 +148,11 @@ export function placeItemCommand(world, { itemId, size, anchor, rotation = 0 }, 
 
 /**
  * @param {object} world
- * @param {{itemId:string, size:string, anchor:[number,number,number], rotation?:number}} item
+ * @param {{itemId:string, cells:[number,number,number], anchor:[number,number,number], rotation?:number}} item
  * @param {() => void} [onChange]
  */
 export function removeItemCommand(world, item, onChange) {
-  const { itemId, size, anchor, rotation = 0 } = item;
+  const { itemId, cells, anchor, rotation = 0 } = item;
   return {
     description: `Remove item ${itemId}`,
     do() {
@@ -160,7 +161,7 @@ export function removeItemCommand(world, item, onChange) {
       return ok;
     },
     undo() {
-      world.placeItem(itemId, size, anchor[0], anchor[1], anchor[2], rotation);
+      world.placeItem(itemId, cells, anchor[0], anchor[1], anchor[2], rotation);
       onChange?.();
     },
   };
@@ -194,6 +195,38 @@ export function removeMobSpawnCommand(world, spawn) {
     },
     undo() {
       world.addMobSpawn(spawn.type, spawn.x, spawn.y, spawn.z);
+    },
+  };
+}
+
+/**
+ * @param {object} world
+ * @param {{type:string, cell:[number,number,number]}} spec
+ */
+export function addNpcSpawnCommand(world, { type, cell }) {
+  return {
+    description: `Place NPC ${type}`,
+    do() {
+      return world.addNpcSpawn(type, cell[0], cell[1], cell[2]);
+    },
+    undo() {
+      world.removeNpcSpawnAt(cell[0], cell[1], cell[2]);
+    },
+  };
+}
+
+/**
+ * @param {object} world
+ * @param {{type:string, x:number, y:number, z:number}} spawn
+ */
+export function removeNpcSpawnCommand(world, spawn) {
+  return {
+    description: `Remove NPC ${spawn.type}`,
+    do() {
+      return !!world.removeNpcSpawnAt(spawn.x, spawn.y, spawn.z);
+    },
+    undo() {
+      world.addNpcSpawn(spawn.type, spawn.x, spawn.y, spawn.z);
     },
   };
 }

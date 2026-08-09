@@ -40,6 +40,13 @@ export class BuildTool extends Tool {
     return this.ctx.state.get('blockRotation') ?? 0;
   }
 
+  /** Slab variant of the pending placement (V cycles it) — only cube-shaped
+   *  blocks come in halves; panes and doors always place full. */
+  get variant() {
+    if ((getBlock(this.type)?.shape ?? 'cube') !== 'cube') return null;
+    return this.ctx.state.get('blockVariant') ?? null;
+  }
+
   /** Item-aware pick: placed objects stop the aim ray, so blocks can be
    *  built on top of a table the same as on top of another block. Removal
    *  still only touches voxels (world.get on an item cell is null). */
@@ -71,7 +78,7 @@ export class BuildTool extends Tool {
 
     if (this.isShift && this.lastPlaced) {
       const cells = orthogonalLineAnchors(this.lastPlaced, anchor, this.size);
-      const cmd = multiPlaceCommand(world, cells, this.type, this.size, this.rotation);
+      const cmd = multiPlaceCommand(world, cells, this.type, this.size, this.rotation, this.variant);
       const placed = cmd.do();
       if (placed > 0) {
         history.push(cmd);
@@ -83,7 +90,7 @@ export class BuildTool extends Tool {
       return { ok: false, reason: 'Nothing could be placed on that line' };
     }
 
-    const cmd = placeCommand(world, { type: this.type, size: this.size, anchor, rotation: this.rotation });
+    const cmd = placeCommand(world, { type: this.type, size: this.size, anchor, rotation: this.rotation, variant: this.variant });
     if (cmd.do()) {
       history.push(cmd);
       this.lastPlaced = anchor;
@@ -221,7 +228,7 @@ export class BuildTool extends Tool {
     }
     const anchor = this.placementAnchor(hit, this.size);
     const blocked = !world.isAreaFree(anchor[0], anchor[1], anchor[2], this.size, this.rotation);
-    ghost.showPlacement(anchor, this.size, blocked, { blockId: this.type, rotation: this.rotation });
+    ghost.showPlacement(anchor, this.size, blocked, { blockId: this.type, rotation: this.rotation, variant: this.variant });
 
     const voxel = world.get(hit.cell[0], hit.cell[1], hit.cell[2]);
     if (this.isShift && this.lastPlaced) {

@@ -16,6 +16,9 @@
 //    voxel's rotation; the tile's alpha channel cuts out the holes. Panes
 //    are emitted double-winded into the OPAQUE buffer (depth-written,
 //    alpha-discarded), so overlapping panes never blend in the wrong order.
+//    A decal on a pane rides the pane's own plane, not the cell boundary
+//    (a lace curtain hangs on the glass), and only on the two faces the
+//    pane looks along.
 //  - BIG voxels are expanded automatically: each of their sub-cells that has
 //    an empty neighbor emits a 0.5m quad, so a 1m block renders as 4 coplanar
 //    quads per exposed side.
@@ -27,7 +30,7 @@
 
 import { CELL_SIZE } from './Space.js';
 import { opacityFor, isTransparent, isMixedAlpha, shapeFor, getDecal, getBlock } from './VoxelTypes.js';
-import { spanVecFor } from './VoxelShape.js';
+import { spanVecFor, solidYRange } from './VoxelShape.js';
 
 // Face table: for each face, the outward normal n, the in-plane basis u/v
 // (unit axis steps with u x v === n) and the origin corner o. Corners:
@@ -79,9 +82,24 @@ function rotatedFace(name, rot) {
 
 const DEFAULT_LIGHT = 15;
 
-/** A block is opaque for rendering/culling when fully solid. */
+/** A block is opaque for rendering/culling when it is a fully solid cube.
+ *  Non-cube shapes (panes, door slabs) never cover a neighbor's face even
+ *  when light-opaque, so they must not cull it. */
 function isOpaqueVoxel(voxel) {
-  return voxel == null || opacityFor(voxel.type) >= 255;
+  return voxel == null || (shapeFor(voxel.type) === 'cube' && opacityFor(voxel.type) >= 255 && voxel.variant == null);
+}
+
+/** True when a neighbor's solid box covers a face spanning [lo, hi] (world
+ *  cell units) on the shared cell boundary. Full opaque cubes cover
+ *  everything (the old rule); slab variants cover a side face only when
+ *  their own solid y-range spans it, and a top/bottom face only when their
+ *  solid box actually crosses the shared plane. */
+function coversFace(neighbor, name, neighborY, lo, hi) {
+  if (shapeFor(neighbor.type) !== 'cube' || opacityFor(neighbor.type) < 255) return false;
+  const [nlo, nhi] = solidYRange(neighbor, neighborY);
+  if (name === 'py') return nlo <= hi && nhi > hi;
+  if (name === 'ny') return nhi >= lo && nlo < lo;
+  return nlo <= lo && nhi >= hi;
 }
 
 /**
@@ -121,14 +139,25 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
     const buf = selfTransparent ? transparentBuf : opaqueBuf;
     const bufs = mixed ? [opaqueBuf, transparentBuf] : [buf];
     const rot = voxel.rotation ?? 0;
+    // Slab variants: the voxel's solid box may cover only part of this cell
+    // vertically. y0f/y1f are the solid bounds within the cell (0..1 in cell
+    // units): a small 'lower' slab spans [0, 0.5]; a BIG one halves at a cell
+    // boundary, leaving its carved-away cell layer empty (y1f <= y0f).
+    const [vy0, vy1] = solidYRange(voxel, fy);
+    const y0f = Math.max(0, vy0 - fy);
+    const y1f = Math.min(1, vy1 - fy);
+    if (y1f <= y0f) return;
     for (const name of Object.keys(FACE_TABLE)) {
       const f = FACE_TABLE[name];
       const nx = fx + f.n[0], ny = fy + f.n[1], nz = fz + f.n[2];
       const neighbor = world.get(nx, ny, nz);
-      // Cull when the neighbor blocks this face: opaque neighbor always hides
-      // it; two transparent voxels hide each other (glass-on-glass), as do
-      // two mixed-alpha voxels of the same type (window-on-window).
-      if (neighbor && (isOpaqueVoxel(neighbor) || selfTransparent || (mixed && neighbor.type === voxel.type))) continue;
+      // Cull when the neighbor blocks this face: a neighbor whose solid box
+      // covers the emitted span hides it; two transparent voxels hide each
+      // other (glass-on-glass), as do two mixed-alpha voxels of the same type
+      // (window-on-window). A face pulled inside the cell (a slab's inner
+      // horizontal face) can never be covered by a neighbor.
+      const inset = (name === 'py' && y1f < 1) || (name === 'ny' && y0f > 0);
+      if (!inset && neighbor && (coversFace(neighbor, name, ny, fy + y0f, fy + y1f) || selfTransparent || (mixed && neighbor.type === voxel.type))) continue;
 
       const tile = tileIndexFor(voxel.type, rot ? rotatedFace(name, rot) : name);
       const tileW = 1 / AW;
@@ -153,7 +182,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
       const cornerData = [];
       const quad = []; // per-corner vertex data, emitted into every target buffer
       for (const c of corners) {
-        const cx = fx + c.x, cy = fy + c.y, cz = fz + c.z;
+        const cx = fx + c.x, cy = fy + (c.y ? y1f : y0f), cz = fz + c.z;
         // Classic face AO: sample the three cells that meet at this corner on
         // the outside of the face. They are at the cell *across* the face
         // (cell + normal), shifted by the corner's tangent offsets. NOTE: the
@@ -182,6 +211,10 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         // Voxel yaw spins the top/bottom tile in quarter turns (rotating a
         // road line or crack); side faces stay upright and only swap tiles.
         let cu = c.u, cv = c.v;
+        // Slab side faces sample only their half of the tile, split along
+        // world y (the parametric axis that runs up: u on px/nz, v on nx/pz).
+        if (f.u[1]) cu = y0f + cu * (y1f - y0f);
+        else if (f.v[1]) cv = y0f + cv * (y1f - y0f);
         if (rot && f.n[1] !== 0) {
           for (let k = 0; k < rot; k++) { const tmp = cu; cu = cv; cv = 1 - tmp; }
         }
@@ -285,6 +318,62 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
       }
       paneBuf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
     }
+
+    // Decals on a pane ride the pane's own plane (a hair off it), not the
+    // cell boundary — a lace curtain hangs on the glass. Only the two faces
+    // the pane looks along can carry one (see decalFacesFor), and the quad
+    // spans the whole pane, sampling its sub-rect of a multi-cell artwork.
+    for (const name of alongX ? ['pz', 'nz'] : ['px', 'nx']) {
+      const decal = paneDecalAt(ax, ay, az, span, name);
+      if (!decal) continue;
+      const f = FACE_TABLE[name];
+      const [cw, ch] = getDecal(decal.decalId)?.span ?? [1, 1];
+      const dRot = decal.rotation ?? 0;
+      const [eu, ev] = decalFootprint(name, [cw, ch], dRot); // cells along u/v
+      const [dx, dy, dz] = decal.cell ?? [ax, ay, az];
+      // the pane anchor's offset inside the footprint, along the face's axes
+      const iOff = (ax - dx) * f.u[0] + (ay - dy) * f.u[1] + (az - dz) * f.u[2];
+      const jOff = (ax - dx) * f.v[0] + (ay - dy) * f.v[1] + (az - dz) * f.v[2];
+      const dTile = tileIndexFor(decal.decalId, name);
+      const rectW = cw * tileW, rectH = ch * tileH; // art rect in the atlas
+      const dBaseU = (dTile % AW) * tileW;
+      const dBaseV = 1 - (Math.floor(dTile / AW) + ch) * tileH;
+      // start at the pane's plane along the face normal, at the anchor in-plane
+      const nAxis = f.n[0] ? 0 : f.n[1] ? 1 : 2;
+      const base = [ax, ay, az];
+      base[nAxis] += half + f.n[nAxis] * 0.02; // 1cm clear of the pane
+      const dFirst = paneBuf.positions.length / 3;
+      for (const [su, sv] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+        const wx = base[0] + su * span * f.u[0] + sv * span * f.v[0];
+        const wy = base[1] + su * span * f.u[1] + sv * span * f.v[1];
+        const wz = base[2] + su * span * f.u[2] + sv * span * f.v[2];
+        const lx = cc(wx, ax), ly = cc(wy, ay), lz = cc(wz, az);
+        let cu = (iOff + su * span) / eu, cv = (jOff + sv * span) / ev;
+        for (let k = 0; k < dRot; k++) { const tmp = cu; cu = cv; cv = 1 - tmp; }
+        const t = f.tex;
+        const du = 0.5 + t[0] * (cu - 0.5) + t[1] * (cv - 0.5);
+        const dv = 0.5 + t[2] * (cu - 0.5) + t[3] * (cv - 0.5);
+        pushCorner(
+          paneBuf, wx, wy, wz, f.n[0], f.n[1], f.n[2],
+          dBaseU + htU + du * (rectW - 2 * htU),
+          dBaseV + htV + dv * (rectH - 2 * htV),
+          1, 1, 1, sky(lx, ly, lz) / 15, block(lx, ly, lz) / 15,
+        );
+      }
+      paneBuf.indices.push(dFirst, dFirst + 1, dFirst + 2, dFirst, dFirst + 2, dFirst + 3);
+    }
+  };
+
+  /** The decal on one face of a pane voxel, or null. A BIG pane covers 2x2x2
+   *  cells, so the decal may be keyed to any of them — scan the footprint. */
+  const paneDecalAt = (ax, ay, az, span, face) => {
+    for (let x = ax; x < ax + span; x++)
+      for (let y = ay; y < ay + span; y++)
+        for (let z = az; z < az + span; z++) {
+          const d = world.decalAt?.(x, y, z, face);
+          if (d) return d;
+        }
+    return null;
   };
 
   // shape:'door' — a slab with real thickness, emitted once per voxel at its
@@ -295,8 +384,9 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
   // the door's multi-slot art (see tileSpan) with one shared world->u
   // mapping, so the back face is the mirror view of the front, exactly like
   // a real door; the thin edges collapse their UVs onto the art's border
-  // texels and read as frame color. No AO (like panes); light is sampled
-  // from the voxel's own footprint cells.
+  // texels and read as frame color. No AO (like panes); open leaves sample
+  // light in the voxel's own footprint cells, closed (light-opaque) leaves
+  // sample the cell beyond each face so each side shows its room's light.
   const DOOR_THICK = 0.24; // leaf thickness in cells (12 cm)
   const door = (voxel, ax, ay, az) => {
     const rot = voxel.rotation ?? 0;
@@ -350,11 +440,15 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         const px = min[0] + (f.o[0] + c.u * f.u[0] + c.v * f.v[0]) * d[0];
         const py = min[1] + (f.o[1] + c.u * f.u[1] + c.v * f.v[1]) * d[1];
         const pz = min[2] + (f.o[2] + c.u * f.u[2] + c.v * f.v[2]) * d[2];
-        // light from the nearest footprint cell (the field is defined there
-        // since doors are transparent to light)
-        const lx = clamp(px, ax, ax + sx - 1);
-        const ly = clamp(py, ay, ay + sy - 1);
-        const lz = clamp(pz, az, az + sz - 1);
+        // Open doors are transparent to light, so the field is defined in
+        // the footprint cells — sample there. A closed leaf is light-opaque
+        // (its cells read 0), so each face samples the cell just beyond it
+        // along its normal instead: the outside face reads the daylight,
+        // the inside face the room's darkness.
+        const solid = opacityFor(voxel.type) >= 255;
+        const lx = clamp(px, ax, ax + sx - 1) + (solid ? f.n[0] : 0);
+        const ly = clamp(py, ay, ay + sy - 1) + (solid ? f.n[1] : 0);
+        const lz = clamp(pz, az, az + sz - 1) + (solid ? f.n[2] : 0);
         const ls = sky(lx, ly, lz) / 15;
         const lb = block(lx, ly, lz) / 15;
         const pw = wAxis === 0 ? px : pz;

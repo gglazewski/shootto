@@ -7,6 +7,7 @@ export const SIZE = Object.freeze({
   SMALL: 'small',
   BIG: 'big',
   DOOR: 'door',
+  DOOR3: 'door3',
 });
 
 /**
@@ -124,15 +125,21 @@ const BLOCKS = [
   { id: 'bars', name: 'Metal Bars', tiles: 'bars', shape: 'pane', opacity: 0, shootThrough: true },
   { id: 'barricade', name: 'Barricade Boards', tiles: 'boards', shape: 'pane', opacity: 0, shootThrough: true },
   // --- doors (one voxel spanning 2x4 cells; open/closed = id swap like the
-  // blinking lights, driven by engine/Doors.js; zombies can't toggle them) ---
-  { id: 'door_wood', name: 'Entrance Door', tiles: 'door_wood', shape: 'door', opacity: 0, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_wood_open' },
+  // blinking lights, driven by engine/Doors.js; zombies can't toggle them).
+  // Closed phases have default (full) opacity so they block light and mob
+  // sight; open phases keep opacity 0 so light passes through the doorway ---
+  { id: 'door_wood', name: 'Entrance Door', tiles: 'door_wood', shape: 'door', fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_wood_open' },
   { id: 'door_wood_open', name: 'Entrance Door (open)', tiles: 'door_wood', shape: 'door', opacity: 0, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_wood' },
-  { id: 'door_white', name: 'Interior Door', tiles: 'door_white', shape: 'door', opacity: 0, mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_white_open' },
+  { id: 'door_white', name: 'Interior Door', tiles: 'door_white', shape: 'door', mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_white_open' },
   { id: 'door_white_open', name: 'Interior Door (open)', tiles: 'door_white', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_white' },
-  { id: 'door_shop', name: 'Shop Door', tiles: 'door_shop', shape: 'door', opacity: 0, mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_shop_open' },
+  { id: 'door_shop', name: 'Shop Door', tiles: 'door_shop', shape: 'door', mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_shop_open' },
   { id: 'door_shop_open', name: 'Shop Door (open)', tiles: 'door_shop', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_shop' },
-  { id: 'door_steel', name: 'Steel Door', tiles: 'door_steel', shape: 'door', opacity: 0, mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_steel_open' },
+  { id: 'door_steel', name: 'Steel Door', tiles: 'door_steel', shape: 'door', mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_steel_open' },
   { id: 'door_steel_open', name: 'Steel Door (open)', tiles: 'door_steel', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_steel' },
+  // Wielka płyta stairwell entrance: 3x4 cells — the leaf plus a fixed
+  // wired-glass sidelight in one aluminium frame (pair with the domofon decal)
+  { id: 'door_blok', name: 'Blok Entrance Door', tiles: 'door_blok', shape: 'door', mixedAlpha: true, fixedSize: SIZE.DOOR3, tileSpan: [3, 4], doorOpen: 'door_blok_open' },
+  { id: 'door_blok_open', name: 'Blok Entrance Door (open)', tiles: 'door_blok', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR3, tileSpan: [3, 4], doorClosed: 'door_blok' },
 ];
 
 const REGISTRY = new Map(BLOCKS.map((b) => [b.id, b]));
@@ -277,12 +284,35 @@ const DECALS = [
   { id: 'decal_bottles', name: 'Bottles & Caps', tile: 'decal_bottles' },
   { id: 'decal_curtain', name: 'Lace Curtain', tile: 'decal_curtain' },
   { id: 'decal_hopscotch', name: 'Chalk Hopscotch', tile: 'decal_hopscotch', span: [1, 4] },
+  { id: 'decal_domofon', name: 'Domofon Panel', tile: 'decal_domofon' },
 ];
 
 const DECAL_REGISTRY = new Map(DECALS.map((d) => [d.id, d]));
 
 /** The six voxel face names a decal can attach to. */
 export const FACES = Object.freeze(['px', 'nx', 'py', 'ny', 'pz', 'nz']);
+
+// A pane is a single quad centered in its voxel, so only the two faces it
+// looks along can carry a decal: rotation 0/2 runs the pane along x (it
+// faces +-z), 1/3 along z (facing +-x). Doors carry none.
+const PANE_FACES_Z = Object.freeze(['pz', 'nz']);
+const PANE_FACES_X = Object.freeze(['px', 'nx']);
+const NO_FACES = Object.freeze([]);
+
+/** Faces of a placed voxel that can carry a decal. Cubes take all six; a
+ *  shape:'pane' voxel takes only its two flat sides, so a lace curtain lands
+ *  on the glass itself rather than on the cell boundary around it. */
+export function decalFacesFor(id, rotation = 0) {
+  const shape = shapeFor(id);
+  if (shape === 'cube') return FACES;
+  if (shape === 'pane') return (rotation & 1) === 0 ? PANE_FACES_Z : PANE_FACES_X;
+  return NO_FACES;
+}
+
+/** True when a decal may be pinned to this face of a placed voxel. */
+export function acceptsDecal(id, rotation, face) {
+  return decalFacesFor(id, rotation).includes(face);
+}
 
 /** Get a decal definition by id. Returns undefined for unknown ids. */
 export function getDecal(id) {

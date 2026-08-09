@@ -7,7 +7,12 @@ import {
   emptyItem,
   serializeItem,
   deserializeItem,
-  microCellSizeFor,
+  MICRO_SIZE,
+  cellsOf,
+  gridOf,
+  footprintCells,
+  normalizeCells,
+  quarterTurns,
   lightLevelForMeters,
   rotateMicroPoint,
   ITEM_PALETTE,
@@ -32,9 +37,19 @@ import { collides } from '../src/engine/Physics.js';
 
 // --- item data model ---
 
-test('item world sizes map to micro-cell sizes', () => {
-  assert.equal(microCellSizeFor('small'), 0.5 / 8);
-  assert.equal(microCellSizeFor('big'), 1.0 / 8);
+test('micro voxels have a uniform world size; footprints derive their grids', () => {
+  assert.equal(MICRO_SIZE, 0.5 / 8);
+  assert.deepEqual(gridOf({ cells: [1, 1, 1] }), [8, 8, 8]);
+  assert.deepEqual(gridOf({ cells: [2, 4, 1] }), [16, 32, 8]);
+  assert.deepEqual(gridOf({ grid: [8, 8, 16] }), [8, 8, 16], 'equipment defs keep their explicit grid');
+});
+
+test('footprint specs coerce: cells arrays, legacy strings, clamping', () => {
+  assert.deepEqual(footprintCells('small'), [1, 1, 1]);
+  assert.deepEqual(footprintCells('big'), [2, 2, 2]);
+  assert.deepEqual(footprintCells(null), [1, 1, 1]);
+  assert.deepEqual(footprintCells([2, 4, 1]), [2, 4, 1]);
+  assert.deepEqual(normalizeCells([0, 99, 2.4]), [1, 8, 2], 'clamped to 1..8 and rounded');
 });
 
 test('light strength in meters maps to block-light levels', () => {
@@ -48,7 +63,7 @@ test('light strength in meters maps to block-light levels', () => {
 test('emptyItem builds a blank model', () => {
   const it = emptyItem('Lamp');
   assert.equal(it.name, 'Lamp');
-  assert.equal(it.size, 'small');
+  assert.deepEqual(it.cells, [1, 1, 1]);
   assert.equal(it.solid, true, 'new items are blocking by default');
   assert.deepEqual(it.microVoxels, []);
   assert.equal(it.light, null);
@@ -58,18 +73,18 @@ test('item serialization round-trips micro voxels, light and solidity', () => {
   const item = {
     id: 'lamp',
     name: 'Lamp',
-    size: 'big',
+    cells: [2, 4, 1],
     solid: false,
     microVoxels: [
       { x: 0, y: 0, z: 0, color: [220, 40, 30] },
-      { x: 3, y: 4, z: 1, color: [40, 90, 200] },
+      { x: 15, y: 31, z: 7, color: [40, 90, 200] },
     ],
     light: { x: 1, y: 2, z: 3, color: [255, 224, 178], strength: 4.5 },
   };
   const { item: out, errors } = deserializeItem(serializeItem(item));
   assert.deepEqual(errors, []);
   assert.equal(out.id, 'lamp');
-  assert.equal(out.size, 'big');
+  assert.deepEqual(out.cells, [2, 4, 1]);
   assert.equal(out.solid, false);
   assert.deepEqual(out.microVoxels, item.microVoxels);
   assert.deepEqual(out.light, item.light);
@@ -79,7 +94,36 @@ test('item serialization round-trips micro voxels, light and solidity', () => {
 test('items without a solid flag load as blocking', () => {
   const { item } = deserializeItem(JSON.stringify({ format: ITEM_FORMAT, name: 'M', size: 'big' }));
   assert.equal(item.solid, true);
+  assert.deepEqual(item.cells, [2, 2, 2], 'legacy big maps to a 2×2×2 footprint');
   assert.equal(JSON.parse(serializeItem({ ...item, id: 'm' })).solid, true);
+});
+
+test('legacy v1 items migrate losslessly to cells', () => {
+  const { item: small } = deserializeItem(JSON.stringify({
+    format: ITEM_FORMAT, name: 'S', size: 'small',
+    microVoxels: [{ x: 7, y: 0, z: 3, color: [1, 2, 3] }],
+  }));
+  assert.deepEqual(small.cells, [1, 1, 1]);
+  assert.deepEqual(small.microVoxels, [{ x: 7, y: 0, z: 3, color: [1, 2, 3] }], 'small voxels are untouched');
+
+  const { item: big } = deserializeItem(JSON.stringify({
+    format: ITEM_FORMAT, name: 'B', size: 'big',
+    microVoxels: [{ x: 7, y: 7, z: 7, color: [9, 9, 9] }],
+    light: { x: 3, y: 4, z: 5, color: [255, 200, 100], strength: 2 },
+  }));
+  assert.deepEqual(big.cells, [2, 2, 2]);
+  assert.equal(big.microVoxels.length, 8, 'each big voxel upscales to a 2×2×2 block');
+  const keys = big.microVoxels.map((v) => `${v.x},${v.y},${v.z}`).sort();
+  assert.deepEqual(keys, ['14,14,14', '14,14,15', '14,15,14', '14,15,15', '15,14,14', '15,14,15', '15,15,14', '15,15,15']);
+  assert.deepEqual(big.light, { x: 6, y: 8, z: 10, color: [255, 200, 100], strength: 2 }, 'light position doubles');
+});
+
+test('voxels outside the build volume are dropped on load', () => {
+  const { item } = deserializeItem(JSON.stringify({
+    format: ITEM_FORMAT, name: 'C', cells: [1, 2, 1],
+    microVoxels: [{ x: 0, y: 15, z: 0, color: [1, 1, 1] }, { x: 0, y: 16, z: 0, color: [1, 1, 1] }, { x: 8, y: 0, z: 0, color: [1, 1, 1] }],
+  }));
+  assert.deepEqual(item.microVoxels, [{ x: 0, y: 15, z: 0, color: [1, 1, 1] }]);
 });
 
 test('item deserialization tolerates malformed entries', () => {
@@ -142,15 +186,19 @@ test('registry registration copies so later edits do not leak in', () => {
   clearItems();
 });
 
-test('registry serializes and reloads', () => {
+test('registry serializes and reloads (legacy sizes migrate on register)', () => {
   clearItems();
   registerItem({ id: 'x', name: 'X', size: 'big', microVoxels: [{ x: 2, y: 2, z: 2, color: [5, 6, 7] }], light: { x: 1, y: 1, z: 1, color: [8, 9, 10], strength: 2 } });
+  assert.deepEqual(getItem('x').cells, [2, 2, 2], 'legacy big migrates at registration');
+  assert.equal(getItem('x').microVoxels.length, 8);
+  assert.deepEqual(getItem('x').light, { x: 2, y: 2, z: 2, color: [8, 9, 10], strength: 2 });
   const text = serializeRegistry();
   clearItems();
   const loaded = deserializeRegistry(text);
   assert.equal(loaded.length, 1);
   assert.equal(getItem('x').name, 'X');
-  assert.deepEqual(getItem('x').light, { x: 1, y: 1, z: 1, color: [8, 9, 10], strength: 2 });
+  assert.equal(getItem('x').microVoxels.length, 8, 'migration is idempotent across reloads');
+  assert.deepEqual(getItem('x').light, { x: 2, y: 2, z: 2, color: [8, 9, 10], strength: 2 });
   clearItems();
 });
 
@@ -239,6 +287,43 @@ test('big items occupy a 2x2x2 footprint and reject overlaps', () => {
   assert.ok(world.itemAt(11, 1, 11), 'sub-cell resolves to the item');
   assert.equal(world.placeItem('lamp', SIZE.SMALL, 11, 0, 10), false, 'overlaps big footprint');
   assert.equal(world.place('grass', SIZE.SMALL, 11, 1, 11), false);
+});
+
+test('cells footprints occupy their w×h×d cells and store the span', () => {
+  const world = makeItemWorld();
+  assert.equal(world.placeItem('lamp', [2, 4, 1], 10, 0, 10), true);
+  assert.deepEqual(world.itemAt(10, 0, 10).cells, [2, 4, 1]);
+  assert.ok(world.itemAt(11, 3, 10), 'top corner cell resolves to the item');
+  assert.equal(world.itemAt(10, 0, 11), null, 'depth stays 1 cell');
+  assert.equal(world.itemAt(10, 4, 10), null, 'nothing above the footprint');
+  assert.equal(world.place('grass', SIZE.SMALL, 11, 3, 10), false, 'blocks respect the tall footprint');
+});
+
+test('odd quarter-turn rotations swap a footprint\'s x/z span', () => {
+  const world = makeItemWorld();
+  assert.equal(world.placeItem('lamp', [2, 4, 1], 10, 0, 10, Math.PI / 2), true);
+  assert.ok(world.itemAt(10, 0, 11), 'rotated footprint extends into z');
+  assert.equal(world.itemAt(11, 0, 10), null, 'rotated footprint is 1 cell wide in x');
+  const world2 = makeItemWorld();
+  assert.equal(world2.placeItem('lamp', [2, 4, 1], 10, 0, 10, Math.PI), true);
+  assert.ok(world2.itemAt(11, 0, 10), '180° keeps the original span');
+  assert.equal(world2.itemAt(10, 0, 11), null);
+});
+
+test('quarterTurns maps yaw radians to 0..3', () => {
+  assert.equal(quarterTurns(0), 0);
+  assert.equal(quarterTurns(Math.PI / 2), 1);
+  assert.equal(quarterTurns(Math.PI), 2);
+  assert.equal(quarterTurns(-Math.PI / 2), 3);
+  assert.equal(quarterTurns(2 * Math.PI), 0);
+});
+
+test('rotateMicroPoint re-centres into the swapped volume on non-square grids', () => {
+  // 16×8 grid rotated 90° → the point lands inside the swapped 8×16 box.
+  const [x, z] = rotateMicroPoint(0, 0, Math.PI / 2, 16, 8);
+  assert.deepEqual([Math.round(x) + 0, Math.round(z) + 0], [8, 0]);
+  const [x2, z2] = rotateMicroPoint(15, 7, Math.PI / 2, 16, 8);
+  assert.deepEqual([Math.round(x2), Math.round(z2)], [1, 15]);
 });
 
 test('world.clear removes items and their occupancy', () => {
@@ -368,6 +453,19 @@ test('world deserialization skips items that are not registered', () => {
   assert.equal(world.itemAt(0, 0, 0).itemId, 'known');
   assert.equal(world.itemAt(1, 0, 0), null);
   assert.ok(errors.some((e) => e.includes('missing')));
+  clearItems();
+});
+
+test('world serializer round-trips cells footprints', () => {
+  clearItems();
+  registerItem({ id: 'closet', name: 'Closet', cells: [2, 4, 1], microVoxels: [], light: null });
+  const world = new World();
+  assert.equal(world.placeItem('closet', [2, 4, 1], 0, 0, 0, Math.PI / 2), true);
+  const { world: loaded, errors } = deserialize(serialize(world));
+  assert.deepEqual(errors, []);
+  assert.deepEqual(loaded.itemAt(0, 0, 0).cells, [2, 4, 1]);
+  assert.ok(loaded.itemAt(0, 3, 1), 'rotated footprint occupancy survives the round trip');
+  assert.equal(loaded.itemAt(1, 0, 0), null);
   clearItems();
 });
 

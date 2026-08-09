@@ -9,8 +9,9 @@
 // 8 entries. Lookup of any sub-cell returns the owning voxel in O(1).
 
 import { anchorFor, cellsFor } from './VoxelShape.js';
+import { footprintCells, quarterTurns } from './ItemTypes.js';
 import { DEFAULT_CHUNK_SIZE } from './Space.js';
-import { getDecal } from './VoxelTypes.js';
+import { getDecal, acceptsDecal, shapeFor } from './VoxelTypes.js';
 import { FACE_TABLE, decalFootprint } from './ChunkMeshBuilder.js';
 
 export { DEFAULT_CHUNK_SIZE, anchorFor, cellsFor };
@@ -51,10 +52,17 @@ export class World {
      *  entities (not voxels or items): the editor places spawns here and the
      *  game's MobManager reads them when a game starts. */
     this.mobSpawns = new Map();
+    /** NPC spawn points: cell key -> { type, x, y, z }. Same shape as mob
+     *  spawns; `type` names an NpcRegistry def. The game's NPCManager reads
+     *  them when a world loads. */
+    this.npcSpawns = new Map();
     /** Decals pinned to voxel faces: `x,y,z,face` -> { decalId, cell, face,
      *  rotation }. A decal rides the face it is attached to (meshed into the
      *  chunk); removing the voxel removes its decals. */
     this.decals = new Map();
+    /** Splash cameras: authored camera shots the main menu can show. Each is
+     *  { id, pos: [x,y,z] (meters), yaw, pitch (radians), fov, motion }. */
+    this.splashCams = [];
   }
 
   /** Set the player spawn point to a cell. @returns {[number,number,number]} */
@@ -78,13 +86,19 @@ export class World {
    * cell is taken the whole placement is rejected (atomic).
    * @param {number} [rotation] yaw in quarter turns (0..3); rotates the
    *   textures only (top face spins, side tiles permute), never the shape.
+   * @param {'lower'|'upper'|null} [variant] slab variant — keep only the
+   *   lower or upper half of the block (cube-shaped blocks only; ignored for
+   *   panes and doors). The voxel still occupies its full cell footprint.
    * @returns {boolean} true when placed
    */
-  place(type, size, ax, ay, az, rotation = 0) {
+  place(type, size, ax, ay, az, rotation = 0, variant = null) {
     const rot = ((rotation % 4) + 4) % 4;
     if (!this.isAreaFree(ax, ay, az, size, rot)) return false;
     const voxel = { type, size, anchor: [ax, ay, az] };
     if (rot) voxel.rotation = rot;
+    if ((variant === 'lower' || variant === 'upper') && shapeFor(type) === 'cube') {
+      voxel.variant = variant;
+    }
     const cells = [...cellsFor(ax, ay, az, size, rot)];
     for (const [x, y, z] of cells) {
       this.cells.set(key(x, y, z), voxel);
@@ -154,13 +168,17 @@ export class World {
   }
 
   /** True when a decal could be pinned here: every footprint cell holds a
-   *  voxel and none of the covered faces already carries a decal. */
+   *  voxel whose shape accepts this face (cubes take all six, panes only the
+   *  two sides they look along) and none of the covered faces already
+   *  carries a decal. */
   canPlaceDecal(decalId, x, y, z, face, rotation = 0) {
     const rot = ((rotation % 4) + 4) % 4;
     const cells = this._decalCells(decalId, x, y, z, face, rot);
     if (!cells.length) return false;
     for (const [cx, cy, cz] of cells) {
-      if (!this.get(cx, cy, cz)) return false;
+      const voxel = this.get(cx, cy, cz);
+      if (!voxel) return false;
+      if (!acceptsDecal(voxel.type, voxel.rotation ?? 0, face)) return false;
       if (this.decals.has(`${key(cx, cy, cz)},${face}`)) return false;
     }
     return true;
@@ -218,10 +236,12 @@ export class World {
    */
   copyFrom(other) {
     this.clear();
-    other.forEachVoxel((v) => this.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0));
+    other.forEachVoxel((v) => this.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0, v.variant ?? null));
     other.forEachDecal((d) => this.placeDecal(d.decalId, d.cell[0], d.cell[1], d.cell[2], d.face, d.rotation ?? 0));
-    other.forEachItem((it) => this.placeItem(it.itemId, it.size, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0));
+    other.forEachItem((it) => this.placeItem(it.itemId, it.cells ?? it.size, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0));
     other.forEachMobSpawn((s) => this.addMobSpawn(s.type, s.x, s.y, s.z));
+    other.forEachNpcSpawn((s) => this.addNpcSpawn(s.type, s.x, s.y, s.z));
+    other.forEachSplashCam((c) => this.addSplashCam({ ...c, pos: [...c.pos] }));
     if (other.spawn) {
       this.setSpawn(other.spawn[0], other.spawn[1], other.spawn[2]);
       this.spawnYaw = other.spawnYaw ?? 0;
@@ -238,23 +258,30 @@ export class World {
     this.items.clear();
     this.itemCells.clear();
     this.mobSpawns.clear();
+    this.npcSpawns.clear();
     this.decals.clear();
+    this.splashCams.length = 0;
   }
 
   /**
    * Try to place an item at an anchor cell. The whole footprint must be free
-   * of both voxels and other items. Items do not dirty chunks (they are not
-   * part of chunk meshing); the caller triggers light + mesh refresh.
+   * of both voxels and other items. `cells` is the footprint in 0.5 m cells
+   * along [w, h, d] (legacy 'small'/'big' strings still accepted); odd
+   * quarter-turn rotations swap the x/z span, like doors. Items do not dirty
+   * chunks (they are not part of chunk meshing); the caller triggers light +
+   * mesh refresh.
    * @param {number} [rotation] yaw in radians about the footprint centre
    * @returns {boolean} true when placed
    */
-  placeItem(itemId, size, ax, ay, az, rotation = 0) {
-    if (!this.isAreaFree(ax, ay, az, size)) return false;
+  placeItem(itemId, cells, ax, ay, az, rotation = 0) {
+    const span = footprintCells(cells);
+    const turns = quarterTurns(rotation);
+    if (!this.isAreaFree(ax, ay, az, span, turns)) return false;
     const anchorKey = key(ax, ay, az);
     if (this.items.has(anchorKey)) return false;
-    const cells = [...cellsFor(ax, ay, az, size)];
-    for (const [x, y, z] of cells) this.itemCells.set(key(x, y, z), anchorKey);
-    this.items.set(anchorKey, { itemId, anchor: [ax, ay, az], size, rotation });
+    const covered = [...cellsFor(ax, ay, az, span, turns)];
+    for (const [x, y, z] of covered) this.itemCells.set(key(x, y, z), anchorKey);
+    this.items.set(anchorKey, { itemId, anchor: [ax, ay, az], cells: span, rotation });
     return true;
   }
 
@@ -325,6 +352,55 @@ export class World {
   /** Iterate every mob spawn once. */
   forEachMobSpawn(fn) {
     for (const s of this.mobSpawns.values()) fn(s);
+  }
+
+  // --- NPC spawns (talkable characters placed in the editor) ---
+
+  /** NPC spawn at an exact cell, or null. */
+  npcSpawnAt(x, y, z) {
+    return this.npcSpawns.get(key(x, y, z)) ?? null;
+  }
+
+  /** Add an NPC spawn at a cell (rejects overlaps). @returns {boolean} */
+  addNpcSpawn(type, x, y, z) {
+    const k = key(x, y, z);
+    if (this.npcSpawns.has(k)) return false;
+    this.npcSpawns.set(k, { type, x, y, z });
+    return true;
+  }
+
+  /** Remove the NPC spawn at a cell. @returns {object|null} */
+  removeNpcSpawnAt(x, y, z) {
+    const k = key(x, y, z);
+    const spawn = this.npcSpawns.get(k) ?? null;
+    if (spawn) this.npcSpawns.delete(k);
+    return spawn;
+  }
+
+  /** Iterate every NPC spawn once. */
+  forEachNpcSpawn(fn) {
+    for (const s of this.npcSpawns.values()) fn(s);
+  }
+
+  // --- splash cameras (menu splash-screen shots authored in the editor) ---
+
+  /** Add a splash camera. Ids must be unique per world. @returns {boolean} */
+  addSplashCam(cam) {
+    if (!cam || typeof cam.id !== 'string') return false;
+    if (this.splashCams.some((c) => c.id === cam.id)) return false;
+    this.splashCams.push(cam);
+    return true;
+  }
+
+  /** Remove a splash camera by id. @returns {object|null} the removed cam */
+  removeSplashCam(id) {
+    const i = this.splashCams.findIndex((c) => c.id === id);
+    return i === -1 ? null : this.splashCams.splice(i, 1)[0];
+  }
+
+  /** Iterate every splash camera once. */
+  forEachSplashCam(fn) {
+    for (const c of this.splashCams) fn(c);
   }
 
   chunkKey(x, y, z) {

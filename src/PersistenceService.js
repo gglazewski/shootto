@@ -11,14 +11,18 @@ import { serializeBundle, deserializeBundle, BUNDLE_FORMAT } from './persistence
 import { serializeItem } from './engine/ItemTypes.js';
 import { serializeRegistry } from './engine/ItemRegistry.js';
 import { serializeEquipItem, serializeEquipRegistry } from './engine/EquipmentRegistry.js';
+import { serializeNpcRegistry } from './engine/NpcRegistry.js';
+import { serializeQuestRegistry } from './engine/QuestRegistry.js';
 import { BUNDLED_WORLD } from './bundledWorld.js';
 
 export class PersistenceService {
-  constructor({ world, saveKey, itemSaveKey, equipSaveKey, notice }) {
+  constructor({ world, saveKey, itemSaveKey, equipSaveKey, npcSaveKey, questSaveKey, notice }) {
     this.world = world;
     this.saveKey = saveKey;
     this.itemSaveKey = itemSaveKey;
     this.equipSaveKey = equipSaveKey;
+    this.npcSaveKey = npcSaveKey;
+    this.questSaveKey = questSaveKey;
     this.notice = notice;
   }
 
@@ -116,6 +120,110 @@ export class PersistenceService {
     }
   }
 
+  // --- world library (map/worlds/ tree on the server) ---
+
+  /** URL-encode a library path, keeping the folder separators. */
+  _worldUrl(path) {
+    return `/api/worlds/${path.split('/').map(encodeURIComponent).join('/')}`;
+  }
+
+  /** @returns {Promise<Array<{path:string,type:string,size?:number,mtime?:number}>|null>}
+   *  flat listing of the world library, or null when no server is reachable */
+  async listWorlds() {
+    if (!this.serverAvailable) return null;
+    try {
+      const res = await fetch('/api/worlds');
+      return res.ok ? await res.json() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** @returns {Promise<string|null>} world text from the library, or null */
+  async readWorld(path) {
+    if (!this.serverAvailable) return null;
+    try {
+      const res = await fetch(this._worldUrl(path));
+      return res.ok ? await res.text() : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Save the current world + objects into the library. @returns {Promise<boolean>} */
+  async saveWorld(path) {
+    if (!this.serverAvailable) return false;
+    try {
+      const res = await fetch(this._worldUrl(path), {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: serializeBundle(this.world),
+      });
+      if (!res.ok) return false;
+      this.notice.info(`Saved to worlds/${path}`);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /** Delete a world file, or a folder with everything in it. */
+  async deleteWorld(path) {
+    if (!this.serverAvailable) return false;
+    try {
+      return (await fetch(this._worldUrl(path), { method: 'DELETE' })).ok;
+    } catch {
+      return false;
+    }
+  }
+
+  async moveWorld(from, to) {
+    return this._worldOp({ op: 'move', from, to });
+  }
+
+  async mkdirWorlds(path) {
+    return this._worldOp({ op: 'mkdir', path });
+  }
+
+  async _worldOp(op) {
+    if (!this.serverAvailable) return false;
+    try {
+      return (await fetch('/api/worlds-ops', { method: 'POST', body: JSON.stringify(op) })).ok;
+    } catch {
+      return false;
+    }
+  }
+
+  // --- splash manifest (worlds + cameras behind the game's main menu) ---
+
+  /** @returns {Promise<object|null>} parsed splash manifest, or null */
+  async readSplash() {
+    if (!this.serverAvailable) return null;
+    try {
+      const res = await fetch('/api/splash');
+      if (!res.ok) return null;
+      const data = await res.json();
+      return data && typeof data === 'object' ? data : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /** @returns {Promise<boolean>} */
+  async writeSplash(manifest) {
+    if (!this.serverAvailable) return false;
+    try {
+      const res = await fetch('/api/splash', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(manifest, null, 2),
+      });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  }
+
   /** Download the current world as voxelmap.json. */
   export() {
     const blob = new Blob([serialize(this.world)], { type: 'application/json' });
@@ -157,6 +265,26 @@ export class PersistenceService {
   /** @returns {string|null} saved equipment registry text, or null when empty */
   readEquipRegistry() {
     return localStorage.getItem(this.equipSaveKey);
+  }
+
+  // --- NPC + quest registry persistence (F4 editor) ---
+
+  saveNpcRegistry() {
+    if (this.npcSaveKey) localStorage.setItem(this.npcSaveKey, serializeNpcRegistry());
+  }
+
+  /** @returns {string|null} saved NPC registry text, or null when empty */
+  readNpcRegistry() {
+    return this.npcSaveKey ? localStorage.getItem(this.npcSaveKey) : null;
+  }
+
+  saveQuestRegistry() {
+    if (this.questSaveKey) localStorage.setItem(this.questSaveKey, serializeQuestRegistry());
+  }
+
+  /** @returns {string|null} saved quest registry text, or null when empty */
+  readQuestRegistry() {
+    return this.questSaveKey ? localStorage.getItem(this.questSaveKey) : null;
   }
 
   /** Download a single equippable item as <id>.json. */

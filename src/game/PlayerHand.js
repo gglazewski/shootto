@@ -20,7 +20,7 @@
 // light-field lookup per hand.
 
 import { CELL_SIZE } from '../engine/Space.js';
-import { MICRO_GRID, microCellSizeFor } from '../engine/ItemTypes.js';
+import { MICRO_GRID, MICRO_SIZE } from '../engine/ItemTypes.js';
 import { createItemGeometry } from '../editor/ItemGeometry.three.js';
 
 const SKIN = 0xf2d0b0;
@@ -101,6 +101,7 @@ export class PlayerHand {
     this._heldLightAttr = null;
     this._heldMuzzleLocal = null;
     this._heldGrip2Local = null; // left-hand grip cell (two-handed weapons)
+    this._heldVertical = false; // melee weapon stands upright in the grip (sword vs spear)
     this._grip2Vec = new THREE.Vector3(); // scratch for the left-hand attach
     this._palmVec = new THREE.Vector3();
     this._reload = null; // { elapsed, duration } — mag-swap reload animation
@@ -129,6 +130,7 @@ export class PlayerHand {
       this._heldLightAttr = null;
       this._heldMuzzleLocal = null;
       this._heldGrip2Local = null;
+      this._heldVertical = false;
       this._heldFlash = null;
       this._flashLight = null;
       this._flashStarMat = null;
@@ -152,7 +154,7 @@ export class PlayerHand {
 
   _buildHeld(def) {
     const T = this.THREE;
-    const c = microCellSizeFor(def.size ?? 'small');
+    const c = MICRO_SIZE;
     // Grip cell: the editor's grip voxel, falling back to the centre of the
     // item's build volume (per-item since long weapons; default 8^3).
     const dims = Array.isArray(def.grid) && def.grid.length === 3
@@ -178,6 +180,11 @@ export class PlayerHand {
 
     // Item forward (grid +Z rotated by yaw) maps to hand forward (-Z).
     group.rotation.y = Math.PI - (def.yaw ?? 0) * (Math.PI / 180);
+    // Vertical melee weapons (sword, club) stand upright in the fist instead
+    // of pointing at the target: pitch the item so its forward axis points up,
+    // with a slight forward lean so the blade reads in the view.
+    this._heldVertical = def.weapon?.kind !== 'ranged' && def.weapon?.orientation === 'vertical';
+    if (this._heldVertical) group.rotation.x = Math.PI / 2 - 0.12;
     // Anchor the grip to the palm (pivot-local), so swings lean the weapon too.
     group.position.set(0, 0.06, 0);
     this.right.pivot.add(group);
@@ -564,11 +571,15 @@ export class PlayerHand {
 
   /** Pose for the current attack animation at normalized time u ∈ [0,1].
    *  Names: punch (wrist lean), slash (horizontal sweep), stab (straight
-   *  thrust), gun (recoil kick). Returns { px,py,pz, rx,ry,rz, wx,wy,wz }. */
+   *  thrust), gun (recoil kick). A vertical melee weapon (held upright like a
+   *  sword) swings about the wrist instead: the slash becomes an overhead chop
+   *  and punch/stab tip the blade toward the target as the arm drives forward.
+   *  Returns { px,py,pz, rx,ry,rz, wx,wy,wz }. */
   _animPose(hand, side, u) {
     const p = hand.basePos;
     const r = hand.baseRot;
     const name = hand.anim.name;
+    const vertical = this._heldVertical && hand === this.right;
     if (name === 'punch') {
       const ext = punchExtension(u); // [-0.18 .. 1.0]
       return {
@@ -576,10 +587,24 @@ export class PlayerHand {
         py: p.y + ext * -0.05,
         pz: p.z + ext * -0.42,
         rx: r.x, ry: r.y, rz: r.z,
-        wx: -ext * 0.6, wy: 0, wz: 0,
+        // An upright weapon tips further forward so its head leads the strike.
+        wx: -ext * (vertical ? 1.0 : 0.6), wy: 0, wz: 0,
       };
     }
     if (name === 'slash') {
+      if (vertical) {
+        // Overhead chop: wind up over the shoulder, then the blade arcs down
+        // through the view while the arm drives forward.
+        const ext = punchExtension(u); // [-0.18 .. 1.0]
+        const drive = Math.max(0, ext);
+        return {
+          px: p.x + drive * -0.03 * side,
+          py: p.y + drive * 0.10,
+          pz: p.z + ext * -0.20,
+          rx: r.x, ry: r.y, rz: r.z,
+          wx: -ext * 1.5, wy: side * drive * 0.25, wz: side * drive * -0.3,
+        };
+      }
       const s = Math.sin(u * Math.PI);
       return {
         px: p.x,
@@ -591,6 +616,18 @@ export class PlayerHand {
     }
     if (name === 'stab') {
       const ext = punchExtension(u);
+      if (vertical) {
+        // The blade tips down to point at the target while the arm thrusts,
+        // like a fencing lunge, after a slight tip-back wind-up.
+        const tip = Math.max(0, ext);
+        return {
+          px: p.x,
+          py: p.y + tip * 0.03,
+          pz: p.z + ext * -0.45,
+          rx: r.x, ry: r.y, rz: r.z,
+          wx: -tip * 1.3 - Math.min(0, ext) * 0.4, wy: 0, wz: 0,
+        };
+      }
       return {
         px: p.x,
         py: p.y,

@@ -146,6 +146,27 @@ test('mesher emits a centered slab with thickness, swung when open', () => {
   assert.ok(Math.abs(ozHi - ozLo - 1) < 1e-6, 'open leaf is 1m long');
 });
 
+test('closed leaf is lit per side: bright toward the light, dark behind', () => {
+  const tileIndexFor = () => 0;
+  const atlas = { width: 8, height: 24 };
+  const voxel = { type: 'door_wood', size: SIZE.DOOR, rotation: 0, anchor: [0, 0, 0] };
+  const stub = { get: (x, y, z) => (x >= 0 && x < 2 && y >= 0 && y < 4 && z === 0 ? voxel : null) };
+  // Daylight on +z, darkness on -z. The closed leaf's own cells are
+  // light-opaque (they read 0), so each big face must sample the cell
+  // beyond it: the +z face reads full sky, the -z face stays dark.
+  const lf = { skyAt: (x, y, z) => (z > 0 ? 15 : 0), blockAt: () => 0 };
+  const m = buildChunkMesh(stub, lf, [0, 0, 0], 4, tileIndexFor, atlas);
+  let front = 0;
+  let back = 0;
+  for (let i = 0; i < m.normals.length / 3; i++) {
+    const nz = m.normals[i * 3 + 2];
+    const ls = m.lights[i * 2];
+    if (nz === 1) { front++; assert.equal(ls, 1, 'sunlit face reads full daylight'); }
+    if (nz === -1) { back++; assert.equal(ls, 0, 'back face stays dark'); }
+  }
+  assert.ok(front >= 4 && back >= 4, 'both big faces were meshed');
+});
+
 test('closed doors block the mob navmesh, open doors let it through', () => {
   const world = new World();
   // floor

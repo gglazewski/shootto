@@ -3,15 +3,21 @@
 // Global mutable store mirroring VoxelTypes' BLOCKS registry, but populated at
 // runtime from the F2 item editor / loaded item files. Pure (no three.js/DOM).
 
-import { ITEM_WORLD_SIZE } from './ItemTypes.js';
+import { normalizeItemData } from './ItemTypes.js';
 
 const REGISTRY = new Map();
 
-/** Register (or overwrite) an item. Stores a copy so callers can keep editing
- *  the working item without mutating the registered definition. */
+/** Register (or overwrite) an item. Stores a normalized copy (any legacy
+ *  'small'/'big' size migrates to cells) so callers can keep editing the
+ *  working item without mutating the registered definition. */
 export function registerItem(item) {
   if (!item || !item.id) return null;
-  const copy = structuredClone(item);
+  const copy = {
+    id: item.id,
+    name: typeof item.name === 'string' && item.name ? item.name : String(item.id),
+    solid: item.solid !== false,
+    ...normalizeItemData(item),
+  };
   REGISTRY.set(copy.id, copy);
   return copy;
 }
@@ -56,33 +62,8 @@ export function deserializeRegistry(text) {
   if (!Array.isArray(data)) return out;
   for (const entry of data) {
     if (!entry || typeof entry !== 'object' || typeof entry.id !== 'string' || !entry.id) continue;
-    const microVoxels = (Array.isArray(entry.microVoxels) ? entry.microVoxels : [])
-      .filter(
-        (v) =>
-          v && Number.isInteger(v.x) && Number.isInteger(v.y) && Number.isInteger(v.z) &&
-          Array.isArray(v.color) && v.color.length >= 3,
-      )
-      .map((v) => ({ x: v.x, y: v.y, z: v.z, color: [v.color[0], v.color[1], v.color[2]] }));
-    const light =
-      entry.light && Array.isArray(entry.light.color) && entry.light.color.length >= 3
-        ? {
-            x: Math.floor(entry.light.x),
-            y: Math.floor(entry.light.y),
-            z: Math.floor(entry.light.z),
-            color: [entry.light.color[0], entry.light.color[1], entry.light.color[2]],
-            strength: typeof entry.light.strength === 'number' ? Math.min(7.5, Math.max(0.5, entry.light.strength)) : 3,
-          }
-        : null;
-    const item = {
-      id: entry.id,
-      name: typeof entry.name === 'string' && entry.name ? entry.name : entry.id,
-      size: entry.size in ITEM_WORLD_SIZE ? entry.size : 'small',
-      solid: entry.solid !== false,
-      microVoxels,
-      light,
-    };
-    registerItem(item);
-    out.push(item);
+    const item = registerItem(entry); // registerItem normalizes (incl. legacy sizes)
+    if (item) out.push(item);
   }
   return out;
 }

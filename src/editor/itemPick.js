@@ -17,7 +17,7 @@ export function itemAwareWorld(world) {
       const v = world.get(x, y, z);
       if (v) return v;
       const item = world.itemAt(x, y, z);
-      return item ? { item: true, itemId: item.itemId, size: item.size, anchor: item.anchor } : null;
+      return item ? { item: true, itemId: item.itemId, cells: item.cells, anchor: item.anchor } : null;
     },
   };
 }

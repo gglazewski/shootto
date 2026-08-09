@@ -43,8 +43,9 @@ export function listSlots(storage) {
   return Array.from({ length: SLOT_COUNT }, (_, i) => readSlot(i, storage));
 }
 
-/** Build a fresh slot payload from a bundle + player state. */
-export function makeSlot({ bundle, player, stats }) {
+/** Build a fresh slot payload from a bundle + player state. `quests` is the
+ *  serialized QuestLog (older saves without it load with a fresh log). */
+export function makeSlot({ bundle, player, stats, quests = null }) {
   return {
     format: SAVE_FORMAT,
     version: SAVE_VERSION,
@@ -52,5 +53,6 @@ export function makeSlot({ bundle, player, stats }) {
     bundle,
     player,
     stats,
+    quests,
   };
 }

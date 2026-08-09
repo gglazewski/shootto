@@ -188,9 +188,9 @@ T('HUD shows health, armor, equipment slots and fists by default', async () => {
     };
   });
   assert.equal(hud.health, 100);
-  assert.equal(hud.armor, 100);
+  assert.equal(hud.armor, 0, 'armor starts empty — it comes from armor pickups');
   assert.equal(hud.healthText, '100');
-  assert.equal(hud.armorText, '100');
+  assert.equal(hud.armorText, '0');
   assert.equal(hud.slots, 4, 'HUD must render 4 equipment slots');
   assert.deepEqual(hud.slotLabels, ['—', '—', '—', '—']);
   assert.equal(hud.hand, 'Fists', 'empty hand must show fists');
@@ -459,12 +459,13 @@ T('aiming at an equippable item highlights it and E picks it up', async () => {
   const result = await page.evaluate(() => {
     const g = window.__voxelgame;
     const { renderer } = g;
-    renderer.camera.position.set(0.25, 1.25, 3.0);
+    // Within arm's reach: pickups only register within PICKUP_RANGE (1 m).
+    renderer.camera.position.set(0.25, 1.25, 1.2);
     renderer.camera.lookAt(0.25, 1.25, 0.25);
     g._updatePickup();
     const pickup = document.querySelector('#pickup');
     const aimed = g._pickupTarget
-      ? { id: g._pickupTarget.item.itemId, markerVisible: g._pickupMarker.visible }
+      ? { id: g._pickupTarget.item.itemId, markerVisible: g._pickupOutline.visible }
       : null;
     const prompt = {
       visible: !pickup.classList.contains('hidden'),
@@ -484,7 +485,7 @@ T('aiming at an equippable item highlights it and E picks it up', async () => {
       primary: g.stats.equipment.primary,
       hand: document.querySelector('#hand').textContent,
       worldItems: (() => { let n = 0; g.world.forEachItem(() => n++); return n; })(),
-      markerVisible: g._pickupMarker.visible,
+      markerVisible: g._pickupOutline.visible,
       flying: !!g.pickupFX._group,
     };
     return { aimed, prompt, midFlight, after };
@@ -537,13 +538,13 @@ T('rapid pickups queue up and are granted one at a time', async () => {
   const out = await page.evaluate(() => {
     const g = window.__voxelgame;
     const { renderer } = g;
-    // Pick up pistol A.
-    renderer.camera.position.set(0.25, 1.25, 3.0);
+    // Pick up pistol A (both stand within PICKUP_RANGE of the camera).
+    renderer.camera.position.set(0.25, 1.25, 1.2);
     renderer.camera.lookAt(0.25, 1.25, 0.25);
     g._updatePickup();
     g._pickup();
     // Immediately aim at and pick up pistol B.
-    renderer.camera.position.set(1.25, 1.25, 3.0);
+    renderer.camera.position.set(1.25, 1.25, 1.2);
     renderer.camera.lookAt(1.25, 1.25, 0.25);
     g._updatePickup();
     g._pickup();

@@ -157,5 +157,5 @@ test('new estate blocks are registered with atlas tiles', () => {
   assert.equal(shapeFor('door_steel'), 'door');
   assert.equal(getBlock('door_steel').doorOpen, 'door_steel_open');
   assert.equal(getBlock('door_steel_open').doorClosed, 'door_steel');
-  assert.ok(getBlock('window_white').transparent);
+  assert.ok(getBlock('window_white').mixedAlpha, 'window renders in both passes');
 });

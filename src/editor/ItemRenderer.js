@@ -8,16 +8,18 @@
 // instead of standing out. Item geometry is re-lit whenever the light field
 // changes (world edits, item light changes).
 //
-// Items with a light source also get a PointLight + a small visible bulb
-// sphere at the bulb cell. The chunk material ignores scene lights, so world
-// lighting from items comes from the LightField block channel (seeded by
-// App._refreshItemLights); the PointLight is included for materials that do
-// respond to lights and as a visual affordance for the light source.
+// Items with a light source also get a PointLight. The chunk material
+// ignores scene lights, so world lighting from items comes from the
+// LightField block channel (seeded by App._refreshItemLights); the
+// PointLight is included for materials that do respond to lights. The
+// visible bulb sphere gizmo is drawn only in the item/object editor's own
+// preview scene (ItemEditor._buildExtraSceneObjects), never here — it must
+// not appear in the world editor or in actual gameplay.
 
 import { createItemGeometry } from './ItemGeometry.three.js';
 import { getItem } from '../engine/ItemRegistry.js';
 import { getEquipItem } from '../engine/EquipmentRegistry.js';
-import { microCellSizeFor, rotateMicroPoint } from '../engine/ItemTypes.js';
+import { MICRO_SIZE, gridOf, rotateMicroPoint } from '../engine/ItemTypes.js';
 import { CELL_SIZE } from '../engine/Space.js';
 
 const rgbToHex = (c) => ((Math.round(c[0]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[2])) >>> 0;
@@ -86,10 +88,26 @@ export class ItemRenderer {
     this.update();
   }
 
+  /** Edge outline of a placed item's own silhouette (its micro-voxel shape,
+   *  not the cell footprint it occupies), ready to hang on a LineSegments:
+   *  `{ geometry, scale, position }` in world space. Null until the item's
+   *  mesh exists (the first update() after it was placed). The caller owns
+   *  the returned geometry and must dispose it. */
+  outlineFor(placement) {
+    const entry = this._groups.get(placement.anchor.join(','));
+    if (!entry) return null;
+    return {
+      geometry: new this.THREE.EdgesGeometry(entry.geo),
+      scale: MICRO_SIZE,
+      position: entry.offset,
+    };
+  }
+
   _build(placement) {
     const T = this.THREE;
     const item = resolveItem(placement.itemId);
-    const c = microCellSizeFor(placement.size);
+    const c = MICRO_SIZE;
+    const grid = gridOf(item);
     const offset = [
       placement.anchor[0] * CELL_SIZE,
       placement.anchor[1] * CELL_SIZE,
@@ -102,6 +120,7 @@ export class ItemRenderer {
       scale: c,
       offset,
       rotation: yaw,
+      grid,
     });
     const mesh = new T.Mesh(geo, this.material);
     mesh.scale.setScalar(c);
@@ -109,7 +128,7 @@ export class ItemRenderer {
     group.add(mesh);
 
     if (item && item.light) {
-      const [lx, lz] = rotateMicroPoint(item.light.x, item.light.z, yaw);
+      const [lx, lz] = rotateMicroPoint(item.light.x, item.light.z, yaw, grid[0], grid[2]);
       const bulbPos = new T.Vector3(
         offset[0] + (lx + 0.5) * c,
         offset[1] + (item.light.y + 0.5) * c,
@@ -118,12 +137,6 @@ export class ItemRenderer {
       const light = new T.PointLight(rgbToHex(item.light.color), 2, item.light.strength);
       light.position.copy(bulbPos);
       group.add(light);
-      const bulb = new T.Mesh(
-        new T.SphereGeometry(c * 0.4, 12, 12),
-        new T.MeshBasicMaterial({ color: rgbToHex(item.light.color) }),
-      );
-      bulb.position.copy(bulbPos);
-      group.add(bulb);
     }
 
     this.scene.add(group);
@@ -134,12 +147,12 @@ export class ItemRenderer {
    *  light field (world edits, item light changes). */
   _relight(entry) {
     const item = resolveItem(entry.placement.itemId);
-    const c = microCellSizeFor(entry.placement.size);
     const geo = createItemGeometry(this.THREE, item ? item.microVoxels : [], {
       lightField: this.lightField,
-      scale: c,
+      scale: MICRO_SIZE,
       offset: entry.offset,
       rotation: entry.placement.rotation ?? 0,
+      grid: gridOf(item),
     });
     entry.mesh.geometry.dispose();
     entry.mesh.geometry = geo;

@@ -8,7 +8,7 @@
 
 import { Tool } from '../Tool.js';
 import { placeDecalCommand, removeDecalCommand } from '../commands.js';
-import { shapeFor, getDecal } from '../../engine/VoxelTypes.js';
+import { shapeFor, getDecal, acceptsDecal } from '../../engine/VoxelTypes.js';
 import { Notice } from '../Notice.js';
 
 /** Face name for a raycast entry normal. */
@@ -17,6 +17,22 @@ export function faceFromNormal(normal) {
   if (normal[1]) return normal[1] > 0 ? 'py' : 'ny';
   if (normal[2]) return normal[2] > 0 ? 'pz' : 'nz';
   return null;
+}
+
+/**
+ * Ghost offset in cells that walks the preview from the cell's face plane
+ * onto a pane's own plane: a pane sits centered in its voxel, so a curtain
+ * must preview on the glass, not on the cell boundary in front of it.
+ * Returns null for every other shape (the face plane is already right).
+ */
+export function paneGhostOffset(voxel, cell, face) {
+  if (shapeFor(voxel.type) !== 'pane') return null;
+  const axis = face[1] === 'x' ? 0 : face[1] === 'y' ? 1 : 2;
+  const span = voxel.size === 'big' ? 2 : 1;
+  const anchor = voxel.anchor ?? cell;
+  const offset = [0, 0, 0];
+  offset[axis] = anchor[axis] + span / 2 - (cell[axis] + (face[0] === 'p' ? 1 : 0));
+  return offset;
 }
 
 export class DecalTool extends Tool {
@@ -59,8 +75,12 @@ export class DecalTool extends Tool {
     if (!this.decalId) return;
     const t = this._target();
     if (!t) return;
-    if (shapeFor(t.voxel.type) !== 'cube') {
-      Notice.warn('Decals need a full block face');
+    if (!acceptsDecal(t.voxel.type, t.voxel.rotation ?? 0, t.face)) {
+      Notice.warn(
+        shapeFor(t.voxel.type) === 'pane'
+          ? 'Aim at the flat side of the pane'
+          : 'Decals need a full block face',
+      );
       return;
     }
     if (t.decal) {
@@ -97,9 +117,8 @@ export class DecalTool extends Tool {
       ghost.hide();
       return;
     }
-    const blocked = shapeFor(t.voxel.type) !== 'cube'
-      || !this.ctx.world.canPlaceDecal(this.decalId, t.cell[0], t.cell[1], t.cell[2], t.face, this.rotation);
-    ghost.showDecal(t.cell, t.face, this.decalId, this.rotation, blocked);
+    const blocked = !this.ctx.world.canPlaceDecal(this.decalId, t.cell[0], t.cell[1], t.cell[2], t.face, this.rotation);
+    ghost.showDecal(t.cell, t.face, this.decalId, this.rotation, blocked, paneGhostOffset(t.voxel, t.cell, t.face));
   }
 
   onDeactivate() {

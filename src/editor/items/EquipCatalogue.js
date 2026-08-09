@@ -35,19 +35,26 @@ export class EquipCatalogue extends CatalogueModal {
   _filters() {
     return [
       { id: 'all', label: 'All', test: () => true },
-      { id: 'weapon', label: 'Weapons', test: (i) => i.kind !== 'ammo' },
+      { id: 'weapon', label: 'Weapons', test: (i) => i.kind !== 'ammo' && i.kind !== 'armor' },
       { id: 'ammo', label: 'Ammo', test: (i) => i.kind === 'ammo' },
+      { id: 'armor', label: 'Armor', test: (i) => i.kind === 'armor' },
     ];
   }
 
   _list() {
-    return listEquipItems();
+    // Built-in quest items are code, not authored content: they don't appear
+    // in the catalogue (or persist — see serializeEquipRegistry). An author's
+    // re-skin under the same id carries no flag and shows up normally.
+    return listEquipItems().filter((i) => !i.builtin);
   }
 
   _meta(item) {
     if (item.kind === 'ammo') {
       const a = item.ammo ?? {};
       return `ammo · ${a.type ? ammoName(a.type) : 'no type'} ×${a.amount ?? 0} · ${item.microVoxels.length} voxels`;
+    }
+    if (item.kind === 'armor') {
+      return `armor · +${item.armor?.amount ?? 25} points · ${item.microVoxels.length} voxels`;
     }
     const s = item.stats ?? {};
     // Multi-pellet guns show per-pellet math: "6×8 dmg" (damage is per pellet).

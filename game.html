@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Voxel Game</title>
+  <title>MARO 93</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; background: #0b0d10; }
@@ -135,37 +135,157 @@
       font-family: inherit; font-size: 12px; color: #fff;
     }
 
-    /* --- menus --- */
+    /* quest tracker (top-right): WoW-style objective list — no panel, just
+       text over the world with a hard shadow. Gold header + per-quest gold
+       title with indented grey "- objective x/y" lines; a quest that's ready
+       to turn in gets its line tinted green. */
+    #quest {
+      top: 14px; right: 16px; width: 250px; max-width: 44vw;
+      font-size: 13px; line-height: 1.35; color: #e8e8e8;
+      text-shadow: 1px 1px 0 rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.7);
+    }
+    #quest-header {
+      color: #ffd100; font-size: 15px; font-weight: 700; letter-spacing: 0.02em;
+      padding-bottom: 3px; margin-bottom: 8px;
+    }
+    #quest-header::after {
+      content: ''; display: block; height: 1px; margin-top: 4px;
+      background: linear-gradient(90deg, rgba(255,209,0,0.55), rgba(255,209,0,0));
+    }
+    .quest-entry { margin-bottom: 10px; }
+    .quest-entry .q-title { color: #ffd100; font-weight: 600; margin-bottom: 2px; }
+    .quest-entry .q-obj { color: #c8c8c8; padding-left: 14px; }
+    .quest-entry .q-obj::before { content: '- '; }
+    .quest-entry.ready .q-obj { color: #9be07a; }
+    .quest-entry.ready .q-obj::before { content: '? '; color: #ffd100; font-weight: 700; }
+
+    /* NPC dialog (walk up to a character, press E; replies pick with 1-9 or tap) */
+    #dialog {
+      left: 50%; bottom: 150px; transform: translateX(-50%);
+      width: min(92vw, 560px); padding: 14px 18px; border-radius: 10px;
+      background: rgba(10,12,16,0.88); border: 1px solid rgba(255,205,130,0.5);
+    }
+    #dialog-name { color: #fcb; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+    #dialog-text { font-size: 15px; line-height: 1.5; }
+    #dialog-choices { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+    #dialog-choices.hidden { display: none; }
+    #dialog-choices button {
+      pointer-events: auto; display: flex; align-items: baseline; gap: 8px;
+      text-align: left; padding: 7px 10px; border-radius: 6px; cursor: pointer;
+      border: 1px solid rgba(255,205,130,0.25); background: rgba(255,205,130,0.08);
+      color: #ffe9c8; font-family: inherit; font-size: 13px; line-height: 1.4;
+    }
+    #dialog-choices button:hover { background: rgba(255,205,130,0.22); border-color: rgba(255,205,130,0.5); }
+    #dialog .dialog-hint { margin-top: 8px; font-size: 11px; opacity: 0.6; text-align: right; }
+    #dialog .dialog-hint.hidden { display: none; }
+    #dialog kbd {
+      display: inline-block; min-width: 16px; padding: 0 4px; border: 1px solid #fcb;
+      border-bottom-width: 2px; border-radius: 4px; background: rgba(0,0,0,0.4);
+      font-family: inherit; font-size: 10px; color: #fff; text-align: center;
+    }
+
+    /* --- menus ---
+       Screens follow the MARO 93 landing-page look: near-black green, red
+       accent, amber highlights, hard text shadows. The main menu is mostly
+       see-through — behind it the camera flies a slow lap over the map
+       (MenuFlyover), so it only tints the edges for readability. */
     .screen {
+      --ui-panel: rgba(16,19,17,0.86); --ui-line: #2a2f2b;
+      --ui-text: #e9e6dc; --ui-muted: #a8a396;
+      --ui-red: #c9372e; --ui-red-hot: #e34a3f; --ui-amber: #e8b25c;
       position: fixed; inset: 0; z-index: 20; display: flex;
-      align-items: center; justify-content: center; background: rgba(0,0,0,0.55);
-      pointer-events: auto;
+      align-items: center; justify-content: center; background: rgba(8,9,8,0.6);
+      pointer-events: auto; color: var(--ui-text);
     }
     .screen.hidden { display: none; }
     .screen .box {
-      background: rgba(14,17,22,0.96); border: 1px solid #333; border-radius: 12px;
-      padding: 28px 34px; min-width: 340px; max-width: 90vw; text-align: center;
+      background: var(--ui-panel); border: 1px solid var(--ui-line); border-radius: 12px;
+      padding: 26px 32px; min-width: 340px; max-width: 90vw; text-align: center;
     }
-    .screen h1 { font-size: 24px; margin-bottom: 6px; }
-    .screen .sub { opacity: 0.7; font-size: 13px; margin-bottom: 20px; }
-    .screen h2 { font-size: 14px; margin: 18px 0 8px; color: #fcb; text-align: left; }
+    .screen h1 {
+      font-size: 26px; font-weight: 900; letter-spacing: 0.08em; margin-bottom: 6px;
+      text-shadow: 2px 2px 0 #000;
+    }
+    .screen .sub { color: var(--ui-muted); font-size: 13px; margin-bottom: 20px; }
+    .screen h2 {
+      font-size: 12px; margin: 20px 0 8px; color: var(--ui-amber); text-align: left;
+      text-transform: uppercase; letter-spacing: 0.22em;
+    }
+    .screen h2::after {
+      content: ''; display: block; height: 1px; margin-top: 6px;
+      background: linear-gradient(90deg, rgba(232,178,92,0.5), transparent);
+    }
     .screen button {
-      display: block; width: 100%; padding: 10px; margin: 6px 0; border: 1px solid #3a3f47;
-      border-radius: 8px; background: rgba(30,36,44,0.9); color: #e8e8e8; cursor: pointer;
-      font-size: 14px;
+      display: block; width: 100%; padding: 10px 12px; margin: 6px 0;
+      border: 1px solid #3a4038; border-radius: 8px;
+      background: rgba(26,30,27,0.92); color: var(--ui-text); cursor: pointer;
+      font-family: inherit; font-size: 14px; letter-spacing: 0.03em;
     }
-    .screen button:hover:not(:disabled) { background: rgba(50,58,70,0.95); }
+    .screen button:hover:not(:disabled) { background: rgba(40,45,40,0.95); border-color: rgba(232,178,92,0.6); }
     .screen button:disabled { opacity: 0.4; cursor: default; }
-    .screen button.primary { border-color: #6c9; background: rgba(60,110,80,0.5); }
-    .screen button.primary:hover { background: rgba(70,130,95,0.7); }
-    .screen .slot-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; text-align: left; }
-    .screen .slot-row span { flex: 1; font-size: 13px; opacity: 0.9; }
-    .screen .slot-row button { width: auto; margin: 0; padding: 6px 14px; }
-    .screen .hint { margin-top: 18px; font-size: 12px; opacity: 0.6; line-height: 1.7; }
-    .screen kbd {
-      display: inline-block; min-width: 20px; padding: 0 5px; border: 1px solid #555;
-      border-bottom-width: 2px; border-radius: 4px; background: #1a1c20; font-family: inherit; font-size: 12px;
+    .screen button.primary {
+      border-color: #e86e60; background: var(--ui-red); color: #fff;
+      font-weight: 800; font-size: 16px; letter-spacing: 0.06em; padding: 13px 12px;
+      box-shadow: 0 4px 0 #7c1f19, 0 10px 30px rgba(201,55,46,0.35);
+      transition: transform 0.08s, box-shadow 0.08s, background 0.15s;
     }
+    .screen button.primary:hover { background: var(--ui-red-hot); }
+    .screen button.primary:active { transform: translateY(3px); box-shadow: 0 1px 0 #7c1f19; }
+    .screen .slot-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; text-align: left; }
+    .screen .slot-row span { flex: 1; font-size: 13px; color: var(--ui-muted); }
+    .screen .slot-row button { width: auto; margin: 0; padding: 6px 14px; }
+    .screen .hint { margin-top: 18px; font-size: 12px; color: var(--ui-muted); line-height: 1.7; }
+    .screen kbd {
+      display: inline-block; min-width: 20px; padding: 0 5px; border: 1px solid #4a4f48;
+      border-bottom-width: 2px; border-radius: 4px; background: #161815; font-family: inherit; font-size: 12px;
+    }
+
+    /* main menu: transparent over the flyover — title splash, slim panel,
+       faint CRT scanlines for the 90s TV feel */
+    #menu {
+      flex-direction: column; justify-content: center; gap: 26px;
+      background:
+        linear-gradient(rgba(8,9,8,0.55), rgba(8,9,8,0.12) 30%, rgba(8,9,8,0.12) 62%, rgba(8,9,8,0.72)),
+        radial-gradient(ellipse at center, transparent 40%, rgba(8,8,8,0.45));
+    }
+    /* Before the authored splash shots have loaded the menu sits on an opaque
+       backdrop, so the procedural map flyover never flashes up first. */
+    #menu.cover { background: #080908; }
+    #menu::after {
+      content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0.12;
+      background: repeating-linear-gradient(transparent 0 2px, rgba(0,0,0,0.6) 2px 4px);
+    }
+    #menu .menu-title { position: relative; z-index: 1; text-align: center; }
+    #menu .kicker {
+      font-size: 13px; letter-spacing: 0.3em; text-transform: uppercase;
+      color: var(--ui-amber); text-shadow: 1px 1px 0 #000; margin-bottom: 10px;
+    }
+    #menu .title {
+      font-size: clamp(46px, 9vw, 88px); font-weight: 900; letter-spacing: 0.12em;
+      line-height: 1; text-shadow: 4px 4px 0 #000, 0 0 60px rgba(201,55,46,0.4);
+    }
+    #menu .title .dot { color: var(--ui-red-hot); }
+    #menu .tagline {
+      margin-top: 10px; color: var(--ui-muted); font-size: 14px;
+      letter-spacing: 0.04em; text-shadow: 1px 1px 0 #000;
+    }
+    #menu .box {
+      position: relative; z-index: 1; min-width: 320px; width: min(90vw, 380px);
+      backdrop-filter: blur(3px);
+    }
+    #menu .hint {
+      position: relative; z-index: 1; margin: 0; max-width: 640px;
+      text-align: center; text-shadow: 1px 1px 0 #000;
+    }
+    @media (max-height: 620px) {
+      #menu { gap: 14px; }
+      #menu .title { font-size: clamp(34px, 8vh, 56px); }
+      #menu .hint { display: none; }
+    }
+
+    /* death screen: red-tinted flavour of the same look */
+    #death .box { border-color: rgba(201,55,46,0.5); }
+    #death h1 { color: var(--ui-red-hot); }
 
     /* --- touch controls (mobile only) ---
        Minecraft-style: floating joystick on the left, drag-to-look on the
@@ -233,6 +353,16 @@
   <div id="hit-feedback"></div>
   <div id="toast" class="overlay"></div>
   <div id="pickup" class="overlay hidden"></div>
+  <div id="dialog" class="overlay hidden">
+    <div id="dialog-name"></div>
+    <div id="dialog-text"></div>
+    <div id="dialog-choices" class="hidden"></div>
+    <div class="dialog-hint" id="dialog-hint">Press <kbd>E</kbd> to continue</div>
+  </div>
+  <div id="quest" class="overlay hidden">
+    <div id="quest-header">Objectives</div>
+    <div id="quest-list"></div>
+  </div>
 
   <div id="hud" class="overlay">
     <div class="stats">
@@ -255,18 +385,21 @@
   </div>
 
   <div id="menu" class="screen">
+    <div class="menu-title">
+      <div class="kicker">Poland · 1993</div>
+      <div class="title">MARO 93<span class="dot">.</span></div>
+      <div class="tagline">Ex-military. Ex-mercenary. He hunted communists under the PRL — now he's hunting something worse.</div>
+    </div>
     <div class="box">
-      <h1>Voxel Game</h1>
-      <div class="sub">Your world, built in the editor</div>
       <button id="btn-new" class="primary">New Game</button>
       <h2>Load Game</h2>
       <div id="slots-menu"></div>
-      <div class="hint">
-        <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;·&nbsp;
-        <kbd>C</kbd> crouch &nbsp;·&nbsp;
-        <kbd>LMB</kbd> attack &nbsp;·&nbsp; <kbd>1</kbd>-<kbd>4</kbd> select equipment &nbsp;·&nbsp;
-        <kbd>R</kbd> reload &nbsp;·&nbsp; <kbd>F</kbd> use injection &nbsp;·&nbsp; <kbd>Esc</kbd> pause / save
-      </div>
+    </div>
+    <div class="hint">
+      <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;·&nbsp;
+      <kbd>C</kbd> crouch &nbsp;·&nbsp;
+      <kbd>LMB</kbd> attack &nbsp;·&nbsp; <kbd>1</kbd>-<kbd>4</kbd> select equipment &nbsp;·&nbsp;
+      <kbd>R</kbd> reload &nbsp;·&nbsp; <kbd>F</kbd> use injection &nbsp;·&nbsp; <kbd>Esc</kbd> pause / save
     </div>
   </div>
 

@@ -5,15 +5,18 @@
 // up to 32 cells per axis at a fixed 6.25 cm cell size — long guns and axes
 // just use a longer volume). In addition to the shape it carries
 // gameplay-relevant editor fields:
-//   - kind:  what the item is — 'weapon' (held and fought with) or 'ammo'
-//            (a resource type a weapon consumes).
+//   - kind:  what the item is — 'weapon' (held and fought with), 'ammo'
+//            (a resource type a weapon consumes), 'armor' (a vest that
+//            grants armor points when picked up) or 'quest' (a fetch-quest
+//            objective: pickable only while a quest wants it, never shown
+//            in the hotbar — see quests.js).
 //   - grip:  the micro-voxel cell where the player's right hand grips the
 //            item; grip2 is the left-hand cell for two-handed weapons,
 //   - yaw:   the item's forward/direction angle (degrees about the vertical
 //            axis; the F3 editor shows this as an arrow, default +Z).
 //   - stats: damage / reach (m) / cooldown (s) used when attacking (weapons).
 //   - weapon: a composable attack profile (kind / hands / muzzle / anim /
-//            recoil / spread / pellets) — see normalizeWeapon (weapons).
+//            recoil / spread / pellets / orientation) — see normalizeWeapon.
 //   - ammo:  the ammo type a pack grants + the amount per pickup (ammo kind).
 //
 // Separate from the placeable-object ItemRegistry: objects decorate the world,
@@ -30,6 +33,9 @@ export const DEFAULT_EQUIP_STATS = Object.freeze({ damage: 10, reach: 2, cooldow
 /** Default ammo-pack fields for an ammo-kind item. */
 export const DEFAULT_AMMO = Object.freeze({ type: '', amount: 6 });
 
+/** Default armor fields for an armor-kind item (points granted on pickup). */
+export const DEFAULT_ARMOR_PACK = Object.freeze({ amount: 25 });
+
 /** Attack animations available per weapon kind. */
 export const ATTACK_ANIMS = Object.freeze({
   melee: ['punch', 'slash', 'stab'],
@@ -42,6 +48,7 @@ export const DEFAULT_WEAPON = Object.freeze({
   hands: 'one',
   muzzle: null,
   anim: 'punch',
+  orientation: 'horizontal', // melee grip attitude: forward like a spear, or upright like a sword
   recoil: 0.05,
   magazine: 0, // rounds per mag; 0 = no magazine (melee / infinite)
   ammo: '', // ammo type id the gun consumes ('' = none / melee)
@@ -90,6 +97,7 @@ const REGISTRY = new Map();
  * @property {{damage:number,reach:number,cooldown:number}} stats  (weapon)
  * @property {object} weapon       composable attack profile (see normalizeWeapon)
  * @property {{type:string,amount:number}} ammo  ammo pack: type granted + rounds per pickup
+ * @property {{amount:number}} armor  armor vest: points granted on pickup (armor kind)
  */
 
 /** A blank equippable item model. */
@@ -106,6 +114,7 @@ export function emptyEquipItem(name = 'New Item') {
     stats: { ...DEFAULT_EQUIP_STATS },
     weapon: { ...DEFAULT_WEAPON },
     ammo: { ...DEFAULT_AMMO },
+    armor: { ...DEFAULT_ARMOR_PACK },
   };
 }
 
@@ -114,9 +123,15 @@ const clampNum = (v, min, max, fallback) => {
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 };
 
-/** Normalize the item kind: anything other than 'ammo' is a weapon. */
+/** Normalize the item kind: anything other than 'ammo'/'armor'/'quest' is a
+ *  weapon. */
 export function normalizeKind(kind) {
-  return kind === 'ammo' ? 'ammo' : 'weapon';
+  return kind === 'ammo' || kind === 'armor' || kind === 'quest' ? kind : 'weapon';
+}
+
+/** Normalize an armor pack to the canonical {amount} shape (1..100). */
+export function normalizeArmorPack(a = {}) {
+  return { amount: Math.round(clampNum(a.amount, 1, 100, DEFAULT_ARMOR_PACK.amount)) };
 }
 
 /** Normalize an ammo pack to the canonical {type, amount} shape: the granted
@@ -147,6 +162,8 @@ export function normalizeWeapon(w = {}) {
   return {
     kind,
     hands: w.hands === 'two' ? 'two' : 'one',
+    // Grip attitude: only melee weapons can stand upright; guns point forward.
+    orientation: kind === 'melee' && w.orientation === 'vertical' ? 'vertical' : 'horizontal',
     muzzle:
       m && Number.isInteger(m.x) && Number.isInteger(m.y) && Number.isInteger(m.z)
         ? { x: m.x, y: m.y, z: m.z }
@@ -174,6 +191,7 @@ export function registerEquipItem(item) {
   copy.weapon = normalizeWeapon(copy.weapon);
   copy.yaw = clampNum(copy.yaw, 0, 360, 0);
   copy.ammo = normalizeAmmo(copy.ammo);
+  copy.armor = normalizeArmorPack(copy.armor);
   REGISTRY.set(copy.id, copy);
   return copy;
 }
@@ -201,9 +219,12 @@ export function clearEquipItems() {
   REGISTRY.clear();
 }
 
-/** Persist the whole registry as JSON text (localStorage / files). */
+/** Persist the whole registry as JSON text (localStorage / files). Built-in
+ *  defs (the quest items code always registers) are code, not authored
+ *  content — they are skipped, so saving one authored item persists exactly
+ *  that item. */
 export function serializeEquipRegistry() {
-  return JSON.stringify(listEquipItems());
+  return JSON.stringify(listEquipItems().filter((i) => !i.builtin));
 }
 
 /** Load registry entries from JSON text (array of EquipDefs).
@@ -243,6 +264,7 @@ export function serializeEquipItem(item) {
       stats: normalizeStats(item.stats),
       weapon: normalizeWeapon(item.weapon),
       ammo: normalizeAmmo(item.ammo),
+      armor: normalizeArmorPack(item.armor),
     },
     null,
     2,
@@ -280,6 +302,7 @@ function parseEquipDef(entry) {
     stats: normalizeStats(entry.stats),
     weapon: normalizeWeapon(entry.weapon),
     ammo: normalizeAmmo(entry.ammo),
+    armor: normalizeArmorPack(entry.armor),
   };
 }
 

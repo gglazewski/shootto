@@ -52,6 +52,20 @@
       font-family: inherit; font-size: 12px;
     }
 
+    /* Interaction prompt under the crosshair while test-running (doors etc).
+       Sits below the toast so the two never overlap. */
+    #ui-prompt {
+      left: 50%; top: calc(50% + 52px); transform: translateX(-50%);
+      padding: 5px 14px; border-radius: 20px; background: rgba(0,0,0,0.5);
+      font-size: 14px; white-space: nowrap; pointer-events: none;
+    }
+    #ui-prompt.hidden { display: none; }
+    #ui-prompt kbd {
+      display: inline-block; padding: 0 5px; border: 1px solid rgba(255,255,255,0.4);
+      border-bottom-width: 2px; border-radius: 4px; background: rgba(0,0,0,0.4);
+      font-family: inherit; font-size: 12px;
+    }
+
     #ui-action {
       left: 50%; top: calc(50% + 26px); transform: translateX(-50%);
       padding: 6px 14px; border-radius: 20px; background: rgba(0,0,0,0.5);
@@ -165,6 +179,90 @@
     .inv-hint kbd { color: #fff; font-weight: 600; }
     .inv-section { margin-top: 18px; margin-bottom: 8px; font-size: 13px; color: #fcb; }
 
+    /* --- NPC & quest editor (F4) --- */
+    .npcq-overlay {
+      position: fixed; inset: 0; z-index: 22; display: none;
+      align-items: center; justify-content: center; background: rgba(0,0,0,0.6);
+    }
+    .npcq-overlay.open { display: flex; }
+    .npcq-panel {
+      background: rgba(14,17,22,0.97); border: 1px solid #333; border-radius: 12px;
+      width: min(94vw, 760px); max-height: 86vh; display: flex; flex-direction: column;
+      font-size: 13px;
+    }
+    .npcq-head {
+      display: flex; align-items: center; gap: 14px; padding: 14px 18px;
+      border-bottom: 1px solid #2c3442;
+    }
+    .npcq-title { font-size: 16px; font-weight: 600; flex: 1; }
+    .npcq-tabs { display: flex; gap: 4px; }
+    .npcq-tabs button, .npcq-buttons button, .npcq-close {
+      padding: 5px 12px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #e8e8e8; cursor: pointer; font-size: 12px;
+    }
+    .npcq-tabs button:hover, .npcq-buttons button:hover, .npcq-close:hover { background: rgba(40,46,56,0.95); }
+    .npcq-tabs button.active { border-color: #55dd99; background: rgba(85,221,153,0.15); color: #fff; }
+    .npcq-buttons button.primary { border-color: #6c9; background: rgba(60,110,80,0.5); }
+    .npcq-buttons button.danger:hover { background: rgba(90,30,30,0.9); border-color: #a44; }
+    .npcq-body { display: flex; gap: 16px; padding: 14px 18px; overflow: hidden; flex: 1; }
+    .npcq-list {
+      width: 190px; flex-shrink: 0; display: flex; flex-direction: column; gap: 5px;
+      overflow-y: auto;
+    }
+    .npcq-entry {
+      padding: 7px 10px; text-align: left; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #ddd; cursor: pointer; font-size: 12px;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .npcq-entry:hover { background: rgba(40,46,56,0.95); }
+    .npcq-entry.active { border-color: #55dd99; background: rgba(85,221,153,0.12); color: #fff; }
+    .npcq-entry.npcq-add { border-style: dashed; color: #9c9; }
+    .npcq-giver {
+      margin-bottom: 6px; padding: 6px; background: #0e1116; color: #eee;
+      border: 1px solid #3a3f47; border-radius: 6px;
+    }
+    .npcq-form { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
+    .npcq-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .npcq-label { opacity: 0.7; flex-shrink: 0; }
+    .npcq-form input, .npcq-form select {
+      width: 240px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
+      color: #eee; padding: 4px 7px;
+    }
+    .npcq-form input.invalid { border-color: #a44; }
+    .npcq-form textarea {
+      width: 100%; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
+      color: #eee; padding: 5px 7px; font-family: inherit; font-size: 12px; resize: vertical;
+    }
+    .npcq-hint { font-size: 11px; color: #9ab; margin-top: 4px; }
+    .npcq-spawn { display: flex; align-items: center; gap: 6px; }
+    .npcq-spawn-label { font-size: 12px; color: #9c9; white-space: nowrap; }
+    .npcq-spawn button {
+      padding: 3px 8px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #e8e8e8; cursor: pointer; font-size: 11px;
+    }
+    .npcq-spawn button:hover { background: rgba(40,46,56,0.95); }
+    .npcq-picker { display: flex; flex-direction: column; gap: 4px; }
+    .npcq-items {
+      display: flex; flex-wrap: wrap; gap: 6px; max-height: 170px; overflow-y: auto;
+      padding: 6px; border: 1px solid #2c3442; border-radius: 6px; background: rgba(0,0,0,0.25);
+    }
+    .npcq-item {
+      width: 74px; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 5px 3px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #ccc; cursor: pointer; font-size: 11px;
+    }
+    .npcq-item:hover { background: rgba(40,46,56,0.95); }
+    .npcq-item.active { border-color: #55dd99; background: rgba(85,221,153,0.15); color: #fff; }
+    .npcq-item canvas { width: 40px; height: 40px; image-rendering: pixelated; }
+    .npcq-item-gap {
+      width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;
+      border: 1px dashed #a44; border-radius: 4px; color: #a44;
+    }
+    .npcq-item-name {
+      max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .npcq-buttons { display: flex; gap: 8px; margin-top: 10px; padding-bottom: 4px; }
+
     /* --- item editor (F2) --- */
     #item-editor { position: fixed; inset: 0; z-index: 15; pointer-events: none; display: none; }
     body.item-mode #item-editor { display: block; }
@@ -196,7 +294,7 @@
       width: 118px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
       color: #eee; padding: 3px 6px;
     }
-    #ie-size, #ie-collision, #ep-kind, #ep-hands, #ep-cat { display: flex; gap: 4px; }
+    #ie-size, #ie-collision, #ep-kind, #ep-hands, #ep-orient, #ep-cat { display: flex; gap: 4px; }
     #ie-size button, #ie-collision button, #ie-buttons button, #ep-buttons button, #ep-cat button, .ie-tools button, #ep-shape button, .ie-views button {
       padding: 5px 10px; border: 1px solid #3a3f47; border-radius: 6px;
       background: rgba(20,24,30,0.9); color: #e8e8e8; cursor: pointer; font-size: 12px;
@@ -204,7 +302,7 @@
     #ie-collision button { padding: 5px 6px; white-space: nowrap; }
     .ie-tools button, #ep-shape button, .ie-views button { padding: 4px 7px; }
     #ie-size button:hover, #ie-collision button:hover, #ie-buttons button:hover, #ep-buttons button:hover, #ep-cat button:hover, .ie-tools button:hover:not(:disabled), #ep-shape button:hover, .ie-views button:hover { background: rgba(40,46,56,0.95); }
-    #ie-size button.active, #ie-collision button.active, #ep-kind button.active, #ep-hands button.active, #ep-cat button.active, .ie-tools button.active, #ep-shape button.active { border-color: #6c9; background: rgba(102,204,153,0.2); color: #fff; }
+    #ie-size button.active, #ie-collision button.active, #ep-kind button.active, #ep-hands button.active, #ep-orient button.active, #ep-cat button.active, .ie-tools button.active, #ep-shape button.active { border-color: #6c9; background: rgba(102,204,153,0.2); color: #fff; }
     #ep-tool-muzzle.active { border-color: #fc3; background: rgba(255,204,60,0.2); }
     .ie-tools { flex-wrap: wrap; justify-content: flex-start; }
     .ie-tools button:disabled { opacity: 0.35; cursor: default; }
@@ -219,18 +317,22 @@
       font-size: 11px; opacity: 0.75; line-height: 1.4; min-height: 28px;
     }
     .ie-grid-steppers { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
-    #ep-panel .ie-grid-steppers input[type=number] { width: 40px; }
+    #ep-panel .ie-grid-steppers input[type=number], #ie-panel .ie-grid-steppers input[type=number] { width: 40px; }
     .ie-dim-label { opacity: 0.7; font-size: 11px; white-space: nowrap; }
     #ie-thumb, #ep-thumb { background: #12151b; border: 1px solid #2c3442; border-radius: 6px; }
     #ep-cat button.active[data-kind="ammo"] { border-color: #fc3; background: rgba(255,204,60,0.2); }
-    #ep-weapon-fields, #ep-ammo-fields { margin: 0; }
-    #ep-weapon-fields.hidden, #ep-ammo-fields.hidden { display: none; }
+    #ep-cat button.active[data-kind="armor"] { border-color: #6cf; background: rgba(102,204,255,0.2); }
+    #ep-cat button.active[data-kind="quest"] { border-color: #5d9; background: rgba(85,221,153,0.2); }
+    #ep-weapon-fields, #ep-ammo-fields, #ep-armor-fields { margin: 0; }
+    #ep-weapon-fields.hidden, #ep-ammo-fields.hidden, #ep-armor-fields.hidden { display: none; }
     #ep-anim {
       width: 118px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
       color: #eee; padding: 3px 6px;
     }
     #ep-magazine-row { display: flex; }
     #ep-magazine-row.hidden-row { display: none; }
+    #ep-orient-row { display: flex; }
+    #ep-orient-row.hidden-row { display: none; }
     #ep-ammo-row { display: flex; }
     #ep-ammo-row.hidden-row { display: none; }
     #ep-reload-row { display: flex; }
@@ -315,20 +417,53 @@
     }
 
     /* --- item / equipment catalogue --- */
-    #item-catalogue, #equip-catalogue {
+    #item-catalogue, #equip-catalogue, #world-browser, #splash-motion {
       position: fixed; z-index: 25; inset: 0; display: none;
       align-items: center; justify-content: center; background: rgba(0,0,0,0.6);
     }
-    #item-catalogue.open, #equip-catalogue.open { display: flex; }
-    #item-catalogue .panel, #equip-catalogue .panel {
+    #item-catalogue.open, #equip-catalogue.open, #world-browser.open, #splash-motion.open { display: flex; }
+    #item-catalogue .panel, #equip-catalogue .panel, #world-browser .panel, #splash-motion .panel {
       background: rgba(14,17,22,0.97); border: 1px solid #333; border-radius: 12px;
       padding: 20px 24px; width: min(92vw, 760px); max-height: 84vh;
       cursor: default; display: flex; flex-direction: column;
     }
-    #item-catalogue h2, #equip-catalogue h2 {
+    #item-catalogue .panel.drop-target, #equip-catalogue .panel.drop-target {
+      border-color: #6c9; box-shadow: 0 0 0 2px rgba(102,204,153,0.35) inset;
+    }
+    #item-catalogue h2, #equip-catalogue h2, #world-browser h2, #splash-motion h2 {
       margin-bottom: 12px; font-size: 17px;
       display: flex; align-items: baseline; gap: 8px;
     }
+
+    /* splash camera motion picker */
+    #splash-motion .panel { width: min(92vw, 340px); }
+    .sm-option {
+      display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+      padding: 9px 12px; margin-bottom: 8px; text-align: left;
+    }
+    .sm-option span { font-size: 11px; color: #9aa; }
+    .sm-option.active { border-color: #6c9; background: rgba(30,60,45,0.5); }
+
+    /* world library tree */
+    #world-browser .panel { width: min(92vw, 560px); }
+    .wb-status { font-size: 11px; color: #9aa; margin-bottom: 8px; }
+    .wb-tree { overflow-y: auto; min-height: 0; border: 1px solid #2a2f36; border-radius: 8px; }
+    .wb-row {
+      display: flex; align-items: center; gap: 8px; padding: 5px 10px;
+      cursor: pointer; border-bottom: 1px solid #22262c; font-size: 13px;
+    }
+    .wb-row:last-child { border-bottom: none; }
+    .wb-row:hover { background: #1e232b; }
+    .wb-row.current { background: rgba(30,60,45,0.5); }
+    .wb-row.selected .wb-name { color: #cfe; }
+    .wb-row.wb-drop { background: rgba(102,204,153,0.2); box-shadow: 0 0 0 1px #6c9 inset; }
+    .wb-folder .wb-name { color: #cd9; }
+    .wb-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .wb-meta { font-size: 10px; color: #9aa; }
+    .wb-actions { display: flex; gap: 4px; visibility: hidden; }
+    .wb-row:hover .wb-actions { visibility: visible; }
+    .wb-actions .cat-btn { padding: 2px 7px; font-size: 11px; }
+    .wb-rename { flex: 1; min-width: 60px; padding: 2px 6px; }
     .cat-count { font-size: 12px; font-weight: normal; color: #9aa; }
     .cat-bar { display: flex; gap: 8px; margin-bottom: 12px; align-items: center; flex-wrap: wrap; }
     .cat-search {
@@ -375,7 +510,8 @@
 
   <div id="ui-crosshair" class="overlay"></div>
   <div id="ui-action" class="overlay"></div>
-  <div id="ui-testmode" class="overlay">TEST MODE — <kbd>F5</kbd> to exit</div>
+  <div id="ui-testmode" class="overlay">TEST MODE — <kbd>E</kbd> interact · <kbd>F5</kbd> to exit</div>
+  <div id="ui-prompt" class="overlay hidden"></div>
 
   <div id="ui-hud" class="overlay">
     <div class="row editor-row"><span class="label">Block</span><span class="value" id="hud-type">-</span></div>
@@ -400,6 +536,7 @@
       Spawn tool: <kbd>LMB</kbd> place / move the spawn &nbsp;·&nbsp; <kbd>RMB</kbd> clear it &nbsp;·&nbsp;
       <kbd>R</kbd> rotate the facing arrow (the arrow shows where the player looks)<br />
       <kbd>1</kbd>-<kbd>9</kbd>,<kbd>0</kbd> hotbar slots &nbsp;·&nbsp; <kbd>B</kbd> 0.5m/1m &nbsp;·&nbsp;
+      <kbd>V</kbd> slab variant (full / lower / upper half) &nbsp;·&nbsp;
       <kbd>R</kbd> rotate selected object 90° &nbsp;·&nbsp;
       <kbd>E</kbd> inventory — hover a block, press a number to put it in that hotbar slot<br />
       <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> redo<br />
@@ -408,9 +545,16 @@
       <kbd>F3</kbd> items editor — build an equippable item (e.g. a club): paint the shape,<br />
       <kbd>G</kbd> set the right-hand grip voxel (<kbd>H</kbd> the left-hand grip on 2-handed weapons),
       <kbd>R</kbd> aim the direction arrow, set damage/reach/cooldown<br />
-      <kbd>F5</kbd> test run — walk at the spawn (<kbd>C</kbd> crouch) &nbsp;·&nbsp;
+      <kbd>F4</kbd> NPC &amp; quest editor — define characters and their questlines,<br />
+      then drop them with the NPCs tool (<kbd>Tab</kbd> ring, <kbd>G</kbd> cycles the type)<br />
+      <kbd>F5</kbd> test run — walk at the spawn (<kbd>C</kbd> crouch, <kbd>E</kbd> open doors) &nbsp;·&nbsp;
       <kbd>F1</kbd> help &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>S</kbd> save to browser &nbsp;·&nbsp;
       <kbd>Esc</kbd> release pointer<br />
+      <kbd>F8</kbd> capture this view as a menu splash screen (save the world via
+      <strong>Worlds</strong> first) &nbsp;·&nbsp; <kbd>Shift</kbd>+<kbd>F8</kbd> delete the nearest splash camera
+      &nbsp;·&nbsp; <kbd>LMB</kbd> on a camera gizmo picks its motion (orbit / static / zoom)<br />
+      <strong>Worlds</strong> opens the world library — save, load and organize worlds for
+      campaigns and splash screens<br />
       <strong>Save File</strong> writes the map + objects straight to
       <code>map/voxelbundle.json</code> (no download) — run <code>npm run server</code>
       and open <code>http://localhost:4173</code> so your world ships with the build
@@ -421,6 +565,7 @@
     <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
     <button id="btn-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
     <button id="btn-items" title="Browse the item catalogue">Items</button>
+    <button id="btn-worlds" title="World library — save, load and organize worlds">Worlds</button>
     <button id="btn-save" title="Save to browser (Ctrl+S)">Save</button>
     <button id="btn-load" title="Load a .json map or bundle">Load</button>
     <button id="btn-save-file" title="Download map + objects as voxelbundle.json">Save File</button>
@@ -443,16 +588,26 @@
     <div class="panel"></div>
   </div>
 
+  <div id="world-browser">
+    <div class="panel"></div>
+  </div>
+
+  <div id="splash-motion">
+    <div class="panel"></div>
+  </div>
+
   <div id="equip-editor">
     <div id="ep-badge">ITEMS EDITOR — <kbd>F3</kbd> to exit</div>
     <div id="ep-panel">
       <div class="ie-title" id="ep-title">Weapon Item</div>
       <div class="ie-row"><span class="label">Name</span><input id="ep-name" type="text" value="New Item" /></div>
       <div class="ie-row">
-        <span class="label" title="What this item is: a held weapon or an ammo type a weapon consumes">Kind</span>
+        <span class="label" title="What this item is: a held weapon, an ammo type a weapon consumes, or an armor vest">Kind</span>
         <span id="ep-cat">
           <button id="ep-cat-weapon" data-kind="weapon" title="A weapon the player holds and fights with">Weapon</button>
           <button id="ep-cat-ammo" data-kind="ammo" title="Defines an ammo type that weapons consume and the player carries">Ammo</button>
+          <button id="ep-cat-armor" data-kind="armor" title="Grants armor points when picked up">Armor</button>
+      <button id="ep-cat-quest" data-kind="quest" title="A fetch-quest objective: pickable only while a quest wants it, never shown in the hotbar">Quest</button>
         </span>
       </div>
       <div class="ie-row">
@@ -525,6 +680,13 @@
             <button id="ep-hands-two" title="Held in both hands — set the left-hand grip with the Grip L tool (H)">2-hand</button>
           </span>
         </div>
+        <div class="ie-row" id="ep-orient-row">
+          <span class="label" title="How the weapon sits in the grip">Held</span>
+          <span id="ep-orient">
+            <button id="ep-orient-horizontal" title="Points forward along the view, like a spear or tonfa">Horizontal</button>
+            <button id="ep-orient-vertical" title="Stands upright in the fist, like a sword or club">Vertical</button>
+          </span>
+        </div>
         <div class="ie-row" id="ep-magazine-row">
           <span class="label" title="Rounds per magazine; 0 = no magazine">Magazine</span>
           <input id="ep-magazine" type="number" min="0" max="500" step="1" value="0" />
@@ -568,6 +730,12 @@
           <input id="ep-grant" type="number" min="1" max="9999" step="1" value="6" />
         </div>
       </div>
+      <div id="ep-armor-fields" class="hidden">
+        <div class="ie-row">
+          <span class="label" title="Armor points granted when picked up (armor caps at 100)">Armor</span>
+          <input id="ep-armor-amount" type="number" min="1" max="100" step="1" value="25" />
+        </div>
+      </div>
       <div class="ie-row">
         <span class="label">Voxels</span><span id="ep-count">0</span>
         <canvas id="ep-thumb" width="72" height="72" title="Catalogue / pickup preview"></canvas>
@@ -597,9 +765,11 @@
       <div class="ie-row"><span class="label">Name</span><input id="ie-name" type="text" value="New Item" /></div>
       <div class="ie-row">
         <span class="label">Size</span>
-        <span id="ie-size">
-          <button id="ie-size-small" data-size="small">0.5 m</button>
-          <button id="ie-size-big" data-size="big">1 m</button>
+        <span id="ie-size" class="ie-grid-steppers">
+          <input id="ie-cells-x" type="number" min="1" max="8" step="1" value="1" title="Width (X) in 0.5 m cells" />
+          <input id="ie-cells-y" type="number" min="1" max="8" step="1" value="1" title="Height (Y) in 0.5 m cells" />
+          <input id="ie-cells-z" type="number" min="1" max="8" step="1" value="1" title="Depth (Z) in 0.5 m cells" />
+          <span id="ie-cells-size" class="ie-dim-label">0.5 × 0.5 × 0.5 m</span>
         </span>
       </div>
       <div class="ie-row">

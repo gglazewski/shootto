@@ -1,0 +1,22 @@
+{
+  "format": "splashlist",
+  "version": 1,
+  "entries": [
+    {
+      "world": "start.json",
+      "cam": "cam_mslrhb5e"
+    },
+    {
+      "world": "start.json",
+      "cam": "cam_mslrinwy"
+    },
+    {
+      "world": "start.json",
+      "cam": "cam_mslv8n3k"
+    },
+    {
+      "world": "start.json",
+      "cam": "cam_mslvuzke"
+    }
+  ]
+}

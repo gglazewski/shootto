@@ -480,6 +480,72 @@ T('F5 toggles test-run mode and back, restoring the editor camera', async () => 
   assert.ok(Math.abs(exited.pitch - before.pitch) < 1e-6, 'fly pitch restored');
 });
 
+T('E opens and closes a door in the test run, and the map is left untouched', async () => {
+  const r = await page.evaluate(async () => {
+    const { app } = window.__voxelgame;
+    app.world.clear();
+    for (let x = 0; x < 12; x += 2)
+      for (let z = 0; z < 12; z += 2) app.world.place('grass', 'big', x, 0, z);
+    // A door is 2x4x1 cells: x[4,5] m, y[1,3] m, z[4,4.5] m.
+    app.world.place('door_wood', 'door', 8, 2, 8);
+    app.renderer.clearChunks();
+    app.renderer.loadWorldBounds();
+
+    app.enterTestMode();
+    const w = app.walk;
+    w.position.set(4.5, 1.0, 3.0); // 1 m in front of the leaf, facing +z
+    w.yaw = Math.PI;
+    w.pitch = 0;
+    w.grounded = true;
+    w.velocity.set(0, 0, 0);
+    w.keys.clear();
+    w.update(1 / 60); // sync the camera to the walk pose
+    app._updateTestPrompt();
+
+    const promptFor = () => {
+      const el = document.querySelector('#ui-prompt');
+      return el.classList.contains('hidden') ? null : el.textContent;
+    };
+    const pressE = () => document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE', key: 'e', bubbles: true }));
+
+    const closedPrompt = promptFor();
+    pressE();
+    const opened = app.world.get(8, 2, 8).type;
+    const openPrompt = promptFor();
+    const passable = app.walk.world.get(8, 2, 8) === null;
+
+    pressE();
+    const closedAgain = app.world.get(8, 2, 8).type;
+
+    // Open it once more, then leave: the playtest must not edit the map.
+    pressE();
+    const openOnExit = app.world.get(8, 2, 8).type;
+    app.exitTestMode();
+
+    return {
+      closedPrompt,
+      opened,
+      openPrompt,
+      passable,
+      closedAgain,
+      openOnExit,
+      afterExit: app.world.get(8, 2, 8).type,
+      promptAfterExit: promptFor(),
+      inventoryOpen: app.inventory.isOpen,
+    };
+  });
+
+  assert.match(r.closedPrompt, /open the door/, 'aiming at a closed door must prompt to open it');
+  assert.equal(r.opened, 'door_wood_open', 'E must open the aimed door');
+  assert.match(r.openPrompt, /close the door/, 'an open door must prompt to close it');
+  assert.equal(r.passable, true, 'an open door must not block the walk collision');
+  assert.equal(r.closedAgain, 'door_wood', 'E must close the door again');
+  assert.equal(r.openOnExit, 'door_wood_open');
+  assert.equal(r.afterExit, 'door_wood', 'leaving the test run must restore every door');
+  assert.equal(r.promptAfterExit, null, 'the prompt must clear when the test run ends');
+  assert.equal(r.inventoryOpen, false, 'E must not open the editor inventory while test-running');
+});
+
 T('test-run player auto-steps up 0.5m blocks while walking', async () => {
   const result = await page.evaluate(() => {
     const { app } = window.__voxelgame;
@@ -1001,16 +1067,20 @@ T('F3 items editor builds, sets grip/direction and saves an equippable item', as
   assert.equal(exited.mode, 'edit', 'F3 again must exit the items editor');
   assert.equal(exited.open, false);
 
-  // The item appears in the E inventory's "Equippable Items" section.
+  // The item appears in the E inventory's "Equippable Items" section —
+  // alongside the built-in quest items (granny's teapot), which are placeable
+  // quest objectives, not authored equipment (hidden from the catalogue,
+  // never persisted, but still placed in maps for fetch quests).
   await page.evaluate(() => window.__voxelgame.inventory.show());
   await page.waitForTimeout(100);
   const equipItems = await page.evaluate(() =>
     [...document.querySelectorAll('#inventory .equip-grid .inv-item')].map((b) => b.dataset.id));
-  assert.deepEqual(equipItems, ['club'], 'E menu must list the equippable item');
+  assert.ok(equipItems.includes('club'), 'E menu must list the saved equippable item');
+  assert.ok(equipItems.includes('granny-teapot'), 'E menu must keep built-in quest items placeable');
 
   // Selecting it arms the item placement tool.
   await page.evaluate(() => {
-    document.querySelector('#inventory .equip-grid .inv-item').click();
+    document.querySelector('#inventory .equip-grid .inv-item[data-id="club"]').click();
   });
   await page.waitForTimeout(100);
   const sel = await page.evaluate(() => ({
@@ -1032,11 +1102,11 @@ T('F3 items editor builds, sets grip/direction and saves an equippable item', as
     const clubs = [];
     app.world.forEachItem((it) => { if (it.itemId === 'club') clubs.push(it); });
     renderer.camera.rotation.set(controls.pitch, controls.yaw, 0, 'YXZ');
-    return { count: clubs.length, id: clubs[0]?.itemId, size: clubs[0]?.size };
+    return { count: clubs.length, id: clubs[0]?.itemId, cells: clubs[0]?.cells };
   });
   assert.equal(placed.count, 1, 'item tool must place the equippable item');
   assert.equal(placed.id, 'club');
-  assert.equal(placed.size, 'small', 'equippable items place at the small footprint');
+  assert.deepEqual(placed.cells, [1, 1, 1], 'an 8³ equippable places at the one-cell footprint');
 
   // Let the frame loop build the item mesh, then check it rendered.
   await page.waitForTimeout(150);

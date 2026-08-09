@@ -11,10 +11,10 @@ import {
 import { weaponFor, FISTS } from '../src/game/weapons.js';
 import { clearItems, registerItem } from '../src/engine/ItemRegistry.js';
 
-test('player starts with full health and armor', () => {
+test('player starts with full health and zero armor', () => {
   const s = new PlayerStats();
   assert.equal(s.health, MAX_HEALTH);
-  assert.equal(s.armor, MAX_ARMOR);
+  assert.equal(s.armor, 0, 'armor only comes from armor pickups');
   assert.deepEqual(EQUIPMENT_SLOTS, ['primary', 'secondary', 'extra', 'injection']);
 });
 
@@ -108,7 +108,7 @@ test('deserialize tolerates missing/invalid data', () => {
   assert.ok(PlayerStats.deserialize(null) instanceof PlayerStats);
   const s = PlayerStats.deserialize({ health: 'x', equipment: null });
   assert.equal(s.health, MAX_HEALTH);
-  assert.equal(s.armor, MAX_ARMOR);
+  assert.equal(s.armor, 0, 'missing/invalid armor falls back to zero');
 });
 
 test('weaponFor returns fists for an empty hand and a profile otherwise', () => {

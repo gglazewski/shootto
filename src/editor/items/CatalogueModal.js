@@ -2,8 +2,9 @@
 //
 // Renders the panel chrome both catalogues share: a title with a live count,
 // a search box (autofocused, filters as you type, Enter opens the first
-// match), optional kind-filter chips, an Import button, the scrollable card
-// grid and the empty state. Cards are keyboard-focusable (Enter/Space
+// match), optional kind-filter chips, an Import button — .json files can
+// also be dropped anywhere onto the open modal — the scrollable card grid
+// and the empty state. Cards are keyboard-focusable (Enter/Space
 // activates) and Delete is a two-step confirm so a stray click can't wipe an
 // item from the registry everywhere.
 //
@@ -79,16 +80,11 @@ export class CatalogueModal {
     this._file = doc.createElement('input');
     this._file.type = 'file';
     this._file.accept = '.json,application/json';
+    this._file.multiple = true;
     this._file.style.display = 'none';
     this._file.addEventListener('change', (e) => {
-      const f = e.target.files?.[0];
-      if (!f) return;
-      const reader = new FileReader();
-      reader.onload = () => {
-        this.cb.onImport?.(String(reader.result));
-        e.target.value = '';
-      };
-      reader.readAsText(f);
+      this._importFiles(e.target.files);
+      e.target.value = '';
     });
     bar.appendChild(this._file);
     panel.appendChild(bar);
@@ -110,6 +106,34 @@ export class CatalogueModal {
     // clicking the dark backdrop closes the catalogue
     this.container.addEventListener('click', (e) => {
       if (e.target === this.container) this.hide();
+    });
+
+    // Drag-and-drop import: dropping .json files anywhere on the open modal
+    // goes through the same onImport path as the Import button. dragenter/
+    // dragleave fire for every child crossed, so a depth counter tracks when
+    // the pointer has actually left the modal.
+    let dragDepth = 0;
+    const hasFiles = (e) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    this.container.addEventListener('dragenter', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth += 1;
+      panel.classList.add('drop-target');
+    });
+    this.container.addEventListener('dragover', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'copy';
+    });
+    this.container.addEventListener('dragleave', () => {
+      if (dragDepth > 0 && --dragDepth === 0) panel.classList.remove('drop-target');
+    });
+    this.container.addEventListener('drop', (e) => {
+      if (!hasFiles(e)) return;
+      e.preventDefault();
+      dragDepth = 0;
+      panel.classList.remove('drop-target');
+      this._importFiles(e.dataTransfer.files);
     });
 
     // Capture-phase so the modal owns the keyboard while open — the editor
@@ -149,6 +173,16 @@ export class CatalogueModal {
   /** Kind-filter chips: [{ id, label, test(item) }]. Default: none. */
   _filters() {
     return [];
+  }
+
+  /** Read each .json file and hand its text to the import callback. */
+  _importFiles(files) {
+    for (const f of files ?? []) {
+      if (!/\.json$/i.test(f.name) && f.type !== 'application/json') continue;
+      const reader = new FileReader();
+      reader.onload = () => this.cb.onImport?.(String(reader.result));
+      reader.readAsText(f);
+    }
   }
 
   /** Re-render from the current registry (call after save/import/delete). */

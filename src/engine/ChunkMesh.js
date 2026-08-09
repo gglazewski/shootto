@@ -43,6 +43,10 @@ export class ChunkMesh {
       this.meshTransparent = new THREE.Mesh(this.transparentGeometry, materialTransparent);
       this.meshTransparent.name = `chunk-${this.key}-t`;
       this.meshTransparent.visible = false;
+      // Glass blends LAST among transparent objects, so depth-writing
+      // cutout sprites (mobs) and particles drawn before it are correctly
+      // tinted when they stand behind a pane.
+      this.meshTransparent.renderOrder = 1;
     }
   }
 

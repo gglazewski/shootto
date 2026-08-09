@@ -178,13 +178,14 @@ test('mesher emits a light attribute with two channels per vertex', () => {
   }
 });
 
-test('transparent voxel renders into the transparent buffer only', () => {
+test('glass is a pane: one alpha-blended quad in the transparent buffer', () => {
   const w = new World();
   w.place('glass', SIZE.SMALL, 0, 0, 0);
   const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
   assert.equal(m.indices.length, 0, 'no opaque faces');
   assert.ok(m.transparent, 'transparent buffer present');
-  assert.equal(m.transparent.indices.length, 6 * 6);
+  // A single winding — the transparent material is double-sided.
+  assert.equal(m.transparent.indices.length, 6);
   assert.equal(m.transparent.lights.length, m.transparent.positions.length / 3 * 2);
 });
 
@@ -193,20 +194,40 @@ test('opaque faces adjacent to glass are still emitted', () => {
   w.place('concrete', SIZE.SMALL, 0, 0, 0);
   w.place('glass', SIZE.SMALL, 1, 0, 0);
   const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
-  // concrete keeps all 6 faces (the +x face shows through the glass)
+  // concrete keeps all 6 faces (the +x face shows through the glass pane)
   assert.equal(m.indices.length, 6 * 6);
-  // glass loses its -x face to the concrete -> 5 transparent faces
-  assert.equal(m.transparent.indices.length, 5 * 6);
+  // the glass pane is one centered quad regardless of neighbors
+  assert.equal(m.transparent.indices.length, 6);
 });
 
-test('glass-to-glass faces are culled', () => {
+test('mixed-alpha blocks (framed window) mesh into both passes', () => {
   const w = new World();
-  w.place('glass', SIZE.SMALL, 0, 0, 0);
-  w.place('glass', SIZE.SMALL, 1, 0, 0);
+  w.place('window_white', SIZE.SMALL, 0, 0, 0);
   const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
-  // each glass block shows 5 faces -> 10 transparent quads total
-  assert.equal(m.transparent.indices.length, 10 * 6);
-  assert.equal(m.indices.length, 0);
+  // 6 faces in the opaque cutout pass (frame, depth-written)...
+  assert.equal(m.indices.length, 6 * 6);
+  // ...and the same 6 faces again in the transparent pass (glass texels).
+  assert.equal(m.transparent.indices.length, 6 * 6);
+  // window-on-window: the shared faces are culled in both passes
+  w.place('window_white', SIZE.SMALL, 1, 0, 0);
+  const m2 = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
+  assert.equal(m2.indices.length, 10 * 6);
+  assert.equal(m2.transparent.indices.length, 10 * 6);
+});
+
+test('glazed doors emit their leaf into both passes', () => {
+  const w = new World();
+  w.place('door_steel', SIZE.DOOR, 0, 0, 0);
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
+  // a door leaf is a 6-face slab, mirrored into the transparent pass
+  assert.equal(m.indices.length, 6 * 6);
+  assert.equal(m.transparent.indices.length, 6 * 6);
+  // the dermatoid entrance door has no glass — opaque pass only
+  const w2 = new World();
+  w2.place('door_wood', SIZE.DOOR, 0, 0, 0);
+  const m2 = buildChunkMesh(w2, lit, [0, 0, 0], 16, tile);
+  assert.equal(m2.indices.length, 6 * 6);
+  assert.equal(m2.transparent, null);
 });
 
 test('voxel rotation permutes side tiles and spins the top UVs', () => {
@@ -443,10 +464,69 @@ test('decals round-trip through the serializer and need their block', () => {
   // a decal whose block is gone from the file is skipped with a warning
   const raw = JSON.parse(serialize(w));
   raw.blocks = [];
-  const { world: w3, errors: e3 } = deserialize(JSON.stringify(raw));
+  const { world: w3, errors: e3, fatal: f3 } = deserialize(JSON.stringify(raw));
   assert.equal(w3.decals.size, 0);
   assert.equal(e3.length, 1);
-  assert.match(e3[0], /no block there/);
+  assert.match(e3[0], /no block face there/);
+  assert.ok(!f3, 'a skipped decal is not fatal — the rest of the map still loaded');
+});
+
+test('deserialize separates unreadable files from per-entry skips', () => {
+  const w = new World();
+  w.place('concrete', SIZE.SMALL, 0, 0, 0);
+  w.place('concrete', SIZE.SMALL, 2, 0, 0);
+
+  // an unreadable file: nothing survives, so callers may start fresh
+  for (const bad of ['{oops', '{}', JSON.stringify({ format: 'voxelmap', version: 1 })]) {
+    const r = deserialize(bad);
+    assert.ok(r.fatal, `expected fatal for ${bad}`);
+    assert.equal(r.world.count, 0);
+  }
+
+  // one stale entry: the map still loads, so callers must NOT start fresh
+  const raw = JSON.parse(serialize(w));
+  raw.blocks.push({ type: 'no_such_block', size: 'small', x: 9, y: 0, z: 9 });
+  const { world: loaded, errors, fatal } = deserialize(JSON.stringify(raw));
+  assert.ok(!fatal);
+  assert.equal(errors.length, 1);
+  assert.equal(loaded.count, w.count, 'the good blocks survive a bad one');
+});
+
+test('panes take decals on their flat sides only, meshed on the pane plane', () => {
+  const w = new World();
+  // a glass pane at rotation 0 runs along x, so it faces +-z
+  w.place('glass', SIZE.SMALL, 0, 0, 0, 0);
+  assert.ok(!w.canPlaceDecal('decal_curtain', 0, 0, 0, 'px'), 'edge-on faces take nothing');
+  assert.ok(!w.canPlaceDecal('decal_curtain', 0, 0, 0, 'py'), 'a pane has no top face');
+  assert.ok(w.placeDecal('decal_curtain', 0, 0, 0, 'nz'));
+  assert.ok(w.placeDecal('decal_curtain', 0, 0, 0, 'pz'), 'each side takes its own');
+
+  // rotated 90 degrees the pane runs along z, so the accepting faces swap
+  const w2 = new World();
+  w2.place('glass', SIZE.SMALL, 0, 0, 0, 1);
+  assert.ok(!w2.canPlaceDecal('decal_curtain', 0, 0, 0, 'pz'));
+  assert.ok(w2.canPlaceDecal('decal_curtain', 0, 0, 0, 'nx'));
+
+  // doors take no decals at all
+  const w3 = new World();
+  w3.place('door_wood', SIZE.DOOR, 0, 0, 0, 0);
+  assert.ok(!w3.canPlaceDecal('decal_crack', 0, 0, 0, 'nz'));
+
+  // the decal quads sit a hair off the pane's own plane (z = 0.5 cells =
+  // 0.25m), not on the cell boundary, and go into the glass's pass
+  const atlas = { width: 8, height: 11, tileSize: 16 };
+  const plain = new World();
+  plain.place('glass', SIZE.SMALL, 0, 0, 0, 0);
+  const bare = buildChunkMesh(plain, lit, [0, 0, 0], 16, tile, atlas);
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile, atlas);
+  const quads = m.transparent.indices.length - bare.transparent.indices.length;
+  assert.equal(quads, 2 * 6, 'one quad per decorated side');
+  const zs = [];
+  for (let q = 0; q < m.transparent.indices.length / 6; q++) {
+    const vi = m.transparent.indices[q * 6];
+    zs.push(Number(m.transparent.positions[vi * 3 + 2].toFixed(4)));
+  }
+  assert.deepEqual(zs.sort(), [0.24, 0.25, 0.26], 'pane at 0.25m, decals 1cm either side');
 });
 
 test('copyFrom is the one world-copy path: rotation and decals survive', () => {
@@ -572,4 +652,49 @@ test('deserialize rejects a malformed spawn point', () => {
   const { world, errors } = deserialize(JSON.stringify(data));
   assert.equal(world.spawn, null);
   assert.ok(errors.some((e) => e.toLowerCase().includes('spawn')));
+});
+
+test('splash cameras round-trip through the serializer and are omitted when absent', () => {
+  const w = new World();
+  w.place('grass', SIZE.SMALL, 0, 0, 0);
+  w.addSplashCam({ id: 'cam_a', pos: [1.5, 8, -3.25], yaw: 1.25, pitch: -0.4, fov: 60, motion: 'orbit' });
+  w.addSplashCam({ id: 'cam_b', pos: [0, 4, 0], yaw: 0, pitch: 0 });
+  const { world, errors } = deserialize(serialize(w));
+  assert.deepEqual(errors, []);
+  assert.deepEqual(world.splashCams, [
+    { id: 'cam_a', pos: [1.5, 8, -3.25], yaw: 1.25, pitch: -0.4, fov: 60, motion: 'orbit' },
+    { id: 'cam_b', pos: [0, 4, 0], yaw: 0, pitch: 0 },
+  ]);
+
+  // No cams -> no field, so untouched maps stay byte-identical.
+  const bare = new World();
+  bare.place('grass', SIZE.SMALL, 0, 0, 0);
+  assert.ok(!JSON.parse(serialize(bare)).splashCams);
+});
+
+test('deserialize skips malformed and duplicate splash cameras', () => {
+  const data = {
+    format: 'voxelmap', version: 1, cellSize: 0.5, blocks: [],
+    splashCams: [
+      { id: 'ok', pos: [0, 1, 2], yaw: 0, pitch: 0 },
+      { id: 'ok', pos: [3, 4, 5], yaw: 0, pitch: 0 }, // duplicate id
+      { id: 'bad-pos', pos: [1, 2], yaw: 0, pitch: 0 },
+      { pos: [0, 0, 0], yaw: 0, pitch: 0 }, // no id
+    ],
+  };
+  const { world, errors } = deserialize(JSON.stringify(data));
+  assert.equal(world.splashCams.length, 1);
+  assert.equal(world.splashCams[0].id, 'ok');
+  assert.equal(errors.length, 3);
+});
+
+test('clear() and copyFrom() carry splash cameras', () => {
+  const w = new World();
+  w.addSplashCam({ id: 'c', pos: [1, 2, 3], yaw: 0.5, pitch: 0.1 });
+  const copy = new World();
+  copy.copyFrom(w);
+  assert.deepEqual(copy.splashCams, w.splashCams);
+  assert.notEqual(copy.splashCams[0], w.splashCams[0], 'copy must not share cam objects');
+  copy.clear();
+  assert.deepEqual(copy.splashCams, []);
 });

@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { World } from '../src/engine/World.js';
 import { SIZE, registerBlock } from '../src/engine/VoxelTypes.js';
 import { LightField, MAX_LIGHT } from '../src/engine/LightField.js';
+import { toggleDoor } from '../src/engine/Doors.js';
 
 // The game no longer ships an emissive block (torches are placed objects now),
 // but the engine still supports emissive voxels — register one for these tests.
@@ -255,6 +256,32 @@ test('block light casts hard shadows: no wrap around a small wall', () => {
   assert.equal(lf.get(1, 0, 0).block, MAX_LIGHT - 1, 'lit in front of the wall');
   assert.equal(lf.get(3, 0, 0).block, 0, 'shadow directly behind the wall');
   assert.equal(lf.get(5, 0, 0).block, 0, 'the shadow extends');
+});
+
+test('closed door blocks light; opening it lets light through', () => {
+  // Sealed box with a 2x4 doorway in the +x wall, filled by a closed door.
+  const w = hollowBox(2, 0, 6);
+  for (let y = 1; y <= 4; y++) {
+    w.remove(2, y, 0);
+    w.remove(2, y, 1);
+  }
+  w.place('door_wood', SIZE.DOOR, 2, 1, 0, 1); // rotation 1: spans z 0..1
+  const lf = new LightField(w);
+  lf.recompute();
+  assert.equal(lf.get(3, 3, 0).sky, MAX_LIGHT, 'outside the door is open sky');
+  assert.equal(lf.get(1, 3, 0).sky, 0, 'closed door seals the interior');
+
+  // Toggle it open; the incremental edit path must let light pour in.
+  w.drainEdits();
+  toggleDoor(w, w.get(2, 3, 0));
+  lf.recomputeEdit(w.drainEdits());
+  assert.equal(lf.get(2, 3, 0).sky, MAX_LIGHT - 1, 'light passes the open leaf');
+  assert.equal(lf.get(1, 3, 0).sky, MAX_LIGHT - 2, 'light enters the room');
+
+  // And closing it again seals the room back up.
+  toggleDoor(w, w.get(2, 3, 0));
+  lf.recomputeEdit(w.drainEdits());
+  assert.equal(lf.get(1, 3, 0).sky, 0, 're-closed door seals again');
 });
 
 test('incremental: world growth falls back to a full recompute', () => {

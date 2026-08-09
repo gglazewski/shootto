@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MARO 93 — a free voxel zombie story set in 1990s Poland</title>
+<meta name="description" content="MARO 93 is a free browser voxel game: an ex-military, ex-mercenary in 1993 Poland faces down zombies in a small town gone quiet. A ruined kiosk, a shuttered warsztat, quests, an authentic Polish arsenal. Play now, no install." />
+<style>
+  :root {
+    --bg: #0e100f;
+    --bg2: #151815;
+    --panel: #1b1f1c;
+    --text: #e9e6dc;
+    --muted: #a8a396;
+    --red: #c9372e;
+    --red-hot: #e34a3f;
+    --amber: #e8b25c;
+    --line: #2a2f2b;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    line-height: 1.6;
+  }
+  img { max-width: 100%; display: block; }
+  a { color: inherit; }
+
+  /* ---------- nav ---------- */
+  nav {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    display: flex; align-items: center; gap: 18px;
+    padding: 12px 22px;
+    background: linear-gradient(rgba(10,11,10,0.92), rgba(10,11,10,0.75) 70%, transparent);
+  }
+  .logo {
+    font-weight: 900; letter-spacing: 0.14em; font-size: 20px;
+    text-decoration: none; color: var(--text);
+    text-shadow: 2px 2px 0 #000;
+  }
+  .logo span { color: var(--red-hot); }
+  nav .links { display: flex; gap: 16px; margin-left: auto; align-items: center; }
+  nav .links a {
+    text-decoration: none; font-size: 14px; color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+  nav .links a:hover { color: var(--text); }
+  .lang-switch {
+    display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+    margin-left: 10px;
+  }
+  .lang-switch button {
+    background: transparent; color: var(--muted); border: 0; cursor: pointer;
+    padding: 5px 10px; font: inherit; font-size: 13px; font-weight: 700;
+  }
+  .lang-switch button.active { background: var(--red); color: #fff; }
+
+  /* ---------- hero ---------- */
+  header {
+    position: relative; min-height: 100svh;
+    display: flex; align-items: center; justify-content: center; text-align: center;
+    overflow: hidden;
+  }
+  .hero-media, .hero-media video, .hero-media img {
+    position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  }
+  .hero-shade {
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(rgba(10,10,10,0.55), rgba(14,16,15,0.35) 45%, var(--bg) 96%),
+      radial-gradient(ellipse at center, transparent 40%, rgba(8,8,8,0.55));
+  }
+  /* faint CRT scanlines for the 90s TV feel */
+  .hero-scan {
+    position: absolute; inset: 0; pointer-events: none; opacity: 0.18;
+    background: repeating-linear-gradient(transparent 0 2px, rgba(0,0,0,0.55) 2px 4px);
+  }
+  .hero-inner { position: relative; z-index: 2; padding: 90px 20px 60px; max-width: 900px; }
+  .kicker {
+    display: inline-block; font-size: 13px; letter-spacing: 0.28em; text-transform: uppercase;
+    color: var(--amber); margin-bottom: 14px; text-shadow: 1px 1px 0 #000;
+  }
+  h1 {
+    font-size: clamp(46px, 9vw, 96px); font-weight: 900; letter-spacing: 0.1em;
+    line-height: 1.02; text-shadow: 4px 4px 0 #000, 0 0 60px rgba(201,55,46,0.35);
+  }
+  h1 .dot { color: var(--red-hot); }
+  .tagline {
+    margin: 18px auto 8px; max-width: 640px; font-size: clamp(16px, 2.4vw, 21px);
+    color: #f2efe6; text-shadow: 1px 1px 0 #000;
+  }
+  .sub { color: var(--muted); font-size: 14px; text-shadow: 1px 1px 0 #000; }
+  .cta {
+    display: inline-block; margin-top: 30px; padding: 17px 44px;
+    background: var(--red); color: #fff; text-decoration: none;
+    font-size: 20px; font-weight: 800; letter-spacing: 0.06em; border-radius: 8px;
+    border: 1px solid #e86e60; box-shadow: 0 6px 0 #7c1f19, 0 14px 40px rgba(201,55,46,0.35);
+    transition: transform 0.08s, box-shadow 0.08s, background 0.15s;
+  }
+  .cta:hover { background: var(--red-hot); }
+  .cta:active { transform: translateY(4px); box-shadow: 0 2px 0 #7c1f19; }
+  .cta small { display: block; font-size: 12px; font-weight: 600; opacity: 0.85; letter-spacing: 0.1em; }
+  .hero-note { margin-top: 16px; font-size: 13px; color: var(--muted); text-shadow: 1px 1px 0 #000; }
+
+  /* ---------- sections ---------- */
+  section { padding: 84px 20px; }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h2 {
+    font-size: clamp(26px, 4.4vw, 40px); font-weight: 900; letter-spacing: 0.05em;
+    margin-bottom: 10px;
+  }
+  h2::after {
+    content: ''; display: block; width: 64px; height: 4px; margin-top: 10px;
+    background: var(--red);
+  }
+  .lead { color: var(--muted); max-width: 720px; margin-bottom: 36px; font-size: 17px; }
+
+  /* story */
+  .story { background: var(--bg2); }
+  .story .cols { display: grid; grid-template-columns: 1.1fr 1fr; gap: 40px; align-items: center; }
+  .story p { margin-bottom: 14px; }
+  .story .year {
+    font-size: 13px; letter-spacing: 0.24em; color: var(--amber); text-transform: uppercase;
+    margin-bottom: 10px;
+  }
+  .frame {
+    border: 1px solid var(--line); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  @media (max-width: 800px) { .story .cols { grid-template-columns: 1fr; } }
+
+  /* features */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    overflow: hidden; display: flex; flex-direction: column;
+  }
+  .card img { aspect-ratio: 16/9; object-fit: cover; }
+  .card .pad { padding: 18px 18px 20px; }
+  .card h3 { font-size: 17px; margin-bottom: 6px; letter-spacing: 0.03em; }
+  .card p { font-size: 14px; color: var(--muted); }
+  .card .tags { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag {
+    font-size: 11px; letter-spacing: 0.06em; padding: 3px 8px; border-radius: 4px;
+    background: #242a25; color: var(--amber); border: 1px solid #343b35;
+    white-space: nowrap;
+  }
+
+  /* gallery */
+  .gallery { background: var(--bg2); }
+  .shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+  .shots a { border-radius: 8px; overflow: hidden; border: 1px solid var(--line); }
+  .shots img { transition: transform 0.25s; aspect-ratio: 16/9; object-fit: cover; width: 100%; }
+  .shots a:hover img { transform: scale(1.04); }
+
+  /* bottom cta */
+  .bottom {
+    text-align: center; position: relative; overflow: hidden;
+    padding: 110px 20px;
+  }
+  .bottom .bgimg { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0.22; }
+  .bottom .wrap { position: relative; }
+  .bottom h2::after { margin-left: auto; margin-right: auto; }
+
+  footer {
+    border-top: 1px solid var(--line); padding: 26px 20px 34px; text-align: center;
+    color: var(--muted); font-size: 13px;
+  }
+  footer .pl-note { margin-top: 6px; }
+</style>
+</head>
+<body>
+
+<nav>
+  <a class="logo" href="#top">MARO 93<span>.</span></a>
+  <div class="links">
+    <a href="#story" data-i18n="nav_story">The story</a>
+    <a href="#features" data-i18n="nav_features">Features</a>
+    <a href="#gallery" data-i18n="nav_gallery">Screenshots</a>
+    <div class="lang-switch" role="group" aria-label="Language">
+      <button id="btn-en" onclick="setLang('en')">EN</button>
+      <button id="btn-pl" onclick="setLang('pl')">PL</button>
+    </div>
+  </div>
+</nav>
+
+<header id="top">
+  <div class="hero-media">
+    <video autoplay muted loop playsinline poster="assets/hero_golden.jpg">
+      <source src="assets/hero.webm" type="video/webm" />
+    </video>
+  </div>
+  <div class="hero-shade"></div>
+  <div class="hero-scan"></div>
+  <div class="hero-inner">
+    <span class="kicker" data-i18n="kicker">Poland · 1993</span>
+    <h1>MARO 93<span class="dot">.</span></h1>
+    <p class="tagline" data-i18n="tagline">Ex-military. Ex-mercenary. He hunted communists under the PRL — now the dead walk the streets he used to patrol.</p>
+    <p class="sub" data-i18n="sub">Free · in your browser · no install, no account</p>
+    <a class="cta" href="../game.html" data-i18n-html="cta">▶&nbsp; Play now for free</a>
+    <p class="hero-note" data-i18n="hero_note">Runs on desktop and mobile. WASD + mouse, or touch controls.</p>
+  </div>
+</header>
+
+<section class="story" id="story">
+  <div class="wrap cols">
+    <div>
+      <div class="year" data-i18n="story_year">Poland, 1993</div>
+      <h2 data-i18n="story_h">One more war nobody asked for</h2>
+      <p data-i18n="story_p1">Maro is 45 — ex-military, ex-mercenary, spent the PRL years hunting communists in the shadows. Capitalism was supposed to be the hard part: kiosks, bazaars, everyone hustling to stay afloat. Then the dead started shuffling up the main street, and the town emptied in a week.</p>
+      <p data-i18n="story_p2">One crossing with a faded STOP on the asphalt, a wrecked kiosk, a warsztat with its shutter rolled down and something moving behind it, brick houses, and a little park behind a chain-link fence. That's the whole world now — and it's full of them.</p>
+      <p data-i18n="story_p3">Talk to the survivors who stayed — starting with Babcia, who isn't leaving without her favorite teapot. Take on their quests, quiet the yard, cull the horde. And when the streetlights fail at dusk — hold on until morning.</p>
+    </div>
+    <div class="frame"><img src="assets/dusk_street.jpg" alt="The WARSZTAT workshop at dusk, its sign glowing over the dark street" loading="lazy" /></div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <h2 data-i18n="feat_h">What's inside</h2>
+    <p class="lead" data-i18n="feat_lead">A complete little zombie story built from voxels — with quests, guns you'll recognize from the neighborhood, and nights that get genuinely dark.</p>
+    <div class="grid">
+      <div class="card">
+        <img src="assets/granny_dialog.jpg" alt="Talking to Granny in her flat — dialogue box open" loading="lazy" />
+        <div class="pad">
+          <h3 data-i18n="f1_h">Story quests</h3>
+          <p data-i18n="f1_p">NPCs give you questlines told through dialogue — starting with Babcia herself: recover The Favorite Teapot, Quiet the Yard, Cull the Horde.</p>
+        </div>
+      </div>
+      <div class="card">
+        <img src="assets/zombies_gameplay.jpg" alt="First-person view holding a kbk AKM, a zombie prowling the town park" loading="lazy" />
+        <div class="pad">
+          <h3 data-i18n="f2_h">A 90s Polish arsenal</h3>
+          <p data-i18n="f2_p">Fists, a baseball bat, a kastet — or the real thing: P-83 Wanad, P-64 CZAK, TT-33, PM-63 RAK, PM-84 Glauberyt, kbk AKM, Mosin wz. 44, an obrzyn, up to the SWD.</p>
+          <div class="tags">
+            <span class="tag">P-83 Wanad</span><span class="tag">PM-63 RAK</span><span class="tag">kbk AKM</span><span class="tag">TT-33</span><span class="tag">obrzyn</span>
+          </div>
+        </div>
+      </div>
+      <div class="card">
+        <img src="assets/world_aerial.jpg" alt="Aerial view of the small town — warsztat, kiosk, crossing and park" loading="lazy" />
+        <div class="pad">
+          <h3 data-i18n="f3_h">A handcrafted world</h3>
+          <p data-i18n="f3_p">One dense, hand-built town: the warsztat, the wrecked kiosk, a STOP crossing, brick flats and the park — with a full day–night cycle and three save slots.</p>
+        </div>
+      </div>
+      <div class="card">
+        <img src="assets/street_stop.jpg" alt="The main crossing with a striped barrier and a zombie by the fence" loading="lazy" />
+        <div class="pad">
+          <h3 data-i18n="f4_h">Free, and yours to remix</h3>
+          <p data-i18n="f4_p">Plays in any modern browser, on phones too. And the whole town was built in the game's own editor — open it and build your own map.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="gallery" id="gallery">
+  <div class="wrap">
+    <h2 data-i18n="gal_h">Screenshots</h2>
+    <p class="lead" data-i18n="gal_lead">Everything below is captured straight from the game.</p>
+    <div class="shots">
+      <a href="assets/hero_golden.jpg" target="_blank" rel="noopener"><img src="assets/hero_golden.jpg" alt="High noon over the warsztat and the STOP crossing" loading="lazy" /></a>
+      <a href="assets/warsztat.jpg" target="_blank" rel="noopener"><img src="assets/warsztat.jpg" alt="A zombie in the open warsztat garage" loading="lazy" /></a>
+      <a href="assets/street_view.jpg" target="_blank" rel="noopener"><img src="assets/street_view.jpg" alt="Main street with the kiosk at its end" loading="lazy" /></a>
+      <a href="assets/dusk_street.jpg" target="_blank" rel="noopener"><img src="assets/dusk_street.jpg" alt="The warsztat at dusk" loading="lazy" /></a>
+      <a href="assets/street_stop.jpg" target="_blank" rel="noopener"><img src="assets/street_stop.jpg" alt="The crossing with the striped barrier" loading="lazy" /></a>
+      <a href="assets/world_aerial.jpg" target="_blank" rel="noopener"><img src="assets/world_aerial.jpg" alt="The town from above" loading="lazy" /></a>
+    </div>
+  </div>
+</section>
+
+<section class="bottom">
+  <img class="bgimg" src="assets/warsztat.jpg" alt="" aria-hidden="true" />
+  <div class="wrap">
+    <h2 data-i18n="bot_h">The streets won't clear themselves</h2>
+    <p class="lead" style="margin: 14px auto 0;" data-i18n="bot_p">One click. No install, no account, no payment — ever.</p>
+    <a class="cta" href="../game.html" data-i18n-html="cta2">▶&nbsp; Play now for free</a>
+  </div>
+</section>
+
+<footer>
+  <div data-i18n-html="foot">MARO 93 — a free browser voxel game. Made with its own built-in <a href="../index.html">map&nbsp;editor</a>.</div>
+  <div class="pl-note" data-i18n="foot2">Works in Chrome, Firefox, Safari and Edge — desktop and mobile.</div>
+</footer>
+
+<script>
+const I18N = {
+  en: {
+    nav_story: 'The story',
+    nav_features: 'Features',
+    nav_gallery: 'Screenshots',
+    kicker: 'Poland · 1993',
+    tagline: 'Ex-military. Ex-mercenary. He hunted communists under the PRL — now the dead walk the streets he used to patrol.',
+    sub: 'Free · in your browser · no install, no account',
+    cta: '▶&nbsp; Play now for free',
+    cta2: '▶&nbsp; Play now for free',
+    hero_note: 'Runs on desktop and mobile. WASD + mouse, or touch controls.',
+    story_year: 'Poland, 1993',
+    story_h: 'One more war nobody asked for',
+    story_p1: "Maro is 45 — ex-military, ex-mercenary, spent the PRL years hunting communists in the shadows. Capitalism was supposed to be the hard part: kiosks, bazaars, everyone hustling to stay afloat. Then the dead started shuffling up the main street, and the town emptied in a week.",
+    story_p2: "One crossing with a faded STOP on the asphalt, a wrecked kiosk, a warsztat with its shutter rolled down and something moving behind it, brick houses, and a little park behind a chain-link fence. That's the whole world now — and it's full of them.",
+    story_p3: "Talk to the survivors who stayed — starting with Babcia, who isn't leaving without her favorite teapot. Take on their quests, quiet the yard, cull the horde. And when the streetlights fail at dusk — hold on until morning.",
+    feat_h: "What's inside",
+    feat_lead: "A complete little zombie story built from voxels — with quests, guns you'll recognize from the neighborhood, and nights that get genuinely dark.",
+    f1_h: 'Story quests',
+    f1_p: 'NPCs give you questlines told through dialogue — starting with Babcia herself: recover The Favorite Teapot, Quiet the Yard, Cull the Horde.',
+    f2_h: 'A 90s Polish arsenal',
+    f2_p: 'Fists, a baseball bat, a kastet — or the real thing: P-83 Wanad, P-64 CZAK, TT-33, PM-63 RAK, PM-84 Glauberyt, kbk AKM, Mosin wz. 44, an obrzyn, up to the SWD.',
+    f3_h: 'A handcrafted world',
+    f3_p: 'One dense, hand-built town: the warsztat, the wrecked kiosk, a STOP crossing, brick flats and the park — with a full day–night cycle and three save slots.',
+    f4_h: 'Free, and yours to remix',
+    f4_p: "Plays in any modern browser, on phones too. And the whole town was built in the game's own editor — open it and build your own map.",
+    gal_h: 'Screenshots',
+    gal_lead: 'Everything below is captured straight from the game.',
+    bot_h: "The streets won't clear themselves",
+    bot_p: 'One click. No install, no account, no payment — ever.',
+    foot: 'MARO 93 — a free browser voxel game. Made with its own built-in <a href="../index.html">map&nbsp;editor</a>.',
+    foot2: 'Works in Chrome, Firefox, Safari and Edge — desktop and mobile.',
+    title: 'MARO 93 — a free voxel zombie story set in 1990s Poland',
+  },
+  pl: {
+    nav_story: 'Fabuła',
+    nav_features: 'Co w grze',
+    nav_gallery: 'Zrzuty ekranu',
+    kicker: 'Polska · 1993',
+    tagline: 'Wojskowy. Najemnik. Za PRL-u polował na komunistów — teraz ulicami, które kiedyś patrolował, chodzą umarli.',
+    sub: 'Za darmo · w przeglądarce · bez instalacji i konta',
+    cta: '▶&nbsp; Zagraj teraz za darmo',
+    cta2: '▶&nbsp; Zagraj teraz za darmo',
+    hero_note: 'Działa na komputerze i telefonie. WASD + mysz albo sterowanie dotykowe.',
+    story_year: 'Polska, 1993',
+    story_h: 'Kolejna wojna, o którą nikt nie prosił',
+    story_p1: 'Maro ma 45 lat — wojskowy, potem najemnik, za PRL-u polował na komunistów w cieniu. Kapitalizm miał być tym trudniejszym rozdziałem: kioski, bazary, wszyscy walczący o przetrwanie. Aż główną ulicą zaczęli snuć się umarli i miasteczko opustoszało w tydzień.',
+    story_p2: 'Jedno skrzyżowanie z wyblakłym STOP-em na asfalcie, rozbity kiosk, warsztat z opuszczoną roletą — i czymś, co się za nią rusza — ceglane domy i mały park za siatką. Tyle zostało ze świata. I pełno w nim ich.',
+    story_p3: 'Rozmawiaj z ocalałymi, którzy zostali — zaczynając od Babci, która nie wyjedzie bez swojego ulubionego czajniczka. Przyjmuj zadania, zaprowadź spokój na podwórku, przetrzeb hordę. A gdy o zmierzchu zgasną latarnie — przetrwaj do rana.',
+    feat_h: 'Co znajdziesz w środku',
+    feat_lead: 'Kompletna mała opowieść o zombie zbudowana z voxeli — z zadaniami, bronią znaną z osiedla i nocami, które naprawdę robią się ciemne.',
+    f1_h: 'Zadania fabularne',
+    f1_p: 'NPC-e prowadzą cię łańcuchami zadań przez dialogi — zaczynając od samej Babci: odzyskaj ulubiony czajniczek, zaprowadź spokój na podwórku, przetrzeb hordę.',
+    f2_h: 'Arsenał lat 90.',
+    f2_p: 'Pięści, kij bejsbolowy, kastet — albo konkrety: P-83 Wanad, P-64 CZAK, TT-33, PM-63 RAK, PM-84 Glauberyt, kbk AKM, Mosin wz. 44, obrzyn, aż po SWD.',
+    f3_h: 'Ręcznie zbudowany świat',
+    f3_p: 'Jedno gęste, ręcznie postawione miasteczko: warsztat, rozbity kiosk, skrzyżowanie ze STOP-em, ceglane kamienice i park — z pełnym cyklem dnia i nocy i trzema slotami zapisu.',
+    f4_h: 'Za darmo — i do przerabiania',
+    f4_p: 'Działa w każdej nowoczesnej przeglądarce, także na telefonie. A całe miasteczko powstało we wbudowanym edytorze gry — otwórz go i zbuduj własną mapę.',
+    gal_h: 'Zrzuty ekranu',
+    gal_lead: 'Wszystko poniżej pochodzi prosto z gry.',
+    bot_h: 'Ulice same się nie oczyszczą',
+    bot_p: 'Jedno kliknięcie. Bez instalacji, konta i płatności — nigdy.',
+    foot: 'MARO 93 — darmowa przeglądarkowa gra voxelowa. Stworzona we własnym, wbudowanym <a href="../index.html">edytorze&nbsp;map</a>.',
+    foot2: 'Działa w Chrome, Firefoksie, Safari i Edge — na komputerze i telefonie.',
+    title: 'MARO 93 — darmowa voxelowa opowieść o zombie w Polsce lat 90.',
+  },
+};
+
+function setLang(lang) {
+  const dict = I18N[lang] || I18N.en;
+  document.querySelectorAll('[data-i18n]').forEach((el) => {
+    const key = el.getAttribute('data-i18n');
+    if (dict[key]) el.textContent = dict[key];
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach((el) => {
+    const key = el.getAttribute('data-i18n-html');
+    if (dict[key]) el.innerHTML = dict[key];
+  });
+  document.documentElement.lang = lang;
+  document.title = dict.title;
+  document.getElementById('btn-en').classList.toggle('active', lang === 'en');
+  document.getElementById('btn-pl').classList.toggle('active', lang === 'pl');
+  try { localStorage.setItem('zagroda.lang', lang); } catch {}
+}
+
+const saved = (() => { try { return localStorage.getItem('zagroda.lang'); } catch { return null; } })();
+setLang(saved || ((navigator.language || '').toLowerCase().startsWith('pl') ? 'pl' : 'en'));
+</script>
+</body>
+</html>

@@ -13,13 +13,13 @@ import { itemAwarePick } from '../itemPick.js';
 import { getItem } from '../../engine/ItemRegistry.js';
 import { getEquipItem } from '../../engine/EquipmentRegistry.js';
 import { createItemGeometry } from '../ItemGeometry.three.js';
-import { microCellSizeFor } from '../../engine/ItemTypes.js';
+import { MICRO_SIZE, cellsOf, gridOf, quarterTurns } from '../../engine/ItemTypes.js';
 import { CELL_SIZE } from '../../engine/Space.js';
-import { spanFor } from '../../engine/VoxelShape.js';
+import { spanVecFor } from '../../engine/VoxelShape.js';
 
 /** Resolve a selected item id from either the placeable-object or the
- *  equippable-item registry (the E menu mixes both; equipment has no size and
- *  places at the small footprint). */
+ *  equippable-item registry (the E menu mixes both; equipment has no cells
+ *  and places at a single-cell footprint). */
 const resolveItem = (id) => getItem(id) ?? getEquipItem(id);
 
 export class ItemTool extends Tool {
@@ -35,8 +35,9 @@ export class ItemTool extends Tool {
     return resolveItem(this.ctx.state.get('itemId'));
   }
 
-  get size() {
-    return this.item?.size ?? 'small';
+  /** Footprint of the selected item in cells [w, h, d]. */
+  get cells() {
+    return cellsOf(this.item);
   }
 
   /** Current yaw in radians for the selected item (R cycles 90° steps). */
@@ -49,14 +50,14 @@ export class ItemTool extends Tool {
   }
 
   /** Items are free objects, not grid blocks: anchor at small-cell resolution
-   *  (no parity snap). The footprint extends `span` cells in +x/+y/+z from the
-   *  anchor, so against a negative-facing surface the anchor shifts back to
-   *  keep the whole footprint adjacent to the clicked face. */
-  placementAnchor(hit, size) {
-    const span = spanFor(size);
+   *  (no parity snap). The footprint extends the per-axis span in +x/+y/+z
+   *  from the anchor, so against a negative-facing surface the anchor shifts
+   *  back to keep the whole footprint adjacent to the clicked face. */
+  placementAnchor(hit) {
+    const span = spanVecFor(this.cells, quarterTurns(this.rotation));
     return hit.cell.map((c, i) => {
       const n = hit.normal[i];
-      return c + (n > 0 ? 1 : n < 0 ? -span : 0);
+      return c + (n > 0 ? 1 : n < 0 ? -span[i] : 0);
     });
   }
 
@@ -69,14 +70,14 @@ export class ItemTool extends Tool {
     const { world } = this.ctx;
     const hit = this.pick();
     if (!hit) return;
-    const anchor = this.placementAnchor(hit, this.size);
-    if (!world.isAreaFree(anchor[0], anchor[1], anchor[2], this.size)) {
+    const anchor = this.placementAnchor(hit);
+    if (!world.isAreaFree(anchor[0], anchor[1], anchor[2], this.cells, quarterTurns(this.rotation))) {
       Notice.warn('Cannot place item — space is blocked');
       return;
     }
     const cmd = placeItemCommand(
       world,
-      { itemId: this.item?.id, size: this.size, anchor, rotation: this.rotation },
+      { itemId: this.item?.id, cells: this.cells, anchor, rotation: this.rotation },
       () => this.ctx.onItemChange?.(),
     );
     if (cmd.do()) {
@@ -111,14 +112,14 @@ export class ItemTool extends Tool {
       ghost.hide();
       return;
     }
-    const anchor = this.placementAnchor(hit, this.size);
-    const blocked = !this.ctx.world.isAreaFree(anchor[0], anchor[1], anchor[2], this.size);
+    const anchor = this.placementAnchor(hit);
+    const blocked = !this.ctx.world.isAreaFree(anchor[0], anchor[1], anchor[2], this.cells, quarterTurns(this.rotation));
     ghost.hide();
     // Aiming at a placed item: keep its footprint outlined (RMB removes it)
     // but still preview the placement against the hovered face — items stack
     // on items (a cup on a table) just like on blocks.
     const item = this.ctx.world.itemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
-    if (item) ghost.showRemoval(item.anchor, item.size);
+    if (item) ghost.showRemoval(item.anchor, item.cells, quarterTurns(item.rotation ?? 0));
     this._showPreview(anchor, blocked);
   }
 
@@ -128,7 +129,7 @@ export class ItemTool extends Tool {
       this._hidePreview();
       return;
     }
-    const key = `${it.id}:${this.size}:${this.rotation}`;
+    const key = `${it.id}:${this.cells.join('x')}:${this.rotation}`;
     // Rebuild when the item (id, size) or the registered definition changes
     // (a re-saved item is a new object), so the preview always matches.
     if (!this._preview || this._previewKey !== key || this._previewItem !== it) {
@@ -139,9 +140,9 @@ export class ItemTool extends Tool {
     const { group, box } = this._preview;
     group.visible = true;
     group.position.set(anchor[0] * CELL_SIZE, anchor[1] * CELL_SIZE, anchor[2] * CELL_SIZE);
-    const s = spanFor(this.size) * CELL_SIZE;
-    box.scale.set(s, s, s);
-    box.position.set(s / 2, s / 2, s / 2);
+    const [sx, sy, sz] = spanVecFor(this.cells, quarterTurns(this.rotation)).map((n) => n * CELL_SIZE);
+    box.scale.set(sx, sy, sz);
+    box.position.set(sx / 2, sy / 2, sz / 2);
     box.material.color.setHex(blocked ? 0xff5533 : 0x33ff66);
     this._preview.mesh.material.opacity = blocked ? 0.3 : 0.6;
   }
@@ -150,8 +151,8 @@ export class ItemTool extends Tool {
     const T = this.ctx.THREE;
     if (this._preview) this.ctx.scene?.remove?.(this._preview.group);
     const group = new T.Group();
-    const c = microCellSizeFor(this.size);
-    const geo = createItemGeometry(T, it.microVoxels, { rotation: this.rotation });
+    const c = MICRO_SIZE;
+    const geo = createItemGeometry(T, it.microVoxels, { rotation: this.rotation, grid: gridOf(it) });
     const mesh = new T.Mesh(
       geo,
       new T.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6, depthWrite: false }),

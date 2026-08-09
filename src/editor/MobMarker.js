@@ -5,6 +5,10 @@
 // glance. Independent of chunk meshing; update() rebuilds the marker set only
 // when the spawn list changes (spawn edits are rare, so a full rebuild then is
 // fine) and no-ops otherwise.
+//
+// The spawn source and tint are injectable, so the same beacon renderer also
+// serves NPC spawns (see App: a second instance reading forEachNpcSpawn with
+// the friendly-green NPC color).
 
 import { CELL_SIZE } from '../engine/Space.js';
 import { getMob } from '../engine/mobTypes.js';
@@ -15,11 +19,17 @@ export class MobMarker {
    * @param {object} deps.THREE
    * @param {import('three').Scene} deps.scene
    * @param {object} deps.world
+   * @param {(world:object, fn:(spawn)=>void)=>void} [deps.forEachSpawn]
+   *   spawn iterator (defaults to mob spawns)
+   * @param {(spawn:object)=>number} [deps.colorFor]  beacon tint per spawn
+   *   (defaults to the mob type's markerColor)
    */
-  constructor({ THREE, scene, world }) {
+  constructor({ THREE, scene, world, forEachSpawn, colorFor }) {
     this.THREE = THREE;
     this.scene = scene;
     this.world = world;
+    this.forEachSpawn = forEachSpawn ?? ((w, fn) => w.forEachMobSpawn(fn));
+    this.colorFor = colorFor ?? ((s) => getMob(s.type)?.markerColor ?? 0xff5544);
 
     this.group = new THREE.Group();
     this.group.visible = false;
@@ -28,10 +38,10 @@ export class MobMarker {
     this._lastSignature = null;
   }
 
-  /** Sync markers to world.mobSpawns; no-op unless the set changed. */
+  /** Sync markers to the spawn set; no-op unless it changed. */
   update() {
     const sig = [];
-    this.world.forEachMobSpawn((s) => sig.push(`${s.type}@${s.x},${s.y},${s.z}`));
+    this.forEachSpawn(this.world, (s) => sig.push(`${s.type}@${s.x},${s.y},${s.z}`));
     sig.sort();
     const key = sig.join('|');
     if (key === this._lastSignature) {
@@ -46,9 +56,8 @@ export class MobMarker {
     this._clear();
     if (!sig.length) return;
     const T = this.THREE;
-    this.world.forEachMobSpawn((s) => {
-      const def = getMob(s.type);
-      const color = def?.markerColor ?? 0xff5544;
+    this.forEachSpawn(this.world, (s) => {
+      const color = this.colorFor(s);
       const group = new T.Group();
 
       const octa = new T.Mesh(

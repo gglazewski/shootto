@@ -19,6 +19,9 @@ import {
   EQUIP_FORMAT,
   DEFAULT_EQUIP_STATS,
   DEFAULT_WEAPON,
+  DEFAULT_ARMOR_PACK,
+  normalizeKind,
+  normalizeArmorPack,
   ATTACK_ANIMS,
 } from '../src/engine/EquipmentRegistry.js';
 import {
@@ -54,7 +57,7 @@ test('normalizeWeapon builds a canonical composable profile', () => {
   assert.deepEqual(normalizeWeapon({}), DEFAULT_WEAPON);
   assert.deepEqual(
     normalizeWeapon({ kind: 'ranged', hands: 'two', muzzle: { x: 3, y: 4, z: 7 }, anim: 'gun', recoil: 0.12, magazine: 30, ammo: 'rifle' }),
-    { kind: 'ranged', hands: 'two', muzzle: { x: 3, y: 4, z: 7 }, anim: 'gun', recoil: 0.12, magazine: 30, ammo: 'rifle', reload: 1.4, spread: 0.02, pellets: 1 },
+    { kind: 'ranged', hands: 'two', orientation: 'horizontal', muzzle: { x: 3, y: 4, z: 7 }, anim: 'gun', recoil: 0.12, magazine: 30, ammo: 'rifle', reload: 1.4, spread: 0.02, pellets: 1 },
   );
   // invalid anims fall back per kind; muzzle is validated as integer cells.
   assert.equal(normalizeWeapon({ kind: 'ranged', anim: 'slash' }).anim, 'gun');
@@ -78,6 +81,10 @@ test('normalizeWeapon builds a canonical composable profile', () => {
   assert.equal(normalizeWeapon({ pellets: 99 }).pellets, 20, 'pellets clamp at 20');
   assert.equal(normalizeWeapon({ pellets: 0 }).pellets, 1, 'at least one projectile');
   assert.equal(normalizeWeapon({ pellets: 2.7 }).pellets, 3, 'pellet counts are whole numbers');
+  assert.equal(normalizeWeapon({}).orientation, 'horizontal', 'weapons point forward by default');
+  assert.equal(normalizeWeapon({ kind: 'melee', orientation: 'vertical' }).orientation, 'vertical', 'melee weapons can stand upright');
+  assert.equal(normalizeWeapon({ kind: 'ranged', orientation: 'vertical' }).orientation, 'horizontal', 'guns always point forward');
+  assert.equal(normalizeWeapon({ orientation: 'sideways' }).orientation, 'horizontal', 'unknown orientations fall back');
   assert.deepEqual(ATTACK_ANIMS.ranged, ['gun']);
 });
 
@@ -128,7 +135,7 @@ test('single item serialize/deserialize round-trips grip, yaw and stats', () => 
   item.grip2 = { x: 1, y: 2, z: 1 };
   item.yaw = 270;
   item.stats = { damage: 34, reach: 1.5, cooldown: 0.6 };
-  item.weapon = { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 4, z: 5 }, anim: 'gun', recoil: 0.1, magazine: 12, ammo: 'pistol', reload: 0.8, spread: 0.02, pellets: 6 };
+  item.weapon = { kind: 'ranged', hands: 'one', orientation: 'horizontal', muzzle: { x: 3, y: 4, z: 5 }, anim: 'gun', recoil: 0.1, magazine: 12, ammo: 'pistol', reload: 0.8, spread: 0.02, pellets: 6 };
 
   const text = serializeEquipItem(item);
   const parsed = JSON.parse(text);
@@ -245,4 +252,36 @@ test('map deserialize drops items from neither registry', () => {
   world.forEachItem(() => count++);
   assert.equal(count, 0, 'unknown item ids are still skipped');
   assert.equal(errors.length, 1, 'the skip is reported as a warning');
+});
+
+// --- armor items ---
+
+test('armor kind normalizes and survives serialize round-trips', () => {
+  assert.equal(normalizeKind('armor'), 'armor');
+  assert.equal(normalizeKind('junk'), 'weapon');
+  assert.deepEqual(normalizeArmorPack({}), { amount: DEFAULT_ARMOR_PACK.amount });
+  assert.deepEqual(normalizeArmorPack({ amount: 999 }), { amount: 100 });
+  assert.deepEqual(normalizeArmorPack({ amount: 0.4 }), { amount: 1 });
+
+  clearEquipItems();
+  const vest = { ...emptyEquipItem('Vest'), id: 'vest', kind: 'armor', armor: { amount: 40 } };
+  registerEquipItem(vest);
+  assert.equal(getEquipItem('vest').kind, 'armor');
+  assert.equal(getEquipItem('vest').armor.amount, 40);
+
+  // single-file round-trip
+  const { item, errors } = deserializeEquipItem(serializeEquipItem(getEquipItem('vest')));
+  assert.deepEqual(errors, []);
+  assert.equal(item.kind, 'armor');
+  assert.equal(item.armor.amount, 40);
+
+  // registry round-trip
+  const text = serializeEquipRegistry();
+  clearEquipItems();
+  deserializeEquipRegistry(text);
+  assert.equal(getEquipItem('vest').armor.amount, 40);
+});
+
+test('empty items carry a default armor pack', () => {
+  assert.deepEqual(emptyEquipItem().armor, { amount: DEFAULT_ARMOR_PACK.amount });
 });

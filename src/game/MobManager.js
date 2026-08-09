@@ -127,6 +127,62 @@ export class MobManager {
     });
   }
 
+  /** The navmesh for a mob type, built on demand — dynamic spawns (quest
+   *  packs) may use types no editor-placed spawn point did. */
+  _navFor(typeId) {
+    let nav = this.navs.get(typeId);
+    if (!nav) {
+      const def = getMob(typeId);
+      if (!def) return null;
+      const height = Math.max(def.height, MOB_HEIGHT_MAX);
+      nav = new NavMesh(this.solidWorld, { halfWidth: def.halfWidth, height });
+      this.navs.set(typeId, nav);
+    }
+    return nav;
+  }
+
+  /**
+   * Spawn `count` live mobs around a feet cell at runtime — quest slay packs
+   * (see GameApp._spawnQuestMobs). Mobs fan out over a ring of nearby cells
+   * so a pack doesn't materialize inside one another; cells with no walkable
+   * surface are skipped (the candidate ring cycles, so a valid cell can host
+   * more than one mob — overlap resolution eases them apart).
+   * @param {string} typeId  mob type
+   * @param {[number,number,number]} cell  feet cell to spawn around
+   * @param {number} [count]
+   * @returns {number} how many actually spawned
+   */
+  spawnAt(typeId, cell, count = 1) {
+    const def = getMob(typeId);
+    const nav = this._navFor(typeId);
+    if (!def || !nav) return 0;
+    const ring = [
+      [0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1],
+      [2, 0], [-2, 0], [0, 2], [0, -2], [2, 1], [-2, -1], [1, 2], [-1, -2],
+    ];
+    let spawned = 0;
+    let slot = 0;
+    for (let attempts = 0; spawned < count && attempts < count * ring.length; attempts++) {
+      const [dx, dz] = ring[slot % ring.length];
+      slot++;
+      const mob = new Mob({
+        type: def,
+        spawnCell: [cell[0] + dx, cell[1], cell[2] + dz],
+        world: this.solidWorld,
+        nav,
+        aggroDelay: Math.random() * 0.3,
+        skin: randomMobSkin(),
+        height: randomMobHeight(),
+        onDamagePlayer: this.onDamagePlayer,
+      });
+      if (!mob.valid) continue;
+      this.mobs.push(mob);
+      this.renderer.addMob(mob);
+      spawned++;
+    }
+    return spawned;
+  }
+
   /** Rebuild the nav meshes over the current solid world without touching
    *  the live mobs — doors opening and closing change what is walkable, and
    *  mobs can't toggle doors themselves, so this is how a closed door makes

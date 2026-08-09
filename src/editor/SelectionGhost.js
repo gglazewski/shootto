@@ -90,10 +90,11 @@ export class SelectionGhost {
    * otherwise it falls back to the plain translucent cube.
    */
   showPlacement(anchor, size, blocked, spec = null) {
-    const [sx, sy, sz] = spanVecFor(size, spec?.rotation ?? 0).map((n) => n * CELL_SIZE);
+    const variant = spec?.variant ?? null;
+    let [sx, sy, sz] = spanVecFor(size, spec?.rotation ?? 0).map((n) => n * CELL_SIZE);
     this.hideCells();
     if (this.texPlace && spec?.blockId) {
-      const geo = this._previewGeometry(spec.blockId, size, spec.rotation ?? 0);
+      const geo = this._previewGeometry(spec.blockId, size, spec.rotation ?? 0, variant);
       if (geo) {
         this.place.visible = false;
         if (this.texPlace.geometry !== geo) this.texPlace.geometry = geo;
@@ -105,10 +106,13 @@ export class SelectionGhost {
     }
     if (this.texPlace) this.texPlace.visible = false;
     this.place.visible = true;
+    // Slab variants: the plain fallback cube shrinks to the placed half.
+    const yOff = variant === 'upper' ? sy / 2 : 0;
+    if (variant) sy /= 2;
     this.place.scale.set(sx, sy, sz);
     this.place.position.set(
       anchor[0] * CELL_SIZE + sx / 2,
-      anchor[1] * CELL_SIZE + sy / 2,
+      anchor[1] * CELL_SIZE + yOff + sy / 2,
       anchor[2] * CELL_SIZE + sz / 2,
     );
     this.place.material.color.setHex(blocked ? BLOCKED_COLOR : PLACE_COLOR);
@@ -117,12 +121,13 @@ export class SelectionGhost {
   /** Preview geometry for a block at a size/rotation, built by the chunk
    *  mesher over a one-voxel stub world and cached. Returns null when the
    *  block has no tiles in the atlas. */
-  _previewGeometry(blockId, size, rotation) {
-    const key = `${blockId}|${size}|${rotation}`;
+  _previewGeometry(blockId, size, rotation, variant = null) {
+    const key = `${blockId}|${size}|${rotation}|${variant ?? 'full'}`;
     const cached = this._previewCache.get(key);
     if (cached) return cached;
     const [sx, sy, sz] = spanVecFor(size, rotation);
     const voxel = { type: blockId, size, rotation, anchor: [0, 0, 0] };
+    if (variant) voxel.variant = variant;
     const stub = {
       get: (x, y, z) =>
         x >= 0 && x < sx && y >= 0 && y < sy && z >= 0 && z < sz ? voxel : null,
@@ -155,8 +160,10 @@ export class SelectionGhost {
    * Preview a decal on one face of the voxel occupying `cell` — the actual
    * decal texture, pinned a hair off the face. Red-tinted when the face is
    * blocked (already carries a decal). Needs the atlas; no-op without it.
+   * `offset` (cells) shifts the quad off the cell's face plane — panes pass
+   * one so the preview lands on the pane itself, centered in the voxel.
    */
-  showDecal(cell, face, decalId, rotation, blocked) {
+  showDecal(cell, face, decalId, rotation, blocked, offset = null) {
     if (!this.texPlace) return;
     this.hideCells();
     this.place.visible = false;
@@ -164,7 +171,11 @@ export class SelectionGhost {
     const geo = this._decalGeometry(decalId, face, rotation ?? 0);
     if (!geo) return;
     if (this.texPlace.geometry !== geo) this.texPlace.geometry = geo;
-    this.texPlace.position.set(cell[0] * CELL_SIZE, cell[1] * CELL_SIZE, cell[2] * CELL_SIZE);
+    this.texPlace.position.set(
+      (cell[0] + (offset?.[0] ?? 0)) * CELL_SIZE,
+      (cell[1] + (offset?.[1] ?? 0)) * CELL_SIZE,
+      (cell[2] + (offset?.[2] ?? 0)) * CELL_SIZE,
+    );
     // No green tint here — decals are recognizable art; dim red only when blocked.
     this.texPlace.material.color.setHex(blocked ? BLOCKED_COLOR : 0xffffff);
     this.texPlace.visible = true;

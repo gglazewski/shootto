@@ -8,6 +8,8 @@ export const CONFIG = Object.freeze({
   saveKey: 'voxelmap.save',
   itemSaveKey: 'voxelitem.items',
   equipSaveKey: 'voxelequip.items',
+  npcSaveKey: 'voxelnpc.npcs',
+  questSaveKey: 'voxelquest.quests',
   groundSpan: 16, // big voxels per side of the seeded ground plane
   camera: {
     fov: 70,
@@ -65,6 +67,11 @@ export const CONFIG = Object.freeze({
     crouchSpeed: 1.6,
     groundAccel: 12,
     airAccel: 4,
+  },
+  test: {
+    // How far the F5 test run's E key reaches, in cells (2 cells = 1 m).
+    // Matches the game's door reach (GameApp DOOR_RANGE).
+    interactCells: 5,
   },
   history: {
     max: 10,

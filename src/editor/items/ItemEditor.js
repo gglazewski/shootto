@@ -1,28 +1,32 @@
 // ItemEditor.js — the F2 micro-voxel object editor.
 //
-// Switches the app into 'item' mode: an orbit camera looks at an 8^3 micro-voxel
-// grid floating above a clean, gridded floor with the centre axes marked. The
-// shared painting/tools/camera/undo core lives in MicroVoxelEditor (tool strip,
-// inline palette, box/mirror/fill, status bar); this class adds the
-// placeable-object aspect: the item's world size (B), whether it blocks the
-// player (Collision buttons) and an optional light source (color + strength
-// in meters, L).
+// Switches the app into 'item' mode: an orbit camera looks at the item's
+// micro-voxel build volume (its footprint in 0.5 m cells × 8 micro-voxels per
+// cell) floating above a clean, gridded floor with the centre axes marked.
+// The shared painting/tools/camera/undo core lives in MicroVoxelEditor (tool
+// strip, inline palette, box/mirror/fill, status bar); this class adds the
+// placeable-object aspect: the item's footprint in cells (W×H×D steppers —
+// e.g. 2×4×1 for a big closet), whether it blocks the player (Collision
+// buttons) and an optional light source (color + strength in meters, L).
 //
 // Extra interactions on top of the shared core:
-//   B  toggle world size (0.5 m / 1 m)  ·  L  light settings
-//   F2 / Esc  back to the world editor
+//   L  light settings  ·  F2 / Esc  back to the world editor
 
 import {
-  MICRO_GRID,
+  MICRO_SIZE,
   LIGHT_COLORS,
   emptyItem,
-  microCellSizeFor,
+  cellsOf,
+  gridOf,
+  normalizeCells,
   deserializeItem,
   slugifyName,
 } from '../../engine/ItemTypes.js';
 import { isItemId } from '../../engine/ItemRegistry.js';
+import { CELL_SIZE } from '../../engine/Space.js';
 import { Notice } from '../Notice.js';
 import { MicroVoxelEditor, rgbToHex } from './MicroVoxelEditor.js';
+import { recenterForResize } from './microOps.js';
 
 /** Background of the dedicated item-editor scene (clean, no sky). */
 const BG_COLOR = 0x1a1e26;
@@ -49,7 +53,9 @@ export class ItemEditor extends MicroVoxelEditor {
 
   _emptyModel() { return emptyItem(); }
 
-  _cellSize() { return microCellSizeFor(this.item.size); }
+  _cellSize() { return MICRO_SIZE; }
+
+  _gridDims() { return gridOf(this.item); }
 
   _initExtra() {
     this.lightOn = false;
@@ -74,7 +80,7 @@ export class ItemEditor extends MicroVoxelEditor {
 
   _snapshotExtra() {
     return {
-      size: this.item.size,
+      cells: [...cellsOf(this.item)],
       solid: this.item.solid !== false,
       light: this.item.light,
       lightOn: this.lightOn,
@@ -84,7 +90,7 @@ export class ItemEditor extends MicroVoxelEditor {
   }
 
   _restoreExtra(s) {
-    this.item.size = s.size;
+    this.item.cells = s.cells;
     this.item.solid = s.solid;
     this.item.light = s.light;
     this.lightOn = s.lightOn;
@@ -99,10 +105,6 @@ export class ItemEditor extends MicroVoxelEditor {
   }
 
   _onEditorKey(code, event) {
-    if (code === 'KeyB') {
-      this._toggleSize();
-      return true;
-    }
     if (code === 'KeyL') {
       this._toggleLightModal();
       return true;
@@ -151,24 +153,37 @@ export class ItemEditor extends MicroVoxelEditor {
       cy = Math.floor((Math.min(...ys) + Math.max(...ys)) / 2);
       cz = Math.floor((Math.min(...zs) + Math.max(...zs)) / 2);
     } else {
-      cx = cy = cz = Math.floor(MICRO_GRID / 2);
+      const [gx, gy, gz] = this._gridDims();
+      cx = Math.floor(gx / 2);
+      cy = Math.floor(gy / 2);
+      cz = Math.floor(gz / 2);
     }
     return { x: cx, y: cy, z: cz, color: [...this.lightColor], strength: this.lightStrength };
   }
 
   // --- item model updates ---
 
-  _toggleSize() {
+  /** Resize the footprint (cells [w, h, d]), keeping content centred in the
+   *  new build volume. Refused when the placed voxels don't fit — nothing is
+   *  ever silently dropped. */
+  _setCells(cells) {
+    const next = normalizeCells(cells);
+    const cur = cellsOf(this.item);
+    if (next[0] === cur[0] && next[1] === cur[1] && next[2] === cur[2]) return;
+    const curGrid = this._gridDims();
+    const nextGrid = gridOf({ cells: next });
+    const moved = recenterForResize(this.item.microVoxels, curGrid, nextGrid);
+    if (!moved) {
+      Notice.warn(`Content doesn't fit ${next.join('×')} cells — erase voxels or pick a bigger footprint`);
+      this._renderUI(); // snap the steppers back to the real dims
+      return;
+    }
     this._pushSnapshot();
-    this.item.size = this.item.size === 'small' ? 'big' : 'small';
+    this.item.cells = next;
+    this.item.microVoxels = moved;
+    this._boxAnchor = null;
     this._rebuild();
-  }
-
-  _setSize(size) {
-    if (this.item.size === size) return;
-    this._pushSnapshot();
-    this.item.size = size;
-    this._rebuild();
+    this._setView('iso'); // reframe the camera for the new volume
   }
 
   _setSolid(solid) {
@@ -183,6 +198,7 @@ export class ItemEditor extends MicroVoxelEditor {
   /** Load a registered item into the editor for further editing. */
   loadItem(item) {
     this.item = JSON.parse(JSON.stringify(item));
+    this.item.cells = cellsOf(this.item);
     this.lightOn = !!item.light;
     if (item.light) {
       this.lightColor = [...item.light.color];
@@ -208,8 +224,10 @@ export class ItemEditor extends MicroVoxelEditor {
   _wireExtraUI($) {
     const ui = this._ui;
     Object.assign(ui, {
-      sizeSmall: $('#ie-size-small'),
-      sizeBig: $('#ie-size-big'),
+      cellsX: $('#ie-cells-x'),
+      cellsY: $('#ie-cells-y'),
+      cellsZ: $('#ie-cells-z'),
+      cellsSize: $('#ie-cells-size'),
       solidBlocking: $('#ie-solid-blocking'),
       solidTraversable: $('#ie-solid-traversable'),
       lightLabel: $('#ie-light-label'),
@@ -224,8 +242,13 @@ export class ItemEditor extends MicroVoxelEditor {
       file: $('#file-item-load'),
     });
 
-    ui.sizeSmall.addEventListener('click', () => this._setSize('small'));
-    ui.sizeBig.addEventListener('click', () => this._setSize('big'));
+    for (const [el, axis] of [[ui.cellsX, 0], [ui.cellsY, 1], [ui.cellsZ, 2]]) {
+      el?.addEventListener('change', () => {
+        const cells = [...cellsOf(this.item)];
+        cells[axis] = Number(el.value);
+        this._setCells(cells);
+      });
+    }
     ui.solidBlocking.addEventListener('click', () => this._setSolid(true));
     ui.solidTraversable.addEventListener('click', () => this._setSolid(false));
 
@@ -293,8 +316,13 @@ export class ItemEditor extends MicroVoxelEditor {
 
   _renderExtraUI() {
     const ui = this._ui;
-    ui.sizeSmall?.classList.toggle('active', this.item.size === 'small');
-    ui.sizeBig?.classList.toggle('active', this.item.size === 'big');
+    const cells = cellsOf(this.item);
+    if (ui.cellsX && this.doc.activeElement !== ui.cellsX) ui.cellsX.value = String(cells[0]);
+    if (ui.cellsY && this.doc.activeElement !== ui.cellsY) ui.cellsY.value = String(cells[1]);
+    if (ui.cellsZ && this.doc.activeElement !== ui.cellsZ) ui.cellsZ.value = String(cells[2]);
+    if (ui.cellsSize) {
+      ui.cellsSize.textContent = cells.map((c) => (c * CELL_SIZE).toFixed(1).replace(/\.0$/, '')).join(' × ') + ' m';
+    }
     ui.solidBlocking?.classList.toggle('active', this.item.solid !== false);
     ui.solidTraversable?.classList.toggle('active', this.item.solid === false);
     if (ui.lightLabel) ui.lightLabel.textContent = this.lightOn ? `on · ${this.lightStrength.toFixed(1)} m` : 'off';

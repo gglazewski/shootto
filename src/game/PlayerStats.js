@@ -32,9 +32,11 @@ export class PlayerStats {
    * @param {object} [init.ammo]  { pistol?: number, rifle?: number,
    *   shotgun?: number } — carried ammo per type
    */
-  constructor({ health = MAX_HEALTH, armor = MAX_ARMOR, equipment = {}, ammo } = {}) {
+  constructor({ health = MAX_HEALTH, armor = 0, equipment = {}, ammo } = {}) {
     this.health = clamp(health);
-    this.armor = clamp(armor);
+    // Armor starts at zero — it only comes from armor pickups (vests built
+    // in the F3 editor). NaN-safe clamp would default to max, so guard it.
+    this.armor = Number.isFinite(Number(armor)) ? clamp(armor) : 0;
     /** @type {{primary:string|null, secondary:string|null, extra:string|null, injection:string|null}} */
     this.equipment = { primary: null, secondary: null, extra: null, injection: null };
     if (equipment && typeof equipment === 'object') {

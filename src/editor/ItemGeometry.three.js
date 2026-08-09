@@ -18,6 +18,7 @@ import { CELL_SIZE } from '../engine/Space.js';
  * @param {number} [opts.scale]       world meters per micro-cell (item footprint)
  * @param {[number,number,number]} [opts.offset]  world min corner of the item
  * @param {number} [opts.rotation]    yaw in radians about the footprint centre (placed items)
+ * @param {[number,number,number]} [opts.grid]  micro build volume (rotation centre; default 8³)
  * @returns {import('three').BufferGeometry}
  */
 export function createItemGeometry(THREE, microVoxels, opts = {}) {
@@ -26,14 +27,14 @@ export function createItemGeometry(THREE, microVoxels, opts = {}) {
   const count = d.positions.length / 3;
   const positions = d.positions.slice();
   const normals = d.normals.slice();
-  const { lightField, scale, offset, rotation = 0 } = opts;
+  const { lightField, scale, offset, rotation = 0, grid } = opts;
   if (rotation !== 0) {
     // Rotate vertices + normals about the vertical centre axis so the mesh
     // stays axis-aligned (light is baked from the rotated world position).
     const cos = Math.cos(rotation);
     const sin = Math.sin(rotation);
     for (let i = 0; i < count; i++) {
-      const [rx, rz] = rotateMicroPoint(positions[i * 3], positions[i * 3 + 2], rotation);
+      const [rx, rz] = rotateMicroPoint(positions[i * 3], positions[i * 3 + 2], rotation, grid?.[0], grid?.[2]);
       positions[i * 3] = rx;
       positions[i * 3 + 2] = rz;
       const nx = normals[i * 3];

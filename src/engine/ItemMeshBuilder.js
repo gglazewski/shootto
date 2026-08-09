@@ -2,7 +2,7 @@
 //
 // Produces a box-per-micro-voxel mesh in item-local units: each micro cell is
 // 1x1x1 and the whole item spans [0, MICRO_GRID]^3. The caller scales the mesh
-// by microCellSizeFor(size) to get world meters. Interior faces between two
+// by MICRO_SIZE to get world meters. Interior faces between two
 // filled micro-voxels are culled; a simple per-face brightness is baked into
 // the vertex colors so items read as 3D without scene lights.
 

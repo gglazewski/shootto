@@ -26,13 +26,14 @@
 //   G  right-grip tool  ·  H  left-grip tool  ·  M  muzzle tool  ·  R  rotate direction
 //   F3 / Esc  back to the world editor
 
-import { microCellSizeFor, slugifyName } from '../../engine/ItemTypes.js';
+import { MICRO_SIZE, slugifyName } from '../../engine/ItemTypes.js';
 import {
   emptyEquipItem,
   deserializeEquipItem,
   isEquipId,
   DEFAULT_WEAPON,
   DEFAULT_AMMO,
+  DEFAULT_ARMOR_PACK,
   DEFAULT_EQUIP_GRID,
   EQUIP_GRID_PRESETS,
   MIN_EQUIP_GRID,
@@ -49,8 +50,6 @@ import { syncSelect, recenterForResize, resizeShift } from './microOps.js';
 /** Background of the dedicated items-editor scene (clean, no sky). */
 const BG_COLOR = 0x151921;
 
-// Held items always preview on the small (0.5 m) footprint grid.
-const PREVIEW_SIZE = 'small';
 
 /** Grip marker + direction-arrow colour (distinct from the red/green/blue axes). */
 const HANDLE_COLOR = 0x33eeff;
@@ -91,7 +90,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
 
   _emptyModel() { return emptyEquipItem(); }
 
-  _cellSize() { return microCellSizeFor(PREVIEW_SIZE); }
+  _cellSize() { return MICRO_SIZE; }
 
   _gridDims() { return this.item.grid ?? [...DEFAULT_EQUIP_GRID]; }
 
@@ -185,6 +184,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
       stats: this.item.stats,
       weapon: this.item.weapon,
       ammo: this.item.ammo,
+      armor: this.item.armor,
     };
   }
 
@@ -197,11 +197,12 @@ export class EquipmentEditor extends MicroVoxelEditor {
     this.item.stats = s.stats;
     this.item.weapon = s.weapon;
     this.item.ammo = s.ammo ?? { ...DEFAULT_AMMO };
+    this.item.armor = s.armor ?? { ...DEFAULT_ARMOR_PACK };
   }
 
   _onEditorKey(code, event) {
     // Grip / muzzle / direction only mean something on held weapons.
-    if (this.item.kind !== 'ammo') {
+    if (this.item.kind === 'weapon') {
       if (code === 'KeyG') {
         this.setTool('grip');
         return true;
@@ -345,7 +346,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
   _updateGripAndArrow() {
     const c = this._cellSize();
     const dims = this._gridDims();
-    const held = this.item.kind !== 'ammo';
+    const held = this.item.kind === 'weapon';
     const base = held && this.item.grip ? [this.item.grip.x, this.item.grip.y, this.item.grip.z] : null;
 
     if (base) {
@@ -395,7 +396,13 @@ export class EquipmentEditor extends MicroVoxelEditor {
     this.item.kind = kind;
     if (this.gripMode || this.muzzleMode) this.tool = 'paint';
     this._rebuild();
-    Notice.info(kind === 'ammo' ? 'Ammo item — defines an ammo type' : 'Weapon item — held and fought with', 1100);
+    Notice.info(
+      kind === 'ammo' ? 'Ammo item — defines an ammo type'
+        : kind === 'armor' ? 'Armor item — grants armor points on pickup'
+          : kind === 'quest' ? 'Quest item — pickable only while a quest wants it'
+            : 'Weapon item — held and fought with',
+      1100,
+    );
   }
 
   /** Switch the weapon kind and snap the attack animation to a valid default.
@@ -423,6 +430,16 @@ export class EquipmentEditor extends MicroVoxelEditor {
     this._renderUI();
   }
 
+  /** Switch how a melee weapon sits in the grip: pointing forward
+   *  (horizontal — spear, tonfa) or standing upright (vertical — sword, club). */
+  _setOrientation(orientation) {
+    if (this.item.weapon.orientation === orientation) return;
+    this._pushSnapshot();
+    this.item.weapon.orientation = orientation;
+    this._renderUI();
+    Notice.info(orientation === 'vertical' ? 'Held upright, like a sword' : 'Held pointing forward, like a spear', 900);
+  }
+
   /** Read damage/reach/cooldown from the panel into item.stats. */
   _syncStatsFromUI() {
     const n = (el, fallback) => {
@@ -433,6 +450,14 @@ export class EquipmentEditor extends MicroVoxelEditor {
       damage: Math.max(1, Math.min(100, n(this._ui.damage, 10))),
       reach: Math.max(0.5, Math.min(1000, n(this._ui.reach, 2))),
       cooldown: Math.max(0.1, Math.min(3, n(this._ui.cooldown, 0.35))),
+    };
+  }
+
+  /** Read the granted armor points from the panel into item.armor. */
+  _syncArmorFromUI() {
+    const v = Number(this._ui.armorAmount?.value);
+    this.item.armor = {
+      amount: Number.isFinite(v) ? Math.max(1, Math.min(100, Math.round(v))) : DEFAULT_ARMOR_PACK.amount,
     };
   }
 
@@ -455,7 +480,10 @@ export class EquipmentEditor extends MicroVoxelEditor {
     if (this.item.kind === 'ammo') {
       this._syncAmmoFromUI();
       if (!this.item.ammo.type) return 'Pick an ammo type for the pack';
-    } else {
+    } else if (this.item.kind === 'armor') {
+      this._syncArmorFromUI();
+    } else if (this.item.kind !== 'quest') {
+      // Quest items carry no combat/pack fields — only weapons sync stats.
       this._syncStatsFromUI();
     }
     return null;
@@ -468,6 +496,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
     if (!this.item.stats) this.item.stats = { damage: 10, reach: 2, cooldown: 0.35 };
     if (!this.item.weapon) this.item.weapon = { ...DEFAULT_WEAPON };
     if (!this.item.kind) this.item.kind = 'weapon';
+    if (!this.item.armor) this.item.armor = { ...DEFAULT_ARMOR_PACK };
     if (!this.item.ammo) this.item.ammo = { ...DEFAULT_AMMO };
     this._undoStack.length = 0;
     this._redoStack.length = 0;
@@ -492,8 +521,12 @@ export class EquipmentEditor extends MicroVoxelEditor {
       title: $('#ep-title'),
       catWeapon: $('#ep-cat-weapon'),
       catAmmo: $('#ep-cat-ammo'),
+      catArmor: $('#ep-cat-armor'),
+      catQuest: $('#ep-cat-quest'),
       weaponFields: $('#ep-weapon-fields'),
       ammoFields: $('#ep-ammo-fields'),
+      armorFields: $('#ep-armor-fields'),
+      armorAmount: $('#ep-armor-amount'),
       gripLabel: $('#ep-grip-label'),
       grip2Label: $('#ep-grip2-label'),
       yawLabel: $('#ep-yaw-label'),
@@ -510,6 +543,9 @@ export class EquipmentEditor extends MicroVoxelEditor {
       kindRanged: $('#ep-kind-ranged'),
       handsOne: $('#ep-hands-one'),
       handsTwo: $('#ep-hands-two'),
+      orientRow: $('#ep-orient-row'),
+      orientHorizontal: $('#ep-orient-horizontal'),
+      orientVertical: $('#ep-orient-vertical'),
       anim: $('#ep-anim'),
       magazine: $('#ep-magazine'),
       magazineRow: $('#ep-magazine-row'),
@@ -529,6 +565,13 @@ export class EquipmentEditor extends MicroVoxelEditor {
 
     ui.catWeapon.addEventListener('click', () => this._setItemKind('weapon'));
     ui.catAmmo.addEventListener('click', () => this._setItemKind('ammo'));
+    ui.catArmor?.addEventListener('click', () => this._setItemKind('armor'));
+    ui.catQuest?.addEventListener('click', () => this._setItemKind('quest'));
+    ui.armorAmount?.addEventListener('change', () => {
+      this._pushSnapshot();
+      this._syncArmorFromUI();
+      this._renderUI();
+    });
     for (const key of ['damage', 'reach', 'cooldown']) {
       ui[key].addEventListener('change', () => {
         this._pushSnapshot();
@@ -572,6 +615,8 @@ export class EquipmentEditor extends MicroVoxelEditor {
     });
     ui.handsOne.addEventListener('click', () => this._setHands('one'));
     ui.handsTwo.addEventListener('click', () => this._setHands('two'));
+    ui.orientHorizontal?.addEventListener('click', () => this._setOrientation('horizontal'));
+    ui.orientVertical?.addEventListener('click', () => this._setOrientation('vertical'));
     ui.magazine.addEventListener('change', () => {
       this._pushSnapshot();
       const v = Number(ui.magazine.value);
@@ -610,11 +655,22 @@ export class EquipmentEditor extends MicroVoxelEditor {
     if (!ui.title) return;
     const w = this.item.weapon ?? DEFAULT_WEAPON;
     const isAmmo = this.item.kind === 'ammo';
-    ui.title.textContent = isAmmo ? 'Ammo Item' : 'Weapon Item';
-    ui.catWeapon.classList.toggle('active', !isAmmo);
+    const isArmor = this.item.kind === 'armor';
+    const isQuest = this.item.kind === 'quest';
+    ui.title.textContent = isAmmo ? 'Ammo Item' : isArmor ? 'Armor Item' : isQuest ? 'Quest Item' : 'Weapon Item';
+    ui.catWeapon.classList.toggle('active', !isAmmo && !isArmor && !isQuest);
     ui.catAmmo.classList.toggle('active', isAmmo);
-    ui.weaponFields.classList.toggle('hidden', isAmmo);
+    ui.catArmor?.classList.toggle('active', isArmor);
+    ui.catQuest?.classList.toggle('active', isQuest);
+    // Quest items are pure sculpture: no combat, pack or armor fields at all.
+    ui.weaponFields.classList.toggle('hidden', isAmmo || isArmor || isQuest);
     ui.ammoFields.classList.toggle('hidden', !isAmmo);
+    ui.armorFields?.classList.toggle('hidden', !isArmor);
+
+    // Armor vest: points granted per pickup.
+    if (ui.armorAmount && this.doc.activeElement !== ui.armorAmount) {
+      ui.armorAmount.value = String(this.item.armor?.amount ?? DEFAULT_ARMOR_PACK.amount);
+    }
 
     // Ammo pack: the type it grants + how many rounds per pickup.
     const choices = listAmmoTypes();
@@ -648,6 +704,10 @@ export class EquipmentEditor extends MicroVoxelEditor {
     ui.kindRanged.classList.toggle('active', w.kind === 'ranged');
     ui.handsOne.classList.toggle('active', w.hands !== 'two');
     ui.handsTwo.classList.toggle('active', w.hands === 'two');
+    // Grip attitude only applies to melee weapons; guns always point forward.
+    ui.orientRow?.classList.toggle('hidden-row', w.kind !== 'melee');
+    ui.orientHorizontal?.classList.toggle('active', w.orientation !== 'vertical');
+    ui.orientVertical?.classList.toggle('active', w.orientation === 'vertical');
     // Grip/muzzle tools only exist for held weapons; muzzle dims for melee.
     if (ui.toolBtns?.grip) ui.toolBtns.grip.disabled = isAmmo;
     if (ui.toolBtns?.grip2) {

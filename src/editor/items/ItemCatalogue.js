@@ -12,7 +12,8 @@
 // CatalogueModal.
 
 import { listItems } from '../../engine/ItemRegistry.js';
-import { ITEM_WORLD_SIZE } from '../../engine/ItemTypes.js';
+import { cellsOf } from '../../engine/ItemTypes.js';
+import { CELL_SIZE } from '../../engine/Space.js';
 import { CatalogueModal } from './CatalogueModal.js';
 
 export class ItemCatalogue extends CatalogueModal {
@@ -40,7 +41,7 @@ export class ItemCatalogue extends CatalogueModal {
 
   _meta(item) {
     const bits = [
-      `${ITEM_WORLD_SIZE[item.size].toFixed(1)} m`,
+      cellsOf(item).map((c) => (c * CELL_SIZE).toFixed(1).replace(/\.0$/, '')).join('×') + ' m',
       item.solid === false ? 'traversable' : 'blocking',
       `${item.microVoxels.length} voxels`,
     ];

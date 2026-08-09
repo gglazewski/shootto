@@ -53,6 +53,13 @@ export class SquareTool extends Tool {
     return this.ctx.state.get('blockRotation') ?? 0;
   }
 
+  /** Slab variant applied to every placement (V cycles it) — only
+   *  cube-shaped blocks come in halves. */
+  get variant() {
+    if ((getBlock(this.type)?.shape ?? 'cube') !== 'cube') return null;
+    return this.ctx.state.get('blockVariant') ?? null;
+  }
+
   /** Item-aware pick, same as BuildTool: a drag can start on a placed
    *  object's face (build a floor on top of a table). */
   pick() {
@@ -132,7 +139,7 @@ export class SquareTool extends Tool {
     }
     const cells = this._rectAnchors();
     if (cells.length > 0) {
-      const cmd = multiPlaceCommand(world, cells, this.type, this.size, this.rotation);
+      const cmd = multiPlaceCommand(world, cells, this.type, this.size, this.rotation, this.variant);
       const placedCount = cmd.do();
       if (placedCount > 0) {
         history.push(cmd);
@@ -163,7 +170,7 @@ export class SquareTool extends Tool {
       }
       const anchor = this.placementAnchor(hit, this.size);
       const blocked = !world.isAreaFree(anchor[0], anchor[1], anchor[2], this.size);
-      ghost.showPlacement(anchor, this.size, blocked, { blockId: this.type, rotation: this.rotation });
+      ghost.showPlacement(anchor, this.size, blocked, { blockId: this.type, rotation: this.rotation, variant: this.variant });
       if (voxel) ghost.showRemoval(voxel.anchor, voxel.size);
       return;
     }

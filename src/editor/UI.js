@@ -20,6 +20,7 @@ export class UI {
       hudFps: this.$('#hud-fps'),
       hudTool: this.$('#hud-tool'),
       action: this.$('#ui-action'),
+      prompt: this.$('#ui-prompt'),
       hint: this.$('#ui-hint'),
       save: this.$('#btn-save'),
       load: this.$('#btn-load'),
@@ -29,6 +30,7 @@ export class UI {
       undo: this.$('#btn-undo'),
       redo: this.$('#btn-redo'),
       items: this.$('#btn-items'),
+      worlds: this.$('#btn-worlds'),
       file: this.$('#file-load'),
     };
 
@@ -39,6 +41,7 @@ export class UI {
     this.el.undo.addEventListener('click', () => this.cb.undo && this.cb.undo());
     this.el.redo.addEventListener('click', () => this.cb.redo && this.cb.redo());
     this.el.items.addEventListener('click', () => this.cb.items && this.cb.items());
+    this.el.worlds?.addEventListener('click', () => this.cb.worlds && this.cb.worlds());
     this.el.load.addEventListener('click', () => this.el.file.click());
     this.el.hint.addEventListener('click', () => this.hideHelp());
     this.el.file.addEventListener('change', (e) => {
@@ -94,6 +97,18 @@ export class UI {
 
   get helpVisible() {
     return !this.el.hint.classList.contains('hidden');
+  }
+
+  /** Standing interaction prompt under the crosshair (test run). Pass null
+   *  to clear it. Accepts markup so callers can wrap keys in <kbd>. */
+  setPrompt(html) {
+    if (!this.el.prompt) return;
+    if (html) {
+      this.el.prompt.innerHTML = html;
+      this.el.prompt.classList.remove('hidden');
+    } else {
+      this.el.prompt.classList.add('hidden');
+    }
   }
 
   /** Transient message under the crosshair. */

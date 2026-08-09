@@ -1,40 +1,76 @@
 // ItemTypes.js — data model for placeable "items" (micro-voxel objects).
 //
-// An item is a small voxel sculpture built in the F2 item editor. It has a
-// world footprint (small = 0.5 m, big = 1 m, matching the two voxel sizes) and
-// is made of colored micro-voxels laid out on a fixed grid. It may carry one
-// light source (color + strength in game meters). A "solid" item blocks the
-// player in test run; a "traversable" one lets them walk through.
+// An item is a voxel sculpture built in the F2 item editor. Its world
+// footprint is `cells` = [w, h, d] in 0.5 m world cells (a kitchen chair is
+// 1×2×1, a big closet 2×4×1), and it is made of colored micro-voxels laid out
+// on a cells×MICRO_GRID grid at a uniform 0.0625 m resolution. It may carry
+// one light source (color + strength in game meters). A "solid" item blocks
+// the player in test run; a "traversable" one lets them walk through.
+//
+// Version 1 files stored `size: 'small'|'big'` instead — loaders migrate them
+// losslessly (small → 1×1×1; big → 2×2×2 with micro-voxels upscaled ×2).
 //
 // Pure module (no three.js / DOM), so it can be unit tested in Node.
 
 import { CELL_SIZE } from './Space.js';
 
 export const ITEM_FORMAT = 'voxelitem';
-export const ITEM_VERSION = 1;
-/** Micro-voxels per axis of the item grid (grid is MICRO_GRID^3 cells). */
+export const ITEM_VERSION = 2;
+/** Micro-voxels per 0.5 m world cell along each axis. */
 export const MICRO_GRID = 8;
+/** World edge of one micro-voxel in meters — uniform across all items. */
+export const MICRO_SIZE = CELL_SIZE / MICRO_GRID;
+/** Largest footprint edge in cells (8 cells = 4 m). */
+export const MAX_ITEM_CELLS = 8;
 
-/** World footprint of each item size, in meters. */
-export const ITEM_WORLD_SIZE = Object.freeze({ small: 0.5, big: 1.0 });
-
-/** Edge length of one micro-voxel in world meters for a given item size. */
-export function microCellSizeFor(size) {
-  const m = ITEM_WORLD_SIZE[size];
-  if (!m) throw new Error(`Unknown item size "${size}"`);
-  return m / MICRO_GRID;
+/** Clamp a raw cells spec to a valid [w, h, d] footprint. */
+export function normalizeCells(cells) {
+  const c = Array.isArray(cells) ? cells : [1, 1, 1];
+  return [0, 1, 2].map((i) => {
+    const n = Math.round(Number(c[i]));
+    return Number.isFinite(n) ? Math.max(1, Math.min(MAX_ITEM_CELLS, n)) : 1;
+  });
 }
 
-/** Rotate a micro-grid point (px, pz) by `yaw` radians around the grid's
- *  vertical centre axis (the footprint centre). Positions stay inside the
- *  grid. Used for placed-item yaw (R in the world editor). */
-export function rotateMicroPoint(px, pz, yaw) {
-  const c = MICRO_GRID / 2;
-  const dx = px - c;
-  const dz = pz - c;
+/** Footprint of an item def in cells along [x, y, z]. Equipment defs carry
+ *  no cells and place at a single cell. */
+export function cellsOf(item) {
+  return normalizeCells(item?.cells);
+}
+
+/** Micro-voxel build volume [gx, gy, gz] of a def. Equipment defs carry an
+ *  explicit grid; placeable items derive it from their footprint. */
+export function gridOf(item) {
+  if (Array.isArray(item?.grid)) return [...item.grid];
+  return cellsOf(item).map((c) => c * MICRO_GRID);
+}
+
+/** Coerce a placement footprint spec — a cells array or a legacy
+ *  'small'/'big' string — to a cells triple. */
+export function footprintCells(spec) {
+  if (spec === 'big') return [2, 2, 2];
+  if (spec === 'small' || spec == null) return [1, 1, 1];
+  return normalizeCells(spec);
+}
+
+/** Quarter-turn count (0..3) closest to a yaw in radians. */
+export function quarterTurns(yaw) {
+  return ((Math.round(yaw / (Math.PI / 2)) % 4) + 4) % 4;
+}
+
+/** Rotate a micro-grid point (px, pz) by `yaw` radians around the build
+ *  volume's vertical centre axis. On odd quarter turns the rotated footprint
+ *  swaps its x/z extents (like doors), so the result is re-centred into the
+ *  swapped volume — positions stay inside the rotated bounding box. Used for
+ *  placed-item yaw (R in the world editor). `gx`/`gz` are the build volume's
+ *  micro dims (default: the legacy 8³ grid). */
+export function rotateMicroPoint(px, pz, yaw, gx = MICRO_GRID, gz = MICRO_GRID) {
+  const dx = px - gx / 2;
+  const dz = pz - gz / 2;
+  const odd = quarterTurns(yaw) & 1;
   const cos = Math.cos(yaw);
   const sin = Math.sin(yaw);
-  return [c + dx * cos - dz * sin, c + dx * sin + dz * cos];
+  return [(odd ? gz : gx) / 2 + dx * cos - dz * sin, (odd ? gx : gz) / 2 + dx * sin + dz * cos];
 }
 
 /** Map a light strength in game meters to a 0..15 block-light level
@@ -82,7 +118,7 @@ export const LIGHT_COLORS = Object.freeze([
  * @typedef {Object} ItemDef
  * @property {string|null} id        unique id (file name / registry key)
  * @property {string} name           human readable name
- * @property {'small'|'big'} size    world footprint of the placed item
+ * @property {[number,number,number]} cells  world footprint in 0.5 m cells [w, h, d]
  * @property {boolean} solid         true = blocks the player (test run), false = traversable
  * @property {{x:number,y:number,z:number,color:[number,number,number]}[]} microVoxels
  * @property {{x:number,y:number,z:number,color:[number,number,number],strength:number}|null} light
@@ -90,7 +126,7 @@ export const LIGHT_COLORS = Object.freeze([
 
 /** A blank item model. */
 export function emptyItem(name = 'New Item') {
-  return { id: null, name, size: 'small', solid: true, microVoxels: [], light: null };
+  return { id: null, name, cells: [1, 1, 1], solid: true, microVoxels: [], light: null };
 }
 
 /** Slugify a name into a safe id base (lowercase alnum + underscores). */
@@ -106,7 +142,7 @@ export function serializeItem(item) {
       version: ITEM_VERSION,
       id: item.id ?? null,
       name: item.name,
-      size: item.size,
+      cells: cellsOf(item),
       solid: item.solid !== false,
       microVoxels: item.microVoxels,
       light: item.light,
@@ -114,6 +150,46 @@ export function serializeItem(item) {
     null,
     2,
   );
+}
+
+/** Normalize raw item data of any version into current {cells, microVoxels,
+ *  light}. Version-1 sizes migrate losslessly: 'small' → 1×1×1 (voxels
+ *  unchanged), 'big' → 2×2×2 with every micro-voxel upscaled ×2 (its 0.125 m
+ *  voxels keep their world size at the uniform 0.0625 m resolution).
+ *  Malformed voxels and voxels outside the build volume are dropped. */
+export function normalizeItemData(data) {
+  const legacyBig = !Array.isArray(data.cells) && data.size === 'big';
+  const cells = Array.isArray(data.cells) ? normalizeCells(data.cells) : legacyBig ? [2, 2, 2] : [1, 1, 1];
+  const scale = legacyBig ? 2 : 1;
+  const [gx, gy, gz] = cells.map((c) => c * MICRO_GRID);
+  const microVoxels = [];
+  for (const v of Array.isArray(data.microVoxels) ? data.microVoxels : []) {
+    if (!v || !Number.isInteger(v.x) || !Number.isInteger(v.y) || !Number.isInteger(v.z)) continue;
+    if (!Array.isArray(v.color) || v.color.length < 3) continue;
+    for (let dx = 0; dx < scale; dx++) {
+      for (let dy = 0; dy < scale; dy++) {
+        for (let dz = 0; dz < scale; dz++) {
+          const x = v.x * scale + dx;
+          const y = v.y * scale + dy;
+          const z = v.z * scale + dz;
+          if (x >= 0 && x < gx && y >= 0 && y < gy && z >= 0 && z < gz) {
+            microVoxels.push({ x, y, z, color: [v.color[0], v.color[1], v.color[2]] });
+          }
+        }
+      }
+    }
+  }
+  const light =
+    data.light && Array.isArray(data.light.color) && data.light.color.length >= 3
+      ? {
+          x: Math.floor(data.light.x) * scale,
+          y: Math.floor(data.light.y) * scale,
+          z: Math.floor(data.light.z) * scale,
+          color: [data.light.color[0], data.light.color[1], data.light.color[2]],
+          strength: typeof data.light.strength === 'number' ? Math.min(7.5, Math.max(0.5, data.light.strength)) : 3,
+        }
+      : null;
+  return { cells, microVoxels, light };
 }
 
 /** @returns {{item: ItemDef|null, errors: string[]}} */
@@ -128,30 +204,11 @@ export function deserializeItem(text) {
   if (!data || data.format !== ITEM_FORMAT) {
     return { item: null, errors: ['Not a voxelitem file'] };
   }
-  const microVoxels = (Array.isArray(data.microVoxels) ? data.microVoxels : [])
-    .filter(
-      (v) =>
-        v && Number.isInteger(v.x) && Number.isInteger(v.y) && Number.isInteger(v.z) &&
-        Array.isArray(v.color) && v.color.length >= 3,
-    )
-    .map((v) => ({ x: v.x, y: v.y, z: v.z, color: [v.color[0], v.color[1], v.color[2]] }));
-  const light =
-    data.light && Array.isArray(data.light.color) && data.light.color.length >= 3
-      ? {
-          x: Math.floor(data.light.x),
-          y: Math.floor(data.light.y),
-          z: Math.floor(data.light.z),
-          color: [data.light.color[0], data.light.color[1], data.light.color[2]],
-          strength: typeof data.light.strength === 'number' ? Math.min(7.5, Math.max(0.5, data.light.strength)) : 3,
-        }
-      : null;
   const item = {
     id: typeof data.id === 'string' && data.id ? data.id : null,
     name: typeof data.name === 'string' && data.name ? data.name : 'Item',
-    size: data.size === 'big' ? 'big' : 'small',
     solid: data.solid !== false,
-    microVoxels,
-    light,
+    ...normalizeItemData(data),
   };
   return { item, errors };
 }

@@ -16,9 +16,15 @@ Voxels come in two sizes: **small (0.5 m)** for half-walls and fine detail, and
 
 ## The game
 
-**Setting:** the game takes place in Poland in the mid-1990s — post-communist
-concrete estates, bazaars, kiosks and crumbling industry set the visual tone
-for maps, blocks and decals.
+**Maro 93.** Poland, 1993. The communists are gone and the country has dived
+head-first into capitalism — kiosks, bazaars, imported junk, everyone
+hustling. Maro is 45: ex-military, ex-mercenary, spent the PRL years hunting
+communists in the shadows. He thought that chapter was over. Then the dead
+started walking, and the transformation nobody signed up for arrived anyway.
+
+**Setting:** the game takes place in Poland in the early-to-mid 1990s —
+post-communist concrete estates, bazaars, kiosks and crumbling industry set
+the visual tone for maps, blocks and decals.
 
 Alongside the editor there is a playable game page (`game.html`, built to
 `build/game-play.js`) that runs your world. It shares the editor's
@@ -83,11 +89,49 @@ directly on disk:
 | `/` and any static path | GET | serve `index.html`, `build/game.js`, etc. |
 | `/api/world` | GET | read `map/voxelbundle.json` |
 | `/api/world` | PUT | write the editor's world + objects to `map/voxelbundle.json` |
+| `/api/worlds` | GET | list the world library (`map/worlds/`) as a tree |
+| `/api/worlds/<path>` | GET / PUT / DELETE | read / write / delete a library world (folders delete recursively) |
+| `/api/worlds-ops` | POST | `{op:'mkdir', path}` or `{op:'move', from, to}` — organize the library |
+| `/api/splash` | GET / PUT | read / write `map/splash.json`, the menu's splash-screen manifest |
 
 `node server.mjs [port]` (default `4173`). The API is only reachable over
 http(s), so `file://` and static hosting fall back to browser storage + the
 bundled world. Later the game reads the same `map/voxelbundle.json` (via the
 build or the server) to simulate the authored world.
+
+### The world library (Worlds button)
+
+**Worlds** (top-right) opens a tree browser over `map/worlds/` for building
+more than one map — campaign levels, splash-screen scenes, sandboxes. Save the
+current world under a name (into the selected folder), load one with a click,
+create folders, rename inline (**Ren**), and drag a world onto a folder — or
+onto the heading for the root — to move it. Deleting is a two-step confirm;
+deleting a folder removes everything inside it. The library lives on disk, so
+it needs the dev server (`npm run server`); worlds are ordinary
+`voxelbundle.json` files you can also commit, diff and copy around.
+`map/voxelbundle.json` stays the deploy target: **Save File** still decides
+what ships as the playable world.
+
+### Splash screens (F8)
+
+The game's main menu plays a camera shot over a world instead of a static
+image. Shots are authored in the editor: fly the editor camera into a nice
+angle and press `F8` — the pose is stored **in the world** as a splash camera
+(a small cyan camera gizmo marks it; `Shift`+`F8` deletes the nearest one
+within 10 m). When the world is saved in the library, `F8` also registers the
+shot in `map/splash.json`. The menu then plays each shot for ~3 seconds and
+cuts to the next, picked pseudo-randomly (a shuffle bag: every shot appears
+before any repeats, and the same shot never plays twice in a row). Clicking a
+camera gizmo in the editor opens its **motion picker** — Orbit (slow circle
+around the framed spot, the default), Static (subtle sway), Zoom out or Zoom
+in. With no authored shots the menu falls back to the procedural flyover over
+the current map.
+
+While developing, the menu fetches splash worlds live from the server — a
+fresh `F8` shows up on the next menu visit without a rebuild. For deployments,
+`npm run build` runs `tools/pack_splash.mjs`, which inlines the referenced
+worlds into `map/splashpack.json` and bakes it into `build/game-play.js`, so
+static hosting shows the same shots.
 
 ## Controls
 
@@ -113,8 +157,10 @@ build or the server) to simulate the authored world.
 | `R` | Rotate the selected placeable object 90° around its vertical axis |
 | `E` | Open inventory — hover a block **or placeable object** and press `1`–`9`/`0` to assign it to that hotbar slot; click to select it directly |
 | `Items` (top-right) | Open the **item catalogue** — browse, place, edit, export or delete saved objects |
+| `Worlds` (top-right) | Open the **world library** — save, load and organize worlds in `map/worlds/` (see above) |
 | `F2` | Item editor — build a placeable object from colored micro voxels (see below) |
 | `F5` | Toggle **test run**: walk at the player spawn (`C` crouch, `Space` idle) |
+| `F8` / `Shift`+`F8` | Capture the current view as a **menu splash screen** / delete the nearest splash camera |
 | `Ctrl`+`Z` / `Ctrl`+`Shift`+`Z` | Undo / Redo (last 10 actions) |
 | `Ctrl`+`S` | Save to browser storage |
 | `Esc` | Release the pointer |
@@ -426,6 +472,12 @@ face it will land on. A decal has no collision or light interaction: it is
 meshed into the chunk as one extra quad a hair off its face (only when that
 face is visible), reuses the face's baked AO/light, and its holes are
 alpha-discarded. One decal per face; removing the block removes its decals.
+`shape: 'pane'` blocks take decals too — a lace curtain on a glass window, a
+poster on a barricade — but only on the two flat sides the pane looks along
+(the edge-on faces and a door's faces accept nothing, see `decalFacesFor`).
+There the quad rides the pane's own plane, centered in the block, rather than
+the cell boundary in front of it, and joins the pane's render pass (blended
+for glass, cutout for fences).
 Decals persist in the map file as an additive `decals` array (`{ id, x, y,
 z, face, rotation? }`). Adding a new decal = one entry in `DECALS`
 (`VoxelTypes.js`) plus an RGBA tile generator in `TextureAtlas.js`.
@@ -468,7 +520,7 @@ editor, the game, and save-slot bundles alike.
   "cellSize": 0.5,
   "spawn": [2, 4, 6],
   "blocks": [{ "x": 0, "y": 0, "z": 0, "size": "big", "type": "grass" }],
-  "items": [{ "itemId": "lamp", "x": 2, "y": 4, "z": 2, "size": "small", "rotation": 1.5707963267948966 }]
+  "items": [{ "itemId": "lamp", "x": 2, "y": 4, "z": 2, "cells": [1, 1, 1], "rotation": 1.5707963267948966 }]
 }
 ```
 
@@ -481,15 +533,22 @@ Item files use their own format (`voxelitem`):
 ```json
 {
   "format": "voxelitem",
-  "version": 1,
+  "version": 2,
   "id": "lamp",
   "name": "Lamp",
-  "size": "small",
+  "cells": [1, 1, 1],
   "solid": true,
   "microVoxels": [{ "x": 0, "y": 0, "z": 0, "color": [255, 200, 50] }],
   "light": { "x": 0, "y": 0, "z": 0, "color": [255, 220, 150], "strength": 3 }
 }
 ```
+`cells` is the item's world footprint in 0.5 m cells `[w, h, d]` (1–8 per
+axis — a kitchen chair is `[1, 2, 1]`, a big closet `[2, 4, 1]`), and the
+micro-voxel build volume is `cells × 8` at a uniform 0.0625 m resolution.
+Version-1 files stored `size: "small"|"big"` instead; they load fine —
+`small` maps to 1×1×1 and `big` to 2×2×2 with micro-voxels upscaled ×2
+(visually identical). Placed items with a non-square footprint swap their
+w/d span on odd 90° rotations, like doors.
 The item registry is kept in browser storage (`voxelitem.items`), so saved
 objects persist across sessions without any server. `solid` (default `true`)
 marks whether a placed object blocks the player in test run. To ship your
