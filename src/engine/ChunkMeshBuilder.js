@@ -29,7 +29,7 @@
 //    giving smooth interpolated lighting across faces.
 
 import { CELL_SIZE } from './Space.js';
-import { opacityFor, isTransparent, isMixedAlpha, shapeFor, getDecal, getBlock } from './VoxelTypes.js';
+import { opacityFor, isTransparent, isMixedAlpha, shapeFor, getDecal, getBlock, lightFor } from './VoxelTypes.js';
 import { spanVecFor, solidYRange } from './VoxelShape.js';
 
 // Face table: for each face, the outward normal n, the in-plane basis u/v
@@ -115,17 +115,34 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
   const sky = lightField ? lightField.skyAt.bind(lightField) : () => DEFAULT_LIGHT;
   const block = lightField ? lightField.blockAt.bind(lightField) : () => 0;
 
-  const makeBuffer = () => ({ positions: [], normals: [], uvs: [], colors: [], lights: [], indices: [] });
+  const makeBuffer = () => ({ positions: [], normals: [], uvs: [], colors: [], lights: [], emissive: [], indices: [] });
   const opaqueBuf = makeBuffer();
   const transparentBuf = makeBuffer();
 
   const [ox, oy, oz] = origin;
-  const pushCorner = (buf, x, y, z, nx, ny, nz, u, v, r, g, b, ls, lb) => {
+  // Dense halo cache: neighbor/AO probes dominate meshing cost, and each raw
+  // world.get builds a string key. Prefetch the chunk + a 1-cell border into
+  // a flat array once, then answer all those probes with O(1) index reads.
+  const hs = size + 2;
+  const hx0 = ox - 1, hy0 = oy - 1, hz0 = oz - 1;
+  const halo = new Array(hs * hs * hs);
+  for (let x = hx0; x < hx0 + hs; x++)
+    for (let y = hy0; y < hy0 + hs; y++)
+      for (let z = hz0; z < hz0 + hs; z++)
+        halo[(x - hx0) + (y - hy0) * hs + (z - hz0) * hs * hs] = world.get(x, y, z);
+  const hget = (x, y, z) => {
+    const lx = x - hx0, ly = y - hy0, lz = z - hz0;
+    if ((lx | ly | lz) < 0 || lx >= hs || ly >= hs || lz >= hs) return world.get(x, y, z);
+    return halo[lx + ly * hs + lz * hs * hs];
+  };
+
+  const pushCorner = (buf, x, y, z, nx, ny, nz, u, v, r, g, b, ls, lb, e) => {
     buf.positions.push(x * CELL_SIZE, y * CELL_SIZE, z * CELL_SIZE);
     buf.normals.push(nx, ny, nz);
     buf.uvs.push(u, v);
     buf.colors.push(r, g, b);
     buf.lights.push(ls, lb);
+    buf.emissive.push(e);
   };
 
   const face = (fx, fy, fz, voxel) => {
@@ -139,6 +156,9 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
     const buf = selfTransparent ? transparentBuf : opaqueBuf;
     const bufs = mixed ? [opaqueBuf, transparentBuf] : [buf];
     const rot = voxel.rotation ?? 0;
+    // Emissive voxels (lamps, torches) flag their vertices so the shader can
+    // keep them bright + feed the bloom pass regardless of baked light.
+    const em = lightFor(voxel.type) > 0 ? 1 : 0;
     // Slab variants: the voxel's solid box may cover only part of this cell
     // vertically. y0f/y1f are the solid bounds within the cell (0..1 in cell
     // units): a small 'lower' slab spans [0, 0.5]; a BIG one halves at a cell
@@ -150,7 +170,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
     for (const name of Object.keys(FACE_TABLE)) {
       const f = FACE_TABLE[name];
       const nx = fx + f.n[0], ny = fy + f.n[1], nz = fz + f.n[2];
-      const neighbor = world.get(nx, ny, nz);
+      const neighbor = hget(nx, ny, nz);
       // Cull when the neighbor blocks this face: a neighbor whose solid box
       // covers the emitted span hides it; two transparent voxels hide each
       // other (glass-on-glass), as do two mixed-alpha voxels of the same type
@@ -193,9 +213,9 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         const ux = bx + o(c.u) * f.u[0], uy = by + o(c.u) * f.u[1], uz = bz + o(c.u) * f.u[2];
         const vx = bx + o(c.v) * f.v[0], vy = by + o(c.v) * f.v[1], vz = bz + o(c.v) * f.v[2];
         const dx = ux + o(c.v) * f.v[0], dy = uy + o(c.v) * f.v[1], dz = uz + o(c.v) * f.v[2];
-        const s1 = !!world.get(ux, uy, uz);
-        const s2 = !!world.get(vx, vy, vz);
-        const d = !!world.get(dx, dy, dz);
+        const s1 = !!hget(ux, uy, uz);
+        const s2 = !!hget(vx, vy, vz);
+        const d = !!hget(dx, dy, dz);
         const level = s1 && s2 ? 0 : 3 - (s1 + s2 + d);
         const b = AO_BRIGHTNESS[level];
 
@@ -223,7 +243,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         const dv = 0.5 + t[2] * (cu - 0.5) + t[3] * (cv - 0.5);
         const u = baseU + htU + du * (tileW - 2 * htU);
         const v = baseV + htV + dv * (tileH - 2 * htV);
-        quad.push([cx, cy, cz, f.n[0], f.n[1], f.n[2], u, v, b, b, b, ls, lb]);
+        quad.push([cx, cy, cz, f.n[0], f.n[1], f.n[2], u, v, b, b, b, ls, lb, em]);
         cornerData.push({ cx, cy, cz, b, ls, lb, u0: c.u, v0: c.v });
       }
       for (const target of bufs) {
@@ -265,7 +285,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
           pushCorner(
             buf,
             cd.cx + f.n[0] * EPS, cd.cy + f.n[1] * EPS, cd.cz + f.n[2] * EPS,
-            f.n[0], f.n[1], f.n[2], u, v, cd.b, cd.b, cd.b, cd.ls, cd.lb,
+            f.n[0], f.n[1], f.n[2], u, v, cd.b, cd.b, cd.b, cd.ls, cd.lb, 0,
           );
         }
         buf.indices.push(dFirst, dFirst + 1, dFirst + 2, dFirst, dFirst + 2, dFirst + 3);
@@ -288,6 +308,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
     // bars) stay in the opaque pass, double-winded as before.
     const paneTransparent = isTransparent(voxel.type);
     const paneBuf = paneTransparent ? transparentBuf : opaqueBuf;
+    const pem = lightFor(voxel.type) > 0 ? 1 : 0;
     const span = voxel.size === 'big' ? 2 : 1;
     const tile = tileIndexFor(voxel.type, 'px');
     const tileW = 1 / AW;
@@ -312,9 +333,9 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         const lx = cc(c[0], ax), ly = cc(c[1], ay), lz = cc(c[2], az);
         const ls = sky(lx, ly, lz) / 15;
         const lb = block(lx, ly, lz) / 15;
-        const u = baseU + htU + uv[i][0] * (tileW - 2 * htU);
-        const v = baseV + htV + uv[i][1] * (tileH - 2 * htV);
-        pushCorner(paneBuf, c[0], c[1], c[2], n[0] * flip, n[1] * flip, n[2] * flip, u, v, 1, 1, 1, ls, lb);
+         const u = baseU + htU + uv[i][0] * (tileW - 2 * htU);
+          const v = baseV + htV + uv[i][1] * (tileH - 2 * htV);
+          pushCorner(paneBuf, c[0], c[1], c[2], n[0] * flip, n[1] * flip, n[2] * flip, u, v, 1, 1, 1, ls, lb, pem);
       }
       paneBuf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
     }
@@ -357,7 +378,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
           paneBuf, wx, wy, wz, f.n[0], f.n[1], f.n[2],
           dBaseU + htU + du * (rectW - 2 * htU),
           dBaseV + htV + dv * (rectH - 2 * htV),
-          1, 1, 1, sky(lx, ly, lz) / 15, block(lx, ly, lz) / 15,
+          1, 1, 1, sky(lx, ly, lz) / 15, block(lx, ly, lz) / 15, 0,
         );
       }
       paneBuf.indices.push(dFirst, dFirst + 1, dFirst + 2, dFirst, dFirst + 2, dFirst + 3);
@@ -391,6 +412,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
   const door = (voxel, ax, ay, az) => {
     const rot = voxel.rotation ?? 0;
     const open = !!getBlock(voxel.type)?.doorClosed;
+    const dem = lightFor(voxel.type) > 0 ? 1 : 0;
     const [sx, sy, sz] = spanVecFor(voxel.size, rot);
     const W = Math.max(sx, sz); // leaf width in cells
     const H = sy;
@@ -456,7 +478,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
         const fv = (py - ay) / H;
         const u = baseU + htU + fu * (rectW - 2 * htU);
         const v = baseV + htV + fv * (rectH - 2 * htV);
-        quad.push([px, py, pz, f.n[0], f.n[1], f.n[2], u, v, 1, 1, 1, ls, lb]);
+        quad.push([px, py, pz, f.n[0], f.n[1], f.n[2], u, v, 1, 1, 1, ls, lb, dem]);
       }
       for (const target of doorBufs) {
         const first = target.positions.length / 3;
@@ -469,7 +491,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
   for (let x = ox; x < ox + size; x++) {
     for (let y = oy; y < oy + size; y++) {
       for (let z = oz; z < oz + size; z++) {
-        const voxel = world.get(x, y, z);
+        const voxel = hget(x, y, z);
         if (!voxel) continue;
         if (shapeFor(voxel.type) === 'door') {
           const [ax, ay, az] = voxel.anchor ?? [x, y, z];
@@ -494,6 +516,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
     uvs: new Float32Array(buf.uvs),
     colors: new Float32Array(buf.colors),
     lights: new Float32Array(buf.lights),
+    emissive: new Float32Array(buf.emissive),
     indices: new Uint32Array(buf.indices),
   });
 

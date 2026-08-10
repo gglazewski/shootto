@@ -45,20 +45,36 @@ export class ItemRenderer {
     this.material = material;
     this._groups = new Map(); // anchor key -> { group, mesh, geo, placement, offset }
     this._lightVersion = -1;
+    /** placement object -> anchor key string (avoids re-joining every frame). */
+    this._keyCache = new WeakMap();
+  }
+
+  _keyOf(placement) {
+    let k = this._keyCache.get(placement);
+    if (k === undefined) {
+      k = placement.anchor.join(',');
+      this._keyCache.set(placement, k);
+    }
+    return k;
   }
 
   /** Reconcile scene groups with world.items. Call every frame (cheap). */
   update() {
-    // Re-bake per-vertex light whenever the light field changed.
+    // Re-bake per-vertex light whenever the light field changed. Incremental
+    // edits only touch their recomputeEdit box, so only the items inside it
+    // need new baked light — full worlds (lastBox null) re-bake everything.
     const lightVersion = this.lightField?.version ?? 0;
     if (lightVersion !== this._lightVersion) {
       this._lightVersion = lightVersion;
-      for (const entry of this._groups.values()) this._relight(entry);
+      const box = this.lightField?.lastBox ?? null;
+      for (const entry of this._groups.values()) {
+        if (!box || this._touchesBox(entry, box)) this._relight(entry);
+      }
     }
 
     const keys = new Set();
     this.world.forEachItem((placement) => {
-      const key = placement.anchor.join(',');
+      const key = this._keyOf(placement);
       keys.add(key);
       if (!this._groups.has(key)) {
         this._groups.set(key, this._build(placement));
@@ -71,6 +87,18 @@ export class ItemRenderer {
         this._groups.delete(key);
       }
     }
+  }
+
+  /** True when an item's cell footprint overlaps the light edit box. The
+   *  span uses the largest grid axis so any yaw rotation (and height) fits. */
+  _touchesBox(entry, [bx0, by0, bz0, bx1, by1, bz1]) {
+    const item = resolveItem(entry.placement.itemId);
+    const g = item ? gridOf(item) : [8, 8, 8];
+    const span = Math.ceil(Math.max(g[0], g[1], g[2]) * (MICRO_SIZE / CELL_SIZE));
+    const [ax, ay, az] = entry.placement.anchor;
+    return ax + span >= bx0 && ax <= bx1 + span &&
+           ay + span >= by0 && ay <= by1 &&
+           az + span >= bz0 && az <= bz1 + span;
   }
 
   /** Drop all item meshes (before clear/load). */
@@ -94,7 +122,7 @@ export class ItemRenderer {
    *  mesh exists (the first update() after it was placed). The caller owns
    *  the returned geometry and must dispose it. */
   outlineFor(placement) {
-    const entry = this._groups.get(placement.anchor.join(','));
+    const entry = this._groups.get(this._keyOf(placement));
     if (!entry) return null;
     return {
       geometry: new this.THREE.EdgesGeometry(entry.geo),

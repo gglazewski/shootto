@@ -66,6 +66,10 @@ export class LightField {
     /** Monotonic version bumped on every light recompute/clear, so renderers
      *  of dynamic geometry (placeable objects) know when to re-bake light. */
     this.version = 0;
+    /** The box (cell coords, inclusive) the most recent recomputeEdit
+     *  actually touched, so consumers can re-bake only the geometry inside
+     *  it. Null after a full recompute/clear (everything may have changed). */
+    this.lastBox = null;
   }
 
   /** Replace the item light source list (cell coords + 0..15 level). */
@@ -108,6 +112,7 @@ export class LightField {
     this.opacityData = new Uint8Array(0);
     this.heightMap = new Int16Array(0);
     this.region = null;
+    this.lastBox = null;
     this.version++;
   }
 
@@ -378,6 +383,8 @@ export class LightField {
     // Bounded box around the edits, clamped to the region.
     const bx0 = Math.max(ex0 - MARGIN, this._ox), by0 = Math.max(ey0 - MARGIN, this._oy), bz0 = Math.max(ez0 - MARGIN, this._oz);
     const bx1 = Math.min(ex1 + MARGIN, this._ox + this._sx - 1), by1 = Math.min(ey1 + MARGIN, this._oy + this._sy - 1), bz1 = Math.min(ez1 + MARGIN, this._oz + this._sz - 1);
+    // Light only changed inside this box — consumers may re-bake just it.
+    this.lastBox = [bx0, by0, bz0, bx1, by1, bz1];
 
     // Snapshot the box surface (light inflow from beyond the box), then clear.
     const shell = [];

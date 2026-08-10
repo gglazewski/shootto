@@ -27,6 +27,7 @@ export const KEYBINDINGS = Object.freeze({
   'splash.capture': { key: 'F8', not: ['Shift'], preventDefault: true },
   'splash.delete': { key: 'F8', mods: ['Shift'], preventDefault: true },
   'mob.cycle': 'KeyG',
+  'postfx.toggle': 'KeyP',
   'save': { key: 'KeyS', mods: ['Mod'], not: ['Shift'], preventDefault: true },
   'undo': { key: 'KeyZ', mods: ['Mod'], not: ['Shift'], preventDefault: true },
   'redo': { key: 'KeyZ', mods: ['Mod', 'Shift'], preventDefault: true },

@@ -133,43 +133,29 @@ const CLOUD_VERT = /* glsl */ `
   }
 `;
 
+// Cloud density comes from a baked tileable FBM texture (see
+// buildCloudNoiseData) instead of eight per-pixel noise octaves: the shader
+// pays two texture samples per fragment, which is a fraction of the ALU cost
+// whenever the sky fills the screen.
 const CLOUD_FRAG = /* glsl */ `
+  uniform sampler2D uNoise;
   uniform float uTime;
   uniform float uPhase;
   uniform float uSunset;
   uniform vec2 uCam;      // camera world x/z, keeps the noise world-anchored
   uniform vec2 uWind;     // world units per second
-  uniform float uScale;
+  uniform float uTexWorld; // world meters per texture repeat
   uniform float uCoverage;
   uniform float uHalfSize;
+  uniform vec2 uDrift;    // slow extra drift of the fine layer (texture uv)
 
   varying vec2 vLocal;
-
-  float hash2(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
-  }
-  float noise2(vec2 p) {
-    vec2 i = floor(p), f = fract(p);
-    f = f * f * (3.0 - 2.0 * f);
-    return mix(
-      mix(hash2(i), hash2(i + vec2(1.0, 0.0)), f.x),
-      mix(hash2(i + vec2(0.0, 1.0)), hash2(i + vec2(1.0, 1.0)), f.x), f.y);
-  }
-  float fbm(vec2 p) {
-    float v = 0.0, a = 0.5;
-    for (int i = 0; i < 4; i++) {
-      v += a * noise2(p);
-      p = p * 2.03 + vec2(17.3, 9.1);
-      a *= 0.5;
-    }
-    return v;
-  }
 
   void main() {
     // plane is rotated -PI/2 about X: local x -> world x, local y -> -world z
     vec2 world = vec2(vLocal.x + uCam.x, uCam.y - vLocal.y);
-    vec2 q = (world + uWind * uTime) / uScale;
-    float n = fbm(q) * 0.75 + fbm(q * 3.0 + uWind * uTime * 0.0007) * 0.25;
+    vec2 q = (world + uWind * uTime) / uTexWorld;
+    float n = texture2D(uNoise, q).r * 0.75 + texture2D(uNoise, q * 3.0 + uDrift).r * 0.25;
     float density = smoothstep(uCoverage, uCoverage + 0.22, n);
 
     vec3 dayCol = vec3(1.0);
@@ -183,6 +169,62 @@ const CLOUD_FRAG = /* glsl */ `
     gl_FragColor = vec4(col, density * fade * 0.85);
   }
 `;
+
+/** Texture edge in texels and lattice cells of the base octave per repeat.
+ *  One texture repeat spans cloudScale * CLOUD_TEX_CELLS world meters; 4
+ *  cells per repeat leaves 8 texels per finest-octave cell in both samples
+ *  (base and the 3x layer), which resolves the cloud density cleanly. */
+export const CLOUD_TEX_SIZE = 256;
+export const CLOUD_TEX_CELLS = 4;
+
+const bakeHash = (x, y) => {
+  const h = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return h - Math.floor(h);
+};
+
+/** Tileable value noise on an integer lattice whose indices wrap mod period. */
+function tileNoise(px, py, period) {
+  const ix = Math.floor(px), iy = Math.floor(py);
+  let fx = px - ix, fy = py - iy;
+  fx = fx * fx * (3 - 2 * fx);
+  fy = fy * fy * (3 - 2 * fy);
+  const w = (v) => ((v % period) + period) % period;
+  const h00 = bakeHash(w(ix), w(iy));
+  const h10 = bakeHash(w(ix + 1), w(iy));
+  const h01 = bakeHash(w(ix), w(iy + 1));
+  const h11 = bakeHash(w(ix + 1), w(iy + 1));
+  const a = h00 + (h10 - h00) * fx;
+  const b = h01 + (h11 - h01) * fx;
+  return a + (b - a) * fy;
+}
+
+/** Bake the cloud FBM into tileable RGBA data (R = density). Same 4-octave
+ *  structure as the old shader (0.5/0.25/0.125/0.0625 weights, 17.3/9.1
+ *  per-octave offset), but with exact octave doubling so every layer tiles
+ *  with the base period. The default size is baked once and cached.
+ *  @returns {Uint8Array} size*size*4 */
+let _noiseCache = null;
+export function buildCloudNoiseData(size = CLOUD_TEX_SIZE, cells = CLOUD_TEX_CELLS) {
+  if (_noiseCache && size === CLOUD_TEX_SIZE && cells === CLOUD_TEX_CELLS) return _noiseCache;
+  const data = new Uint8Array(size * size * 4);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      let v = 0;
+      let amp = 0.5;
+      for (let o = 0; o < 4; o++) {
+        const freq = 1 << o;
+        v += amp * tileNoise((x / size) * cells * freq + o * 17.3, (y / size) * cells * freq + o * 9.1, cells * freq);
+        amp *= 0.5;
+      }
+      const c = Math.min(255, Math.round(v * 255));
+      const i = (y * size + x) * 4;
+      data[i] = data[i + 1] = data[i + 2] = c;
+      data[i + 3] = 255;
+    }
+  }
+  if (size === CLOUD_TEX_SIZE && cells === CLOUD_TEX_CELLS) _noiseCache = data;
+  return data;
+}
 
 export class Sky {
   /**
@@ -258,16 +300,26 @@ export class Sky {
 
     // --- cloud layer ---
     const half = this.cfg.cloudHalfSize;
+    const T = this.THREE;
+    // Baked tileable FBM — one upload, then two samples per pixel at runtime.
+    this.cloudNoise = new T.DataTexture(buildCloudNoiseData(), CLOUD_TEX_SIZE, CLOUD_TEX_SIZE, T.RGBAFormat);
+    this.cloudNoise.wrapS = this.cloudNoise.wrapT = T.RepeatWrapping;
+    this.cloudNoise.magFilter = T.LinearFilter;
+    this.cloudNoise.minFilter = T.LinearFilter;
+    this.cloudNoise.generateMipmaps = false;
+    this.cloudNoise.needsUpdate = true;
     this.cloudMaterial = new THREE.ShaderMaterial({
       uniforms: {
+        uNoise: { value: this.cloudNoise },
         uTime: { value: 0 },
         uPhase: { value: 1 },
         uSunset: { value: 0 },
         uCam: { value: new THREE.Vector2() },
         uWind: { value: new THREE.Vector2(...this.cfg.wind) },
-        uScale: { value: this.cfg.cloudScale },
+        uTexWorld: { value: this.cfg.cloudScale * CLOUD_TEX_CELLS },
         uCoverage: { value: this.cfg.cloudCoverage },
         uHalfSize: { value: half },
+        uDrift: { value: new THREE.Vector2() },
       },
       vertexShader: CLOUD_VERT,
       fragmentShader: CLOUD_FRAG,
@@ -279,6 +331,13 @@ export class Sky {
     this.clouds.rotation.x = -Math.PI / 2;
     this.clouds.frustumCulled = false;
     this.group.add(this.clouds);
+  }
+
+  /** Current unit vector pointing at the sun (updated each frame). The
+   *  Renderer uses it to align the chunk shader's directional sun term with
+   *  the sun actually drawn in the dome. */
+  get sunDirection() {
+    return this._sunDir;
   }
 
   /**
@@ -319,6 +378,14 @@ export class Sky {
     cu.uPhase.value = phase;
     cu.uSunset.value = sunset;
     cu.uCam.value.set(camPos.x, camPos.z);
+    // The fine (3x) layer drifts slightly against the base — the old shader's
+    // q*3 + wind*t*0.0007 term, converted from noise units to texture uv
+    // (one noise unit spans 1/CLOUD_TEX_CELLS of a texture repeat).
+    const uvPerNoiseUnit = 1 / CLOUD_TEX_CELLS;
+    cu.uDrift.value.set(
+      this.cfg.wind[0] * this._time * 0.0007 * uvPerNoiseUnit,
+      this.cfg.wind[1] * this._time * 0.0007 * uvPerNoiseUnit,
+    );
     this.clouds.position.y = Math.max(this.cfg.cloudHeight - camPos.y, 60);
   }
 
@@ -331,6 +398,7 @@ export class Sky {
     this.sunMaterial.dispose();
     this.moonMaterial.dispose();
     this.cloudMaterial.dispose();
+    this.cloudNoise.dispose();
   }
 }
 

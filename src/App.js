@@ -81,7 +81,7 @@ export class App {
     // --- engine ---
     this.world = new World();
     this.blinkers = new Blinkers(this.world);
-    this.webgl = new THREE.WebGLRenderer({ antialias: true });
+    this.webgl = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.container.appendChild(this.webgl.domElement);
     const { texture, tileIndexFor, atlas, rebuild } = createAtlasTexture(THREE);
     this.rebuildAtlas = rebuild;
@@ -503,6 +503,12 @@ export class App {
   redo() {
     const cmd = this.history.redo();
     if (cmd) this.ui.toast(`Redo: ${cmd.description}`, 700);
+  }
+
+  /** Toggle the polaroid/bloom post pipeline at runtime (P). */
+  togglePostFX() {
+    const on = this.renderer.togglePostFX();
+    this.ui.toast(`Polaroid filter: ${on ? 'on' : 'off'}`, 900);
   }
 
   /** Middle-click: aim the selection at the block or item under the crosshair. */
@@ -1347,6 +1353,7 @@ export class App {
       // G cycles the active spawn tool's type — mobs and NPCs alike.
       if (this.tools.active?.id === 'mob' || this.tools.active?.id === 'npc') this.tools.active.cycleType();
     }));
+    sub('postfx.toggle', () => this.togglePostFX());
     sub('help.toggle', editorOnly(() => {
       const shown = this.ui.toggleHelp();
       if (shown && document.pointerLockElement === this.webgl.domElement) document.exitPointerLock();

@@ -14,6 +14,7 @@ import * as THREE from '../../vendor/three.module.js';
 import { World } from '../engine/World.js';
 import { Blinkers } from '../engine/Blinkers.js';
 import { Renderer } from '../engine/Renderer.js';
+import { PerfStats } from '../engine/PerfStats.js';
 import { CELL_SIZE, MAX_RAY_DISTANCE } from '../engine/Space.js';
 import { createAtlasTexture } from '../textures/AtlasTexture.three.js';
 import { WalkControls } from '../editor/WalkControls.js';
@@ -103,7 +104,12 @@ export class GameApp {
     // --- engine (same render pipeline as the editor) ---
     this.world = new World();
     this.blinkers = new Blinkers(this.world);
-    this.webgl = new THREE.WebGLRenderer({ antialias: !this.isTouch });
+    this.webgl = new THREE.WebGLRenderer({
+      antialias: !this.isTouch,
+      // Ask for the discrete GPU on hybrid machines; without it some drivers
+      // silently render on the integrated chip.
+      powerPreference: 'high-performance',
+    });
     if (this.isTouch) this.webgl.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.container.appendChild(this.webgl.domElement);
     const { texture, tileIndexFor, atlas, rebuild } = createAtlasTexture(THREE);
@@ -122,6 +128,9 @@ export class GameApp {
       world: collisionWorld(this.world),
       opts: { sensitivity: CONFIG.controls.sensitivity, ...CONFIG.player, touchMode: this.isTouch },
     });
+
+    // Performance overlay (F9): FPS, frame ms, draw calls, buffer size.
+    this.perf = new PerfStats({ doc: this.doc, webgl: this.webgl, renderer: this.renderer });
 
     if (this.isTouch) {
       this.touch = new TouchControls({
@@ -438,6 +447,7 @@ export class GameApp {
     this.blinkers.update(dt);
     // Day/night time only advances while actually playing (frozen in menu/pause).
     this.renderer.render(this.mode === 'playing' ? dt : 0);
+    this.perf.frame();
   }
 
   /** Player view direction on the ground plane ({x,z} unit vector), used by
@@ -1656,6 +1666,10 @@ export class GameApp {
         if (this.mode === 'playing') this.pauseGame();
         else if (this.mode === 'paused') this.resumeGame();
         else if (this.mode === 'dead') this.showMenu();
+        return;
+      }
+      if (e.code === 'F9') {
+        this.perf.toggle();
         return;
       }
       if (this.mode !== 'playing') return;

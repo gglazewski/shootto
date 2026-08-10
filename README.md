@@ -161,6 +161,7 @@ static hosting shows the same shots.
 | `F2` | Item editor — build a placeable object from colored micro voxels (see below) |
 | `F5` | Toggle **test run**: walk at the player spawn (`C` crouch, `Space` idle) |
 | `F8` / `Shift`+`F8` | Capture the current view as a **menu splash screen** / delete the nearest splash camera |
+| `P` | Toggle the **polaroid filter** — bloom on bright lights + film grain, vignette and faded print colors |
 | `Ctrl`+`Z` / `Ctrl`+`Shift`+`Z` | Undo / Redo (last 10 actions) |
 | `Ctrl`+`S` | Save to browser storage |
 | `Esc` | Release the pointer |
@@ -386,13 +387,29 @@ src/
   direction). It is stored in dense typed arrays over the world bounds and
   seeded from a per-column heightmap, so a full recompute costs milliseconds.
   The mesher bakes each channel per vertex (smoothed across the 4 surrounding
-  cells) into a `light` attribute; the custom `chunkShader.js` material
-  multiplies the texture by it. Sealed rooms go dark, light falls through
-  windows/roof holes, placed light objects glow warm. A configurable day/night
-  cycle
-  drives the `uSkyIntensity` uniform and lerps the sky color. The scene's
-  `AmbientLight`/`DirectionalLight` only affect the editor overlays now.
-- **Edits mark a 27-chunk neighborhood dirty** so face culling and AO stay
+   cells) into a `light` attribute; the custom `chunkShader.js` material
+   multiplies the texture by it. Sealed rooms go dark, light falls through
+   windows/roof holes, placed light objects glow warm. Emissive blocks also set
+   a per-vertex `emissive` flag so the shader keeps them bright (past 1.0) and
+   the bloom pass picks them up. A configurable day/night
+   cycle drives the `uSkyIntensity` uniform, lerps the sky color, and now steers
+   the chunk shader's directional sun (direction + warm dawn/dusk tint) to match
+   the sun actually drawn in the dome. The scene's
+   `AmbientLight`/`DirectionalLight` only affect the editor overlays now.
+ - **Chunk streaming for huge worlds.** `World` keeps a voxel index
+   (`anchorKey -> voxel`) and a per-chunk occupancy counter, so counting,
+   bounds and chunk enumeration cost O(#voxels)/O(#chunks) instead of O(#cells).
+   The renderer only meshes chunks within `CONFIG.render.viewDistance` of the
+   camera (nearest first, a few per frame) and disposes those beyond the unload
+   radius; distance fog hides the streaming edge. A standing-still frame pays
+   nothing for streaming. The mesher also prefetched the chunk + a 1-cell halo
+   into a flat array so neighbor/AO probes are O(1) index reads.
+ - **Post-processing.** `PostFX.js` renders the frame to an HDR target, blooms
+   the bright pass at quarter resolution, then composites with a polaroid grade
+   (film curve, warm highlights / cool shadows, faded saturation, vignette,
+   animated grain, subtle chromatic aberration). Toggle with `P`; pure
+   three.js core, no examples/jsm imports.
+ - **Edits mark a 27-chunk neighborhood dirty** so face culling and AO stay
   correct across chunk borders. Small edits re-flood only a bounded box around
   the edited cells (via `recomputeEdit`), keeping per-edit cost independent of
   world size; big batches fall back to a full recompute. Chunk rebuilds are

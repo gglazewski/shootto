@@ -38,6 +38,11 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       uAmbientMin: { value: L.ambientMin },
       uLightScale: { value: L.lightScale },
       uSunStrength: { value: L.sunStrength },
+      uEmissiveBoost: { value: L.emissiveBoost },
+      uFogColor: { value: new THREE.Color(...(L.fogColor ?? [0.7, 0.8, 0.9])) },
+      uFogNear: { value: L.fogNear ?? 60 },
+      uFogFar: { value: L.fogFar ?? 180 },
+      uCamPos: { value: new THREE.Vector3() },
       uFlashPos: { value: new THREE.Vector3() },
       uFlashColor: { value: new THREE.Color(1.0, 0.72, 0.38) },
       uFlashIntensity: { value: 0 },
@@ -49,17 +54,20 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
     vertexShader: `
       attribute vec3 color;
       attribute vec2 light;
+      attribute float emissive;
       uniform vec3 uSunDir;
       varying vec2 vUv;
       varying vec3 vColor;
       varying vec2 vLight;
       varying float vSun;
+      varying float vEmissive;
       varying vec3 vWorldPos;
 
       void main() {
         vUv = uv;
         vColor = color;
         vLight = light;
+        vEmissive = emissive;
         vSun = max(0.0, dot(normalize(normal), normalize(uSunDir)));
         vec4 worldPos = modelMatrix * vec4(position, 1.0);
         vWorldPos = worldPos.xyz;
@@ -75,6 +83,11 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       uniform float uAmbientMin;
       uniform float uLightScale;
       uniform float uSunStrength;
+      uniform float uEmissiveBoost;
+      uniform vec3 uFogColor;
+      uniform float uFogNear;
+      uniform float uFogFar;
+      uniform vec3 uCamPos;
       uniform vec3 uFlashPos;
       uniform vec3 uFlashColor;
       uniform float uFlashIntensity;
@@ -83,6 +96,7 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       varying vec3 vColor;
       varying vec2 vLight;
       varying float vSun;
+      varying float vEmissive;
       varying vec3 vWorldPos;
 
       void main() {
@@ -102,10 +116,18 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
         vec3 lit = tex.rgb * vColor * (uAmbientMin + tint * base * uLightScale);
         // Directional sun shading only where the surface is sky-exposed.
         lit += uSunColor * tex.rgb * vColor * vSun * sky * uSunStrength;
+        // Self-emission: lamps/torches stay bright regardless of baked light
+        // and push past 1.0 so the bloom pass picks them up.
+        lit += tex.rgb * vColor * vEmissive * uEmissiveBoost;
         // Dynamic muzzle flash: soft warm point light fading with distance.
         float dist = length(vWorldPos - uFlashPos);
         float flash = uFlashIntensity * pow(max(0.0, 1.0 - dist / uFlashRange), 2.0);
         lit += uFlashColor * tex.rgb * vColor * flash;
+        // Distance fog blends the world into the sky at the render edge
+        // (measured from the camera, not the flash).
+        float camDist = length(vWorldPos - uCamPos);
+        float fog = smoothstep(uFogNear, uFogFar, camDist);
+        lit = mix(lit, uFogColor, fog);
         gl_FragColor = vec4(lit, tex.a);
       }
     `,

@@ -10,6 +10,8 @@ import { raycastVoxel, worldToCell, CELL_SIZE } from '../src/engine/VoxelRaycast
 import { serialize, deserialize } from '../src/persistence/WorldSerializer.js';
 import { bulletWorld } from '../src/editor/itemPick.js';
 import { Blinkers } from '../src/engine/Blinkers.js';
+import { LightField } from '../src/engine/LightField.js';
+import { buildCloudNoiseData, CLOUD_TEX_SIZE } from '../src/engine/Sky.js';
 
 const tile = () => 0;
 
@@ -95,6 +97,45 @@ test('bounds over mixed voxels', () => {
   assert.deepEqual(max, [2, 5, 0]);
 });
 
+test('voxel index: forEachVoxel/count track anchors, not cells', () => {
+  const w = new World();
+  w.place('grass', SIZE.SMALL, 0, 0, 0);
+  w.place('wood', SIZE.BIG, 4, 0, 4);
+  assert.equal(w.voxels.size, 2);
+  const seen = [];
+  w.forEachVoxel((v) => seen.push(v.type));
+  assert.deepEqual(seen.sort(), ['grass', 'wood']);
+  assert.ok(w.remove(5, 1, 5), 'remove via a BIG sub-cell');
+  assert.equal(w.voxels.size, 1);
+  assert.equal(w.count, 1);
+  assert.deepEqual(w.bounds().min, [0, 0, 0]);
+  assert.deepEqual(w.bounds().max, [0, 0, 0]);
+});
+
+test('chunk counts track occupancy and drop empty chunks', () => {
+  const w = new World(16);
+  w.place('grass', SIZE.SMALL, 0, 0, 0);
+  w.place('grass', SIZE.SMALL, 1, 0, 0);
+  w.place('wood', SIZE.BIG, 16, 0, 0); // chunk 1,0,0 -> 8 cells
+  assert.equal(w.chunkCounts.get('0,0,0'), 2);
+  assert.equal(w.chunkCounts.get('1,0,0'), 8);
+  assert.deepEqual(w.chunkKeys().sort(), ['0,0,0', '1,0,0']);
+  w.remove(0, 0, 0);
+  assert.equal(w.chunkCounts.get('0,0,0'), 1);
+  w.remove(1, 0, 0);
+  assert.equal(w.chunkCounts.has('0,0,0'), false);
+  assert.deepEqual(w.chunkOriginsInRegion([0, 0, 0], [100, 10, 100]), [[16, 0, 0]]);
+});
+
+test('chunkOriginsInRegion filters by region via the chunk index', () => {
+  const w = new World(16);
+  w.place('grass', SIZE.SMALL, 0, 0, 0);
+  w.place('grass', SIZE.SMALL, 40, 0, 0); // chunk 2,0,0
+  const origins = w.chunkOriginsInRegion([0, 0, 0], [100, 10, 100]);
+  assert.deepEqual(origins.sort((a, b) => a[0] - b[0]), [[0, 0, 0], [32, 0, 0]]);
+  assert.deepEqual(w.chunkOriginsInRegion([0, 0, 0], [10, 10, 10]), [[0, 0, 0]]);
+});
+
 test('world spawn point lifecycle', () => {
   const w = new World();
   assert.equal(w.spawn, null);
@@ -176,6 +217,18 @@ test('mesher emits a light attribute with two channels per vertex', () => {
     assert.equal(m.lights[i * 2], 1, 'sky channel fully lit');
     assert.equal(m.lights[i * 2 + 1], 0, 'no block light');
   }
+});
+
+test('mesher flags emissive voxels so bloom can pick them up', () => {
+  const w = new World();
+  w.place('lamp', SIZE.SMALL, 2, 2, 2); // light: 15
+  w.place('grass', SIZE.SMALL, 6, 2, 2); // non-emissive
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
+  const verts = m.positions.length / 3;
+  assert.equal(m.emissive.length, verts, 'one emissive flag per vertex');
+  const flagged = m.emissive.reduce((n, e) => n + (e > 0 ? 1 : 0), 0);
+  assert.ok(flagged > 0, 'lamp faces are flagged');
+  assert.ok(flagged < verts, 'grass faces are not flagged');
 });
 
 test('glass is a pane: one alpha-blended quad in the transparent buffer', () => {
@@ -697,4 +750,38 @@ test('clear() and copyFrom() carry splash cameras', () => {
   assert.notEqual(copy.splashCams[0], w.splashCams[0], 'copy must not share cam objects');
   copy.clear();
   assert.deepEqual(copy.splashCams, []);
+});
+
+test('recomputeEdit exposes the touched box; full recompute clears it', () => {
+  const w = new World();
+  w.place('grass', SIZE.SMALL, 0, 0, 0);
+  const lf = new LightField(w);
+  lf.recompute();
+  assert.equal(lf.lastBox, null, 'full recompute touches everything');
+
+  w.place('stone', SIZE.SMALL, 4, 0, 4);
+  lf.recomputeEdit([{ cells: [[4, 0, 4]], remove: false, type: 'stone' }]);
+  assert.ok(lf.lastBox, 'incremental edit reports its box');
+  const [x0, y0, z0, x1, y1, z1] = lf.lastBox;
+  assert.ok(x0 <= 4 && x1 >= 4 && y0 <= 0 && y1 >= 0 && z0 <= 4 && z1 >= 4, 'box covers the edit');
+
+  // Beyond the batch cap the field falls back to a full recompute.
+  const edits = Array.from({ length: 9 }, (_, i) => ({ cells: [[i, 1, 0]], remove: false, type: 'stone' }));
+  lf.recomputeEdit(edits);
+  assert.equal(lf.lastBox, null, 'fallback recompute reports no box');
+});
+
+test('cloud noise bakes a cached, ranged, tileable texture', () => {
+  const a = buildCloudNoiseData();
+  assert.equal(a.length, CLOUD_TEX_SIZE * CLOUD_TEX_SIZE * 4);
+  assert.equal(buildCloudNoiseData(), a, 'the default bake is cached');
+  let min = 255;
+  let max = 0;
+  for (let i = 0; i < a.length; i += 4) {
+    assert.equal(a[i + 3], 255);
+    if (a[i] < min) min = a[i];
+    if (a[i] > max) max = a[i];
+  }
+  assert.ok(max > min + 40, 'the bake spans a real density range');
+  assert.ok(max <= 240, 'density stays within the 4-octave amplitude sum (0.9375)');
 });

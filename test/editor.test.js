@@ -5,6 +5,7 @@ import * as THREE from '../vendor/three.module.js';
 import { World } from '../src/engine/World.js';
 import { SIZE } from '../src/engine/VoxelTypes.js';
 import { Renderer } from '../src/engine/Renderer.js';
+import { PostFX } from '../src/engine/PostFX.js';
 import { ChunkMesh } from '../src/engine/ChunkMesh.js';
 import { FlyControls, applyLook, clampPitch } from '../src/editor/FlyControls.js';
 import { BuildTool } from '../src/editor/tools/BuildTool.js';
@@ -1100,6 +1101,73 @@ test('clearChunks empties the chunk cache', () => {
   assert.ok(renderer.chunks.size > 0);
   renderer.clearChunks();
   assert.equal(renderer.chunks.size, 0);
+});
+
+test('chunk streaming unloads far chunks and streams them back on approach', () => {
+  const world = new World();
+  world.place('grass', SIZE.SMALL, 0, 0, 0);
+  world.place('grass', SIZE.SMALL, 16 * 60, 0, 0); // 60 chunks away in +x
+  const { renderer } = makeRenderer(world);
+  const near = world.chunkKey(0, 0, 0);
+  const far = world.chunkKey(16 * 60, 0, 0);
+  renderer.loadWorldBounds();
+  assert.equal(renderer.chunks.size, 2, 'small worlds load fully at first');
+
+  // Sync near the origin: the far chunk is beyond the unload radius.
+  renderer.camera.position.set(4, 4, 4);
+  renderer.syncChunks();
+  assert.ok(renderer.chunks.has(near), 'near chunk stays');
+  assert.equal(renderer.chunks.has(far), false, 'far chunk is unloaded');
+
+  // Fly out to the far chunk: it streams back in (nearest-first, budgeted).
+  renderer.camera.position.set(16 * 60 * 0.5 + 2, 2, 2);
+  for (let i = 0; i < 3 && !renderer.chunks.has(far); i++) renderer.syncChunks();
+  assert.ok(renderer.chunks.has(far), 'far chunk streams back on approach');
+});
+
+test('streaming is disabled when viewDistance is 0', () => {
+  const world = new World();
+  world.place('grass', SIZE.SMALL, 0, 0, 0);
+  world.place('grass', SIZE.SMALL, 16 * 60, 0, 0);
+  const calls = { render: 0, setSize: 0 };
+  const webgl = { setSize: () => { calls.setSize++; }, render: () => { calls.render++; } };
+  const renderer = new Renderer({
+    THREE, webgl, world,
+    atlasTexture: new THREE.Texture(), tileIndexFor: () => 0, atlas: { width: 4, height: 2 },
+    config: { render: { viewDistance: 0 } },
+  });
+  renderer.loadWorldBounds();
+  renderer.camera.position.set(4, 4, 4);
+  renderer.syncChunks();
+  assert.equal(renderer.chunks.size, 2, 'no unloading when streaming is off');
+});
+
+test('renderer without a real WebGL context skips postfx and renders direct', () => {
+  const world = new World();
+  world.place('grass', SIZE.SMALL, 0, 0, 0);
+  const { renderer, calls } = makeRenderer(world);
+  renderer.resize(64, 64);
+  renderer.render();
+  assert.equal(calls.render, 1, 'stub renderer drew the frame directly');
+  assert.equal(renderer.postfx, null, 'no postfx built for a stub renderer');
+});
+
+test('postfx pipeline renders through its render-target chain', () => {
+  const targets = [];
+  const webgl = {
+    capabilities: { isWebGL2: true },
+    setRenderTarget: (t) => { targets.push(t); },
+    render: () => {},
+  };
+  const fx = new PostFX({ THREE });
+  fx.setSize(64, 64, webgl);
+  fx.render(webgl, new THREE.Scene(), new THREE.PerspectiveCamera(), 0.5);
+  // scene + bright + 4 blurs + final composite to the canvas (null target)
+  assert.equal(targets.length, 7);
+  assert.equal(targets[targets.length - 1], null, 'composite targets the canvas');
+  assert.equal(fx._rtScene.width, 64);
+  assert.equal(fx._rtA.width, 16, 'bloom runs at quarter resolution');
+  fx.dispose();
 });
 
 // --- textures ---

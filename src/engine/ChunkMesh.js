@@ -61,6 +61,7 @@ export class ChunkMesh {
       geo.setAttribute('uv', new T.BufferAttribute(d.uvs, 2));
       geo.setAttribute('color', new T.BufferAttribute(d.colors, 3));
       geo.setAttribute('light', new T.BufferAttribute(d.lights, 2));
+      geo.setAttribute('emissive', new T.BufferAttribute(d.emissive, 1));
       geo.setIndex(new T.BufferAttribute(d.indices, 1));
       geo.computeBoundingSphere();
     };

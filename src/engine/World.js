@@ -33,6 +33,23 @@ export class World {
     this.chunkSize = chunkSize;
     /** @type {Map<string, Voxel>} cellKey -> voxel */
     this.cells = new Map();
+    /** @type {Map<string, Voxel>} anchorKey -> voxel. One entry per voxel (a
+     *  BIG voxel is one entry, not 8), so iteration, counting and bounds are
+     *  O(#voxels) instead of O(#cells) — the difference between a quick
+     *  pass and a multi-second stall on huge worlds. */
+    this.voxels = new Map();
+    /** @type {Map<string, number>} chunkKey -> number of occupied cells in
+     *  that chunk. Lets meshing/streaming skip empty chunks and enumerate
+     *  only chunks with content without scanning every cell. */
+    this.chunkCounts = new Map();
+    /** @type {Map<string, [number,number,number]>} chunkKey -> chunk coords,
+     *  kept in sync with chunkCounts so hot loops (renderer streaming) never
+     *  re-parse the string keys. */
+    this.chunkCoords = new Map();
+    /** Set when place/remove/clear changed WHICH cells are occupied (type
+     *  swaps like blinking lights don't). The renderer drains it to know when
+     *  the set of streamable chunks may have changed. */
+    this._occupancyChanged = false;
     this.dirty = new Set();
     /** Edit records since the last drain (for incremental light updates). */
     this.edits = [];
@@ -103,7 +120,10 @@ export class World {
     for (const [x, y, z] of cells) {
       this.cells.set(key(x, y, z), voxel);
       this.markDirty(x, y, z);
+      this._countCell(x, y, z, 1);
     }
+    this.voxels.set(key(ax, ay, az), voxel);
+    this._occupancyChanged = true;
     this.edits.push({ cells, remove: false, type });
     return true;
   }
@@ -133,12 +153,15 @@ export class World {
     for (const [cx, cy, cz] of cells) {
       this.cells.delete(key(cx, cy, cz));
       this.markDirty(cx, cy, cz);
+      this._countCell(cx, cy, cz, -1);
       // decals ride the voxel's faces — they go with it, whole footprints
       // included (a multi-cell decal loses its backing when any cell goes)
       for (const face of ['px', 'nx', 'py', 'ny', 'pz', 'nz']) {
         if (this.decals.has(`${key(cx, cy, cz)},${face}`)) this.removeDecal(cx, cy, cz, face);
       }
     }
+    this.voxels.delete(key(ax, ay, az));
+    this._occupancyChanged = true;
     this.edits.push({ cells, remove: true, type: voxel.type });
     return voxel;
   }
@@ -251,6 +274,10 @@ export class World {
   /** Remove every voxel, item and the spawn point. */
   clear() {
     this.cells.clear();
+    this.voxels.clear();
+    this.chunkCounts.clear();
+    this.chunkCoords.clear();
+    this._occupancyChanged = true;
     this.dirty.clear();
     this.edits.length = 0;
     this.spawn = null;
@@ -409,6 +436,26 @@ export class World {
     return `${fx},${fy},${fz}`;
   }
 
+  /** Maintain the per-chunk occupied-cell counter (and its coord index). */
+  _countCell(x, y, z, delta) {
+    const s = this.chunkSize;
+    const fx = Math.floor(x / s), fy = Math.floor(y / s), fz = Math.floor(z / s);
+    const ckey = `${fx},${fy},${fz}`;
+    const n = (this.chunkCounts.get(ckey) ?? 0) + delta;
+    if (n <= 0) {
+      this.chunkCounts.delete(ckey);
+      this.chunkCoords.delete(ckey);
+    } else {
+      this.chunkCounts.set(ckey, n);
+      if (!this.chunkCoords.has(ckey)) this.chunkCoords.set(ckey, [fx, fy, fz]);
+    }
+  }
+
+  /** Keys of chunks holding at least one occupied cell. */
+  chunkKeys() {
+    return [...this.chunkCounts.keys()];
+  }
+
   /**
    * Mark the chunk containing (x,y,z) and all its 26 neighbors dirty.
    * Culling and AO for a chunk depend on cells in adjacent chunks, so any
@@ -444,6 +491,14 @@ export class World {
     return out;
   }
 
+  /** True once since the last drain if occupancy (which cells are filled)
+   *  changed — type-only swaps (blinking lights) do not set it. */
+  drainOccupancyChanged() {
+    const v = this._occupancyChanged;
+    this._occupancyChanged = false;
+    return v;
+  }
+
   /** Iterate every occupied cell (BIG voxels yield all 8 sub-cells). */
   forEachCell(fn) {
     for (const [k, v] of this.cells) {
@@ -454,50 +509,44 @@ export class World {
 
   /** Iterate each unique voxel once, keyed by anchor. */
   forEachVoxel(fn) {
-    const seen = new Set();
-    for (const v of this.cells.values()) {
-      const a = v.anchor;
-      const ak = `${a[0]},${a[1]},${a[2]}`;
-      if (seen.has(ak)) continue;
-      seen.add(ak);
-      fn(v);
-    }
+    for (const v of this.voxels.values()) fn(v);
   }
 
   /** Number of unique voxels. */
   get count() {
-    let n = 0;
-    const seen = new Set();
-    for (const v of this.cells.values()) {
-      const a = v.anchor;
-      const ak = `${a[0]},${a[1]},${a[2]}`;
-      if (!seen.has(ak)) { seen.add(ak); n++; }
-    }
-    return n;
+    return this.voxels.size;
   }
 
-  /** Inclusive min/max cell bounds over all occupied cells, or null. */
+  /** Inclusive min/max cell bounds over all occupied cells, or null.
+   *  Derived from the voxel index (O(#voxels)), expanding each voxel's
+   *  footprint rather than scanning every occupied cell. */
   bounds() {
     let min = null, max = null;
-    for (const k of this.cells.keys()) {
-      const [x, y, z] = k.split(',').map(Number);
-      min = min ? [Math.min(min[0], x), Math.min(min[1], y), Math.min(min[2], z)] : [x, y, z];
-      max = max ? [Math.max(max[0], x), Math.max(max[1], y), Math.max(max[2], z)] : [x, y, z];
+    for (const v of this.voxels.values()) {
+      for (const [x, y, z] of cellsFor(v.anchor[0], v.anchor[1], v.anchor[2], v.size, v.rotation ?? 0)) {
+        min = min ? [Math.min(min[0], x), Math.min(min[1], y), Math.min(min[2], z)] : [x, y, z];
+        max = max ? [Math.max(max[0], x), Math.max(max[1], y), Math.max(max[2], z)] : [x, y, z];
+      }
     }
     return min && max ? { min, max } : null;
   }
 
   /**
    * Enumerate chunks in [originMin, originMax] (inclusive, in cell coords)
-   * that contain any occupied cell. Used for a full mesh rebuild.
+   * that contain any occupied cell. Used for a full mesh rebuild. Walks the
+   * chunk counter index (O(#chunks)), not every cell.
    */
   chunkOriginsInRegion(min, max) {
     const s = this.chunkSize;
-    const out = new Set();
-    this.forEachCell((x, y, z) => {
-      if (x < min[0] || x > max[0] || y < min[1] || y > max[1] || z < min[2] || z > max[2]) return;
-      out.add(this.chunkKey(x, y, z));
-    });
-    return [...out].map((k) => this.chunkOrigin(k));
+    const out = [];
+    for (const ckey of this.chunkCounts.keys()) {
+      const [cx, cy, cz] = ckey.split(',').map(Number);
+      const x0 = cx * s, y0 = cy * s, z0 = cz * s;
+      if (x0 + s - 1 < min[0] || x0 > max[0]) continue;
+      if (y0 + s - 1 < min[1] || y0 > max[1]) continue;
+      if (z0 + s - 1 < min[2] || z0 > max[2]) continue;
+      out.push([x0, y0, z0]);
+    }
+    return out;
   }
 }
