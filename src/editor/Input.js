@@ -9,6 +9,17 @@
 
 import { resolveBinding } from './Keybindings.js';
 
+/** True when a key event originates in a text-entry element — typing must
+ *  not fly the camera or fire tool shortcuts. Escape and the F-keys still
+ *  pass (same convention as the panels' own key filters), so a mode switch
+ *  never requires clicking out of a field first. */
+function isTyping(e) {
+  const t = e.target;
+  if (!t) return false;
+  const tag = t.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!t.isContentEditable;
+}
+
 export class InputDispatcher {
   /**
    * @param {object} deps
@@ -74,6 +85,9 @@ export class InputDispatcher {
   }
 
   _onKeyDown(e) {
+    // Keystrokes typed into a field belong to the field. keyup below still
+    // runs unfiltered, so a movement key held while focusing a field clears.
+    if (isTyping(e) && e.key !== 'Escape' && !/^F\d+$/.test(e.key)) return;
     this.held.add(e.code);
     this._emit('keydown', { code: e.code, event: e });
 

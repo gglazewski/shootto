@@ -14,12 +14,15 @@
 // readers that ignore it) still load fine.
 
 import { World } from '../engine/World.js';
-import { assertValidBlockId, getBlock, SIZE, isDecalId, FACES } from '../engine/VoxelTypes.js';
+import { assertValidBlockId, getBlock, SIZE, isDecalId, isBlockId, FACES } from '../engine/VoxelTypes.js';
 import { createTextDecal, textSpecOf } from '../engine/TextDecals.js';
 import { isItemId } from '../engine/ItemRegistry.js';
 import { isEquipId } from '../engine/EquipmentRegistry.js';
 import { isMobId } from '../engine/mobTypes.js';
 import { isNpcId } from '../engine/NpcRegistry.js';
+import { applyDoorSettings } from '../engine/Doors.js';
+import { applyLightSettings, legacyLightSettings } from '../engine/Lights.js';
+import { canonicalDecalId } from '../engine/Switches.js';
 import { CELL_SIZE } from '../engine/Space.js';
 
 export const FORMAT = 'voxelmap';
@@ -30,15 +33,22 @@ export function serialize(world) {
   const blocks = [];
   world.forEachVoxel((v) => {
     // rotation is additive and omitted when 0, so old readers and untouched
-    // maps stay byte-identical. A blinking light caught in its dark phase is
+    // maps stay byte-identical. A light caught in its dark phase is
     // normalized back to its lit id, an open door back to its closed id —
-    // maps always store the canonical block.
+    // maps always store the canonical block (a light's state is `lightMode`).
     const def = getBlock(v.type);
-    const type = def?.blinkOn ?? def?.doorClosed ?? v.type;
+    const type = def?.lightOn ?? def?.doorClosed ?? v.type;
     blocks.push({
       x: v.anchor[0], y: v.anchor[1], z: v.anchor[2], size: v.size, type,
       ...(v.rotation ? { rotation: v.rotation } : {}),
       ...(v.variant ? { variant: v.variant } : {}),
+      // door/light settings — additive and omitted at their defaults, so maps
+      // without configured doors or lights stay byte-identical
+      ...(v.locked ? { locked: true } : {}),
+      ...(v.hinge === 'right' ? { hinge: 'right' } : {}),
+      ...(v.unlockFlag ? { unlockFlag: v.unlockFlag } : {}),
+      ...(v.lightMode && v.lightMode !== 'on' ? { lightMode: v.lightMode } : {}),
+      ...(v.lightFlag ? { lightFlag: v.lightFlag } : {}),
     });
   });
   const items = [];
@@ -66,13 +76,21 @@ export function serialize(world) {
   const decals = [];
   const textDecals = new Map();
   world.forEachDecal((d) => {
+    // A switch caught showing its ON art stores the canonical OFF id —
+    // its state lives in the game's flag store, not the map.
     decals.push({
-      id: d.decalId, x: d.cell[0], y: d.cell[1], z: d.cell[2], face: d.face,
+      id: canonicalDecalId(d.decalId), x: d.cell[0], y: d.cell[1], z: d.cell[2], face: d.face,
       ...(d.rotation ? { rotation: d.rotation } : {}),
+      ...(d.flag ? { flag: d.flag } : {}),
+      ...(d.startOn ? { startOn: true } : {}),
     });
     const spec = textSpecOf(d.decalId);
     if (spec && !textDecals.has(d.decalId)) textDecals.set(d.decalId, { id: d.decalId, ...spec });
   });
+  // `paint` is additive — per-face texture overrides. Omitted when nothing is
+  // painted, so untouched maps stay byte-identical.
+  const paint = [];
+  world.forEachPaint?.((p) => paint.push({ x: p.x, y: p.y, z: p.z, face: p.face, type: p.type }));
   // `splashCams` is additive — authored menu-camera shots ride with the map.
   const splashCams = [];
   world.forEachSplashCam((c) => splashCams.push({
@@ -80,13 +98,16 @@ export function serialize(world) {
     ...(c.fov ? { fov: c.fov } : {}),
     ...(c.motion ? { motion: c.motion } : {}),
   }));
+  // Compact JSON: maps can hold a lot of voxels, and the file is written on
+  // every autosave — the pretty-printed form doubled the bytes for no reader.
   return JSON.stringify({
     format: FORMAT, version: VERSION, cellSize: CELL_SIZE, spawn, spawnYaw: world.spawnYaw ?? 0,
     blocks, items, mobs, decals,
     ...(npcs.length ? { npcs } : {}),
+    ...(paint.length ? { paint } : {}),
     ...(textDecals.size ? { textDecals: [...textDecals.values()] } : {}),
     ...(splashCams.length ? { splashCams } : {}),
-  }, null, 2);
+  });
 }
 
 /**
@@ -121,11 +142,15 @@ export function deserialize(text) {
   } else if (spawn != null) {
     errors.push('Skipped malformed spawn point');
   }
-  for (const b of data.blocks) {
+  for (let b of data.blocks) {
     if (!b || typeof b.x !== 'number' || typeof b.y !== 'number' || typeof b.z !== 'number') {
       errors.push('Skipped malformed block entry');
       continue;
     }
+    // Maps from the one-block-per-state era: *_blink ids load as the unified
+    // light with its mode authored to 'flicker'.
+    const legacy = legacyLightSettings(b.type);
+    if (legacy) b = { ...b, ...legacy };
     const size = b.size === SIZE.BIG || b.size === SIZE.DOOR || b.size === SIZE.DOOR3 || b.size === SIZE.SIDELIGHT ? b.size : SIZE.SMALL;
     try {
       assertValidBlockId(b.type);
@@ -139,7 +164,10 @@ export function deserialize(text) {
     const variant = b.variant === 'lower' || b.variant === 'upper' ? b.variant : null;
     if (!world.place(b.type, size, b.x, b.y, b.z, rotation, variant)) {
       errors.push(`Skipped overlapping block ${b.x},${b.y},${b.z}`);
+      continue;
     }
+    applyDoorSettings(world.get(b.x, b.y, b.z), b);
+    applyLightSettings(world.get(b.x, b.y, b.z), b);
   }
   if (Array.isArray(data.items)) {
     for (const it of data.items) {
@@ -191,6 +219,32 @@ export function deserialize(text) {
       const rotation = Number.isInteger(d.rotation) ? ((d.rotation % 4) + 4) % 4 : 0;
       if (!world.placeDecal(d.id, d.x, d.y, d.z, d.face, rotation)) {
         errors.push(`Skipped decal ${d.id} at ${d.x},${d.y},${d.z}: no block face there`);
+        continue;
+      }
+      // Additive switch wiring: the flag the decal drives — and whether it
+      // starts raised — ride the entry.
+      if (typeof d.flag === 'string' && d.flag) world.decalAt(d.x, d.y, d.z, d.face).flag = d.flag;
+      if (d.startOn === true) world.decalAt(d.x, d.y, d.z, d.face).startOn = true;
+    }
+  }
+  // Paint loads AFTER blocks (a painted face needs its block) and is dropped
+  // silently-per-entry: a face whose block did not load keeps no paint.
+  if (Array.isArray(data.paint)) {
+    for (const p of data.paint) {
+      if (!p || typeof p.x !== 'number' || typeof p.y !== 'number' || typeof p.z !== 'number' || typeof p.type !== 'string') {
+        errors.push('Skipped malformed paint entry');
+        continue;
+      }
+      if (!isBlockId(p.type)) {
+        errors.push(`Skipped paint ${p.type} (not a known block)`);
+        continue;
+      }
+      if (!FACES.includes(p.face)) {
+        errors.push(`Skipped paint at ${p.x},${p.y},${p.z}: bad face "${p.face}"`);
+        continue;
+      }
+      if (!world.paintFace(p.x, p.y, p.z, p.face, p.type)) {
+        errors.push(`Skipped paint at ${p.x},${p.y},${p.z} ${p.face}: no block face there`);
       }
     }
   }

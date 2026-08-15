@@ -5,8 +5,9 @@
 // action is dropped (no redo for it).
 
 export class History {
-  constructor({ max = 10 } = {}) {
+  constructor({ max = 10, onChange = null } = {}) {
     this.max = max;
+    this.onChange = onChange;
     this._undo = [];
     this._redo = [];
   }
@@ -31,6 +32,7 @@ export class History {
     if (this._undo.length >= this.max) this._undo.shift();
     this._undo.push(cmd);
     this._redo.length = 0;
+    this.onChange?.();
   }
 
   /** Undo the most recent action. @returns {object|null} the undone command */
@@ -39,6 +41,7 @@ export class History {
     if (!cmd) return null;
     cmd.undo();
     this._redo.push(cmd);
+    this.onChange?.();
     return cmd;
   }
 
@@ -48,6 +51,7 @@ export class History {
     if (!cmd) return null;
     cmd.do();
     this._undo.push(cmd);
+    this.onChange?.();
     return cmd;
   }
 

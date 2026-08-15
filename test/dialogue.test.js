@@ -7,6 +7,7 @@ import assert from 'node:assert/strict';
 
 import { Dialogue, ACCEPT_LABEL, DECLINE_LABEL, BYE_LABEL } from '../src/game/Dialogue.js';
 import { QuestLog } from '../src/game/quests.js';
+import { GameFlags } from '../src/game/Reactions.js';
 
 const LINES = {
   granny: [
@@ -206,4 +207,104 @@ test('an NPC with no questline still chats: greeting, topics, bye', () => {
   const d = new Dialogue({ npc, quests });
   toHub(d);
   assert.deepEqual(labels(d), ['What happened here?', 'Who’s Stefan?', BYE_LABEL]);
+});
+
+// --- services (NPC repair etc. — see NpcRegistry `services`) ---
+
+function smith(services) {
+  return {
+    type: { id: 'smith' },
+    name: 'Smith',
+    dialog: ['I fix things.'],
+    greeting: 'Back with more dents?',
+    services,
+  };
+}
+
+test('an ungated service is a hub reply; picking it hands the service back and stays on the hub', () => {
+  const quests = new QuestLog({});
+  const service = { type: 'repair', label: 'Could you fix up my gear?' };
+  const d = new Dialogue({ npc: smith([service]), quests });
+  toHub(d);
+  assert.deepEqual(labels(d), ['Could you fix up my gear?', BYE_LABEL]);
+
+  const result = choose(d, 'Could you fix up my gear?');
+  assert.deepEqual(result, { service });
+  assert.equal(d.done, false, 'the chat stays open under the service screen');
+  assert.deepEqual(labels(d), ['Could you fix up my gear?', BYE_LABEL], 'back on the hub');
+});
+
+test('a flag-gated service stays hidden until its signal is raised', () => {
+  const quests = new QuestLog({});
+  const flags = new GameFlags();
+  const npc = smith([{ type: 'repair', label: 'Fix my axe?', flag: 'workshop-open' }]);
+
+  const before = new Dialogue({ npc, quests, flags });
+  toHub(before);
+  assert.deepEqual(labels(before), [BYE_LABEL], 'signal down — no repair on offer');
+
+  flags.set('workshop-open'); // e.g. a quest completed
+  const after = new Dialogue({ npc, quests, flags });
+  toHub(after);
+  assert.deepEqual(labels(after), ['Fix my axe?', BYE_LABEL]);
+});
+
+test('a turn-in that raises the gating signal reveals the service in the same conversation', () => {
+  // The tier has NO ready lines, so choose('turnin') rebuilds the hub
+  // synchronously — before the caller can apply the completion flags. The
+  // caller then applies them and calls refreshHub(), like GameApp does.
+  const quests = new QuestLog({
+    smith: [{
+      id: 's1',
+      title: 'Spare Parts',
+      giver: 'smith',
+      objective: { type: 'collect', kinds: ['ammo'], count: 1, noun: 'parts' },
+      offer: ['Bring me parts.'],
+      offerPrompt: 'Need anything?',
+      turninPrompt: 'Got your parts.',
+      progressLine: '{n}/{count}.',
+      ready: [],
+      flags: { complete: ['workshop-open'] },
+    }],
+  });
+  const flags = new GameFlags();
+  const npc = smith([{ type: 'repair', label: 'Fix my axe?', flag: 'workshop-open' }]);
+  const d = new Dialogue({ npc, quests, flags });
+  toHub(d);
+  choose(d, 'Need anything?');
+  for (let i = 0; i < 20 && !d.choices(); i++) d.advance();
+  choose(d, ACCEPT_LABEL);
+  quests.onCollect({ id: 'x', kind: 'ammo' });
+  d.refreshHub(); // the replies predate the collect — catch them up
+
+  const result = choose(d, 'Got your parts.');
+  assert.equal(result.completed.id, 's1');
+  assert.ok(!labels(d).includes('Fix my axe?'), 'hub built inside choose() predates the flag');
+
+  flags.set('workshop-open'); // GameApp: applyFlagList(result.completed.flags.complete)
+  d.refreshHub();
+  assert.ok(labels(d).includes('Fix my axe?'), 'refreshHub catches the freshly raised signal');
+});
+
+test('refreshHub is a no-op while the NPC is mid-lines', () => {
+  const quests = new QuestLog({});
+  const d = new Dialogue({ npc: smith([{ type: 'repair', label: 'Fix it?' }]), quests });
+  assert.equal(d.choices(), null, 'still on the intro');
+  d.refreshHub();
+  assert.equal(d.choices(), null, 'no replies forced mid-speech');
+});
+
+test('a "!" signal inverts the gate, like a light bound to !power', () => {
+  const quests = new QuestLog({});
+  const flags = new GameFlags();
+  const npc = smith([{ type: 'repair', label: 'Fix it?', flag: '!shop-burned' }]);
+
+  const open = new Dialogue({ npc, quests, flags });
+  toHub(open);
+  assert.deepEqual(labels(open), ['Fix it?', BYE_LABEL], 'flag down, inverted gate is open');
+
+  flags.set('shop-burned');
+  const burned = new Dialogue({ npc, quests, flags });
+  toHub(burned);
+  assert.deepEqual(labels(burned), [BYE_LABEL]);
 });

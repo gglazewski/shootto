@@ -20,7 +20,9 @@ before(async () => {
     worldFile: world,
     root: base,
     worldsDir: join(base, 'map', 'worlds'),
+    prefabsDir: join(base, 'map', 'prefabs'),
     splashFile: join(base, 'map', 'splash.json'),
+    editorStateFile: join(base, 'map', 'editor.json'),
   });
   server = s.server;
   port = s.port;
@@ -149,4 +151,51 @@ test('PUT then GET the splash manifest', async () => {
   const data = await (await fetch(`http://localhost:${port}/api/splash`)).json();
   assert.equal(data.entries.length, 1);
   assert.equal(readFileSync(join(base, 'map', 'splash.json'), 'utf8'), body);
+});
+
+// --- editor UI state ---
+
+test('GET /api/editor-state returns null before any state exists', async () => {
+  const res = await fetch(`http://localhost:${port}/api/editor-state`);
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), 'null');
+});
+
+test('PUT then GET the editor state', async () => {
+  const body = JSON.stringify({ currentPath: 'campaign/01-farm.json' });
+  const put = await fetch(`http://localhost:${port}/api/editor-state`, { method: 'PUT', body });
+  assert.equal(put.status, 200);
+  const data = await (await fetch(`http://localhost:${port}/api/editor-state`)).json();
+  assert.equal(data.currentPath, 'campaign/01-farm.json');
+  const res = await fetch(`http://localhost:${port}/api/editor-state`, { method: 'PUT', body: 'not json' });
+  assert.equal(res.status, 400);
+});
+
+// --- prefab library ---
+
+test('prefab library: empty list, PUT, list, GET, DELETE round-trip', async () => {
+  const list0 = await (await fetch(`http://localhost:${port}/api/prefabs`)).json();
+  assert.deepEqual(list0, []);
+
+  const prefab = JSON.stringify({ format: 'voxelprefab', version: 1, id: 'hut', name: 'Hut', dims: [4, 4, 4], blocks: [] });
+  const put = await fetch(`http://localhost:${port}/api/prefabs/hut.json`, { method: 'PUT', body: prefab });
+  assert.equal(put.status, 200);
+  assert.ok(existsSync(join(base, 'map', 'prefabs', 'hut.json')));
+
+  const list1 = await (await fetch(`http://localhost:${port}/api/prefabs`)).json();
+  assert.equal(list1.length, 1);
+  assert.equal(list1[0].path, 'hut.json');
+
+  const got = await (await fetch(`http://localhost:${port}/api/prefabs/hut.json`)).json();
+  assert.equal(got.id, 'hut');
+
+  const del = await fetch(`http://localhost:${port}/api/prefabs/hut.json`, { method: 'DELETE' });
+  assert.equal(del.status, 200);
+  assert.equal((await fetch(`http://localhost:${port}/api/prefabs/hut.json`)).status, 404);
+});
+
+test('prefab library rejects traversal and non-json paths', async () => {
+  assert.equal((await fetch(`http://localhost:${port}/api/prefabs/..%2Fescape.json`, { method: 'PUT', body: '{}' })).status, 400);
+  assert.equal((await fetch(`http://localhost:${port}/api/prefabs/hut.txt`, { method: 'PUT', body: '{}' })).status, 400);
+  assert.equal((await fetch(`http://localhost:${port}/api/prefabs/hut.json`, { method: 'PUT', body: 'not json' })).status, 400);
 });

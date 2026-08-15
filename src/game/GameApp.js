@@ -1,11 +1,12 @@
 // GameApp.js — the playable game.
 //
-// A standalone page (game.html) that shares the editor's localStorage: it
-// reads the map (`voxelmap.save`) and the item registry (`voxelitem.items`)
-// the editor writes, so saving in the editor and refreshing the game page
-// picks the new map/objects up automatically. Save slots snapshot the whole
-// world (map + objects) with the player position, so a load restores exactly
-// what was saved.
+// A standalone page (game.html). The world it plays is file driven: when
+// served by server.mjs it reads the live world file (map/voxelbundle.json),
+// so saving in the editor and refreshing the game page picks the new
+// map/objects up; a static deployment (GitHub Pages) has no server, so the
+// world baked into the build at bundle time is used instead. Save slots
+// snapshot the whole world (map + objects) with the player position, so a
+// load restores exactly what was saved.
 //
 // Modes: 'menu' (main menu), 'playing' (walk around), 'paused' (Esc overlay
 // with save/load slots).
@@ -23,14 +24,17 @@ import { collisionWorld } from '../editor/itemPick.js';
 import { GameLoop } from '../GameLoop.js';
 import { CONFIG } from '../config.js';
 import { deserialize } from '../persistence/WorldSerializer.js';
-import { serializeBundle, deserializeBundle } from '../persistence/WorldBundle.js';
-import { serializeRegistry, deserializeRegistry, getItem } from '../engine/ItemRegistry.js';
-import { deserializeEquipRegistry, getEquipItem } from '../engine/EquipmentRegistry.js';
+import { serializeBundle, deserializeBundle, BUNDLE_FORMAT } from '../persistence/WorldBundle.js';
+import { getItem } from '../engine/ItemRegistry.js';
+import { getEquipItem } from '../engine/EquipmentRegistry.js';
 import { registerBuiltinQuestItems } from '../engine/QuestItems.js';
+import { deserializeNpcRegistry } from '../engine/NpcRegistry.js';
+import { deserializeQuestRegistry } from '../engine/QuestRegistry.js';
 import { ammoName } from '../engine/AmmoTypes.js';
 import { MICRO_SIZE, gridOf, lightLevelForMeters, rotateMicroPoint } from '../engine/ItemTypes.js';
 import { isPassable, isGlass } from '../engine/VoxelTypes.js';
-import { isDoorVoxel, isOpenDoor, toggleDoor } from '../engine/Doors.js';
+import { isDoorVoxel, isOpenDoor, toggleDoor, canToggle, isDoorLocked } from '../engine/Doors.js';
+import { isSwitchDecal, isSwitchOn, flipSwitch, seedSwitchFlags, faceFromNormal } from '../engine/Switches.js';
 import { BUNDLED_WORLD } from '../bundledWorld.js';
 import { SLOT_COUNT, readSlot, writeSlot, makeSlot } from './SaveSlots.js';
 import { PlayerStats, MAX_HEALTH, EQUIPMENT_SLOTS } from './PlayerStats.js';
@@ -44,10 +48,9 @@ import { MuzzleFX } from './MuzzleFX.js';
 import { MobManager } from './MobManager.js';
 import { NPCManager, getNpcType, TALK_BREAK_RANGE } from './NPC.js';
 import { listMobs } from '../engine/mobTypes.js';
-import { QuestLog } from './quests.js';
+import { QuestLog, objectivesOf } from './quests.js';
+import { GameFlags, applyFlagList, bindWorldReactions } from './Reactions.js';
 import { Dialogue } from './Dialogue.js';
-import { deserializeNpcRegistry } from '../engine/NpcRegistry.js';
-import { deserializeQuestRegistry } from '../engine/QuestRegistry.js';
 import { itemAwarePick, bulletWorld } from '../editor/itemPick.js';
 import { buildItemSwatch } from '../editor/items/itemSwatch.js';
 import { TouchControls } from './TouchControls.js';
@@ -85,12 +88,23 @@ const STAGGER_TIME = 0.3;
 /** Seconds each menu splash screen plays before the next one is picked. */
 const SPLASH_SECONDS = 3;
 
+/** Seconds of the fade-to-black between menu splash screens — the cut happens
+ *  behind full black, then the same time fades the next shot back in. Must
+ *  match the #splash-fade CSS transition duration in game.html. */
+const SPLASH_FADE_SECONDS = 0.35;
+
+/** Seconds of guaranteed full black around the cut: padding after the CSS
+ *  fade-out (which can start a paint late and peek the old shot through) and
+ *  the hold after the switch, giving a rebuilt world a few rendered frames
+ *  behind the cover before the fade-in reveals it. */
+const SPLASH_BLACK_SECONDS = 0.25;
+
 export class GameApp {
   /**
    * @param {object} [deps]
    * @param {Document} [deps.doc]
    * @param {HTMLElement} [deps.container]
-   * @param {Storage} [deps.storage]  localStorage in the browser
+   * @param {Storage} [deps.storage]  localStorage in the browser (save slots)
    */
   constructor({ doc = document, container, storage = null } = {}) {
     this.doc = doc;
@@ -221,9 +235,18 @@ export class GameApp {
     });
     this._talkNpc = null; // NPC in talk range this frame (E starts the chat)
     this._dialog = null; // open conversation: { npc, convo: Dialogue }
+    // Open NPC repair screen: { npc, slot } — slot is the picked equipment
+    // slot name (null until the player clicks a weapon). See _openRepair.
+    this._repair = null;
     // Quest state: NPCs are the quest givers (see quests.js). Reset on new
     // game, serialized into save slots.
     this.quests = new QuestLog();
+    // Action/reaction flags (see Reactions.js): quests raise them, world
+    // objects (flag-gated doors) mirror them. Reset with the quest log,
+    // serialized alongside it; _bindReactions subscribes the world's
+    // listeners on every play start.
+    this.flags = new GameFlags();
+    this._unbindReactions = null;
 
     // Highlight shown over a placed equippable item you're aiming at (E picks
     // it up): an outline traced around the item's own shape, not a box over
@@ -290,6 +313,11 @@ export class GameApp {
       dialogText: this.doc.querySelector('#dialog-text'),
       dialogChoices: this.doc.querySelector('#dialog-choices'),
       dialogHint: this.doc.querySelector('#dialog-hint'),
+      repair: this.doc.querySelector('#repair'),
+      repairSub: this.doc.querySelector('#repair-sub'),
+      repairList: this.doc.querySelector('#repair-list'),
+      btnRepairFix: this.doc.querySelector('#btn-repair-fix'),
+      btnRepairClose: this.doc.querySelector('#btn-repair-close'),
       quest: this.doc.querySelector('#quest'),
       questList: this.doc.querySelector('#quest-list'),
       crosshair: this.doc.querySelector('#crosshair'),
@@ -308,6 +336,10 @@ export class GameApp {
       btnQuit: this.doc.querySelector('#btn-quit'),
       btnRespawn: this.doc.querySelector('#btn-respawn'),
       btnDeathMenu: this.doc.querySelector('#btn-death-menu'),
+      loading: this.doc.querySelector('#loading'),
+      loadingFill: this.doc.querySelector('#loading-fill'),
+      loadingStatus: this.doc.querySelector('#loading-status'),
+      splashFade: this.doc.querySelector('#splash-fade'),
     };
 
     this._wireUI();
@@ -316,20 +348,30 @@ export class GameApp {
 
   // --- lifecycle ---
 
-  start() {
+  async start() {
     this._onResize = () => this.renderer.resize(window.innerWidth, window.innerHeight);
     window.addEventListener('resize', this._onResize);
     this._onResize();
 
-    this._loadBaseWorld();
+    this._setLoadProgress(0.1, 'Fetching world…');
+    await this._loadBaseWorld();
+    this._setLoadProgress(0.85, 'Preparing menu…');
     this._renderSlots();
 
     this.loop = new GameLoop({ onFrame: (dt) => this._frame(dt) });
     this.loop.start();
     this.walk.connect();
+    this._setLoadProgress(1, 'Ready');
     this.showMenu();
     this._initSplashes();
     return this;
+  }
+
+  /** Drive the boot loading screen (bar width + status line). No-ops once the
+   *  screen is hidden — showMenu dismisses it when startup completes. */
+  _setLoadProgress(frac, label) {
+    if (this.ui.loadingFill) this.ui.loadingFill.style.width = `${Math.round(frac * 100)}%`;
+    if (this.ui.loadingStatus && label) this.ui.loadingStatus.textContent = label;
   }
 
   /** Fetch the splash list (server or embedded pack) and, if the menu is
@@ -351,6 +393,12 @@ export class GameApp {
    *  scene and pin the camera to the captured pose. Draws from a shuffle bag
    *  (pseudo-random: every shot appears before any repeats, and the same
    *  shot never plays twice in a row). */
+  /** Drop the black splash cover (fades out via CSS) and reset fade state. */
+  _clearSplashFade() {
+    this._splashFade = null;
+    this.ui.splashFade?.classList.remove('show');
+  }
+
   _showNextSplash() {
     this._splashTimer = 0;
     // A lone shot just keeps playing — restarting it would stutter.
@@ -404,6 +452,7 @@ export class GameApp {
       // weapon's cooldown throttles it to its fire rate.
       if (this._firing || this.touch?.attacking) this._attack();
       this._updatePickup();
+      this._updateVisit();
       this.mobs.update(dt, this.walk.position, this._viewFacing());
       this.npcs.update(dt);
       // Walking away mid-chat ends the conversation.
@@ -423,7 +472,20 @@ export class GameApp {
         // lone shot (or the procedural flyover) just keeps playing.
         if (this._splashEntries.length > 1) {
           this._splashTimer += dt;
-          if (this._splashTimer >= SPLASH_SECONDS) this._showNextSplash();
+          if (!this._splashFade && this._splashTimer >= SPLASH_SECONDS) {
+            // Fade to black first; the actual cut happens behind full cover.
+            this._splashFade = 'out';
+            this.ui.splashFade?.classList.add('show');
+          } else if (this._splashFade === 'out'
+              && this._splashTimer >= SPLASH_SECONDS + SPLASH_FADE_SECONDS + SPLASH_BLACK_SECONDS) {
+            // Cut under full black, but keep the cover on: the new shot (and a
+            // possible world rebuild) gets rendered behind it first, so no
+            // half-built frame ever flashes through.
+            this._showNextSplash(); // resets the timer
+            this._splashFade = 'hold';
+          } else if (this._splashFade === 'hold' && this._splashTimer >= SPLASH_BLACK_SECONDS) {
+            this._clearSplashFade();
+          }
         }
       }
       this._hidePickup();
@@ -445,6 +507,7 @@ export class GameApp {
     this.itemRenderer.update();
     this._updateFlashLight();
     this.blinkers.update(dt);
+    this.renderer.setLampLights(this.blinkers.lampLights);
     // Day/night time only advances while actually playing (frozen in menu/pause).
     this.renderer.render(this.mode === 'playing' ? dt : 0);
     this.perf.frame();
@@ -470,71 +533,75 @@ export class GameApp {
     this.renderer.setFlashLight(state ? state.pos : this._flashLightVec, state ? state.intensity : 0);
   }
 
-  // --- world loading (shares the editor's localStorage) ---
+  // --- world loading (file driven) ---
 
-  /** Load the editor's current map + objects (falling back to the bundled
-   *  world), so editor saves show up after a refresh. The item registries are
-   *  loaded FIRST so placed placeable/equippable items resolve when the map is
-   *  deserialized (otherwise they are skipped as unregistered). */
-  _loadBaseWorld() {
-    this._loadItems();
-    this._loadEquipItems();
-    this._loadNpcData();
-    const mapText = this.storage?.getItem(CONFIG.saveKey);
-    let world;
-    if (mapText) {
-      const { world: loaded } = deserialize(mapText);
-      world = loaded;
-    } else if (BUNDLED_WORLD?.map) {
-      const { world: loaded } = deserialize(JSON.stringify(BUNDLED_WORLD.map));
-      world = loaded;
-    } else {
-      world = new World();
-    }
-    this._applyWorld(world);
-  }
-
-  /** Load the item registry from the editor's storage, or the bundled one. */
-  _loadItems() {
-    const text = this.storage?.getItem(CONFIG.itemSaveKey);
-    if (text) {
-      deserializeRegistry(text);
-    } else if (Array.isArray(BUNDLED_WORLD?.items)) {
-      deserializeRegistry(JSON.stringify(BUNDLED_WORLD.items));
-    }
-  }
-
-  /** Load the equippable-item registry (F3 editor) so placed equipment items
-   *  (pistols, clubs, …) resolve their shape and render. Same sources as
-   *  placeable objects: the editor's localStorage or the deployed bundle. */
-  _loadEquipItems() {
+  /** Load the world to play. When a server is present (editor dev server) the
+   *  live world file wins so editor saves show up after a refresh; otherwise
+   *  the world baked into this build is used (static deploy). Registries ride
+   *  inside the bundle and are registered BEFORE the map deserializes, so
+   *  placed items/NPC spawns resolve. */
+  async _loadBaseWorld() {
     // Built-in quest items first — an authored def under the same id wins.
     registerBuiltinQuestItems();
-    const text = this.storage?.getItem(CONFIG.equipSaveKey);
-    if (text) {
-      deserializeEquipRegistry(text);
-    } else if (Array.isArray(BUNDLED_WORLD?.equip)) {
-      deserializeEquipRegistry(JSON.stringify(BUNDLED_WORLD.equip));
+    const text = await this._fetchWorldFile();
+    this._setLoadProgress(0.4, 'Reading map…');
+    let world = null;
+    if (text) world = this._parseWorld(text);
+    if (!world && BUNDLED_WORLD?.map) {
+      world = deserializeBundle(JSON.stringify(BUNDLED_WORLD)).world;
+    }
+    this._setLoadProgress(0.6, 'Building world…');
+    this._applyWorld(world ?? new World());
+  }
+
+  /** @returns {Promise<string|null>} the world file text from the server, or
+   *  null when there is no server (static deploy) or nothing saved yet. */
+  async _fetchWorldFile() {
+    if (typeof location === 'undefined' || !/^https?:$/.test(location.protocol)) return null;
+    try {
+      const res = await fetch('/api/world');
+      if (!res.ok) return null;
+      const text = await res.text();
+      return text === 'null' ? null : text;
+    } catch {
+      return null;
     }
   }
 
-  /** Load the NPC + quest registries (F4 editor) so placed NPC spawns resolve
-   *  and questlines are the authored ones. Same sources as the other
-   *  registries: the editor's localStorage or the deployed bundle. Must run
-   *  BEFORE the map deserializes — unregistered NPC spawns are skipped. */
-  _loadNpcData() {
-    const npcText = this.storage?.getItem(CONFIG.npcSaveKey);
-    if (npcText) {
-      deserializeNpcRegistry(npcText);
-    } else if (Array.isArray(BUNDLED_WORLD?.npcs)) {
-      deserializeNpcRegistry(JSON.stringify(BUNDLED_WORLD.npcs));
+  /** Re-register the authored NPC + quest registries from the current world
+   *  source (the live file behind /api/world, or the baked-in bundle on a
+   *  static deploy) WITHOUT touching the world in play. Saves snapshot the
+   *  registries as they were; content keeps evolving — this puts the current
+   *  content back on top after a save's bundle loaded. Item/equipment
+   *  registries stay with the save: its placed items reference them. */
+  async _refreshAuthoredContent() {
+    let data = null;
+    const text = await this._fetchWorldFile();
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = null;
     }
-    const questText = this.storage?.getItem(CONFIG.questSaveKey);
-    if (questText) {
-      deserializeQuestRegistry(questText);
-    } else if (BUNDLED_WORLD?.quests && typeof BUNDLED_WORLD.quests === 'object') {
-      deserializeQuestRegistry(JSON.stringify(BUNDLED_WORLD.quests));
+    if (data?.format !== BUNDLE_FORMAT) data = BUNDLED_WORLD?.map ? BUNDLED_WORLD : null;
+    if (!data) return;
+    if (Array.isArray(data.npcs)) deserializeNpcRegistry(JSON.stringify(data.npcs));
+    if (data.quests && typeof data.quests === 'object') deserializeQuestRegistry(JSON.stringify(data.quests));
+  }
+
+  /** Deserialize a world file (bundle or plain map). @returns {World|null} */
+  _parseWorld(text) {
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return null;
     }
+    if (data && data.format === BUNDLE_FORMAT) {
+      const { world, fatal } = deserializeBundle(text);
+      return fatal ? null : world;
+    }
+    const { world, fatal } = deserialize(text);
+    return fatal ? null : world;
   }
 
   /** Replace the live world with `loaded` and rebuild. Uses the one shared
@@ -604,14 +671,21 @@ export class GameApp {
     this._updateAmmoHud();
   }
 
-  /** Show magazine ammo for ranged weapons as `in-mag / carried`. Weapons
-   *  without a magazine (fists/melee) show infinite ammo (`∞/∞`) so the
-   *  counter is always present. */
+  /** Show magazine ammo for ranged weapons as `in-mag / carried`. Breakable
+   *  melee weapons show durability as `left / max` instead; fists and
+   *  unbreakable weapons show infinite ammo (`∞/∞`) so the counter is always
+   *  present. */
   _updateAmmoHud() {
     const el = this.ui.ammo;
     if (!el) return;
     const weapon = this.stats.activeItemId ? weaponFor(this.stats.activeItemId) : FISTS;
     const max = weapon.magazine ?? 0;
+    if (weapon.kind === 'melee' && weapon.durability > 0 && this.stats.activeItemId) {
+      const left = Math.max(0, weapon.durability - (this.stats.wear[this.stats.activeSlotName] ?? 0));
+      el.classList.remove('hidden');
+      el.textContent = `${left}/${weapon.durability}`;
+      return;
+    }
     if (weapon.kind !== 'ranged' || max <= 0) {
       el.classList.remove('hidden');
       el.textContent = '∞/∞';
@@ -800,9 +874,29 @@ export class GameApp {
   _resolveImpact(impact, weapon, dir) {
     if (impact.mob) {
       this._damageMob(impact.mob, weapon.damage, weapon, dir, impact.dist);
+      this._degradeMeleeWeapon(weapon);
       return;
     }
     this.smoke.puff(impact.pos);
+  }
+
+  /** Melee weapons wear out on flesh, not on walls: each hit that lands on a
+   *  mob costs one point of durability, and at zero the weapon snaps and the
+   *  slot empties (the breaking blow still deals its damage). Missed swings
+   *  and hits on the world cost nothing. Fists and guns (durability 0) never
+   *  wear. */
+  _degradeMeleeWeapon(weapon) {
+    if (weapon.kind !== 'melee' || !(weapon.durability > 0)) return;
+    const slot = this.stats.activeSlotName;
+    if (!this.stats.equipment[slot]) return; // bare fists in an empty slot
+    const wear = this.stats.addWear(slot);
+    if (wear < weapon.durability) {
+      this._updateAmmoHud();
+      return;
+    }
+    this.stats.unequip(slot);
+    this._toast(`Your ${weapon.name} broke!`);
+    this._updateHud();
   }
 
   /** Damage a mob; count and puff smoke when it dies. */
@@ -924,6 +1018,7 @@ export class GameApp {
     this.ui.hud.classList.add('hidden');
     this.ui.death.classList.remove('hidden');
     this._hidePickup();
+    this._closeRepair();
   }
 
   /** Ammo counter for a weapon's magazine, seeded full on first use — a found
@@ -1047,7 +1142,7 @@ export class GameApp {
     ];
   }
 
-  // --- interact: item pickup + doors (aim, press E) ---
+  // --- interact: item pickup + doors + wall switches (aim, press E) ---
 
   /** What the E key would act on under the crosshair: a placed equippable
    *  item ({cell, item}), a door voxel ({cell, door}), or null. Pickable
@@ -1072,6 +1167,10 @@ export class GameApp {
     if (hit) {
       const voxel = this.world.get(hit.cell[0], hit.cell[1], hit.cell[2]);
       if (isDoorVoxel(voxel)) return { cell: hit.cell, door: voxel };
+      // A wall switch is a decal on the face the ray came in through.
+      const face = faceFromNormal(hit.normal);
+      const decal = face ? this.world.decalAt(hit.cell[0], hit.cell[1], hit.cell[2], face) : null;
+      if (isSwitchDecal(decal)) return { cell: hit.cell, switch: decal };
       const item = this.world.itemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
       if (item && hit.dist <= PICKUP_RANGE) {
         const def = getEquipItem(item.itemId);
@@ -1123,7 +1222,17 @@ export class GameApp {
       // Doors get the prompt only — no highlight over the whole leaf.
       this._hideOutline();
       if (this.ui.pickup) {
-        this.ui.pickup.innerHTML = `Press <kbd>E</kbd> to ${isOpenDoor(target.door) ? 'close' : 'open'} the door`;
+        this.ui.pickup.innerHTML = isDoorLocked(target.door)
+          ? 'The door is locked'
+          : `Press <kbd>E</kbd> to ${isOpenDoor(target.door) ? 'close' : 'open'} the door`;
+        this.ui.pickup.classList.remove('hidden');
+      }
+      return;
+    }
+    if (target.switch) {
+      this._hideOutline();
+      if (this.ui.pickup) {
+        this.ui.pickup.innerHTML = `Press <kbd>E</kbd> to flip the switch ${isSwitchOn(target.switch) ? 'off' : 'on'}`;
         this.ui.pickup.classList.remove('hidden');
       }
       return;
@@ -1194,7 +1303,7 @@ export class GameApp {
    *  NPC speaks, then the player picks replies (quest offer/turn-in, lore
    *  topics, bye). See Dialogue.js. */
   _startDialog(npc) {
-    this._dialog = { npc, convo: new Dialogue({ npc, quests: this.quests }) };
+    this._dialog = { npc, convo: new Dialogue({ npc, quests: this.quests, flags: this.flags }) };
     if (this.isTouch && this.ui.dialogHint) this.ui.dialogHint.textContent = 'Tap PICK to continue';
     this._hidePickup();
     this._renderDialog();
@@ -1232,15 +1341,29 @@ export class GameApp {
     const result = convo.choose(choice.id);
     if (result?.accepted) {
       this._toast(`New quest: ${result.accepted.title}`);
+      applyFlagList(this.flags, result.accepted.flags?.accept);
+      // Starting gear changes hands the moment the player signs up — the
+      // giver equips them for the job (items fly over like a turn-in reward).
+      if (result.accepted.startReward) this._grantReward(result.accepted.startReward, npc);
       // A slay quest with a spawn point materializes its pack the moment the
       // player signs up — picking "I'll do it" was them agreeing to the fight.
-      this._spawnQuestMobs(result.accepted.objective, result.accepted.objective.count);
+      this._spawnQuestPacks(result.accepted);
     }
     if (result?.completed) {
       this._toast(`Quest complete: ${result.completed.title}`);
+      applyFlagList(this.flags, result.completed.flags?.complete);
       if (result.reward) this._grantReward(result.reward, npc);
+      // A turn-in may unlock a chained (auto-starting) next tier.
+      this._questEvents(this.quests.autoAcceptAvailable());
     }
+    // A picked service reply: the conversation drops back to its hub and the
+    // matching screen opens on top of the chat.
+    if (result?.service?.type === 'repair') this._openRepair();
     if (result) this._updateQuestHud();
+    // The flags above landed after choose() ran — if the conversation is
+    // already back on its hub, rebuild it so a service gated on a flag this
+    // very reply raised shows up without leaving the chat.
+    if (result) convo.refreshHub();
     if (convo.done) this._closeDialog();
     else this._renderDialog();
   }
@@ -1251,6 +1374,87 @@ export class GameApp {
     if (!this._dialog) return;
     this._dialog = null;
     this.ui.dialog?.classList.add('hidden');
+    this._closeRepair();
+  }
+
+  // --- NPC repair service (see NpcRegistry `services`) ---
+
+  /** Open the repair screen over the chat: the player's breakable weapons,
+   *  pick one, hit Repair. Pointer lock is released so the rows are clickable
+   *  (the auto-pause on lock loss skips this screen); Done re-locks and drops
+   *  back into the conversation. */
+  _openRepair() {
+    this._repair = { slot: null };
+    this._firing = false;
+    if (document.pointerLockElement) document.exitPointerLock();
+    this._renderRepair();
+    this.ui.repair?.classList.remove('hidden');
+  }
+
+  /** Equipment slots holding a weapon that wears (melee with durability). */
+  _repairableSlots() {
+    return EQUIPMENT_SLOTS.filter((slot) => {
+      const id = this.stats.equipment[slot];
+      if (!id) return false;
+      const w = weaponFor(id);
+      return w.kind === 'melee' && w.durability > 0;
+    });
+  }
+
+  _renderRepair() {
+    const list = this.ui.repairList;
+    if (!list || !this._repair) return;
+    list.replaceChildren();
+    const slots = this._repairableSlots();
+    if (this.ui.repairSub) {
+      this.ui.repairSub.textContent = slots.length
+        ? 'Pick a weapon to fix up'
+        : 'Nothing on you that could be fixed.';
+    }
+    for (const slot of slots) {
+      const id = this.stats.equipment[slot];
+      const item = getItem(id) ?? getEquipItem(id);
+      const weapon = weaponFor(id);
+      const left = Math.max(0, weapon.durability - (this.stats.wear[slot] ?? 0));
+      const row = this.doc.createElement('button');
+      row.className = `repair-row${slot === this._repair.slot ? ' selected' : ''}`;
+      if (item) row.appendChild(buildItemSwatch(item, 36));
+      const name = this.doc.createElement('span');
+      name.className = 'r-name';
+      name.textContent = weapon.name;
+      const cond = this.doc.createElement('span');
+      cond.className = `r-cond${left < weapon.durability ? ' worn' : ''}`;
+      cond.textContent = `${left}/${weapon.durability}`;
+      row.append(name, cond);
+      row.addEventListener('click', () => {
+        this._repair.slot = slot;
+        this._renderRepair();
+      });
+      list.appendChild(row);
+    }
+    // Repair only lights up for a weapon that has actually taken wear.
+    const picked = this._repair.slot;
+    if (this.ui.btnRepairFix) this.ui.btnRepairFix.disabled = !picked || !(this.stats.wear[picked] > 0);
+  }
+
+  /** Repair the picked weapon: its wear drops to zero, good as new. */
+  _repairFix() {
+    const slot = this._repair?.slot;
+    if (!slot || !(this.stats.wear[slot] > 0)) return;
+    this.stats.repairWear(slot);
+    this._toast(`${weaponFor(this.stats.equipment[slot]).name} repaired — good as new.`);
+    this._renderRepair();
+    this._updateAmmoHud();
+  }
+
+  /** Close the repair screen back into the conversation. */
+  _closeRepair() {
+    if (!this._repair) return;
+    this._repair = null;
+    this.ui.repair?.classList.add('hidden');
+    if (!this.isTouch && this.mode === 'playing' && this.webgl.domElement.requestPointerLock) {
+      this.webgl.domElement.requestPointerLock();
+    }
   }
 
   /** Quest reward: flat boosts through the usual PlayerStats paths. Item
@@ -1275,15 +1479,44 @@ export class GameApp {
     this._updateHud();
   }
 
-  /** React to quest progress events (kills, pickups): toast when an objective
-   *  is fulfilled, keep the tracker current. */
+  /** React to quest events (kills, pickups, area visits, and the chain
+   *  events _advance appends): toast progress, grant field-completion
+   *  rewards, and materialize auto-started quests' packs. */
   _questEvents(events) {
     for (const ev of events) {
-      if (!ev.ready) continue;
-      const giver = getNpcType(ev.quest.giver)?.name ?? ev.quest.giver;
-      this._toast(`Objective complete — return to ${giver}`);
+      if (ev.accepted) {
+        // A chained quest started by itself — same ceremony as picking
+        // "I'll do it", minus the dialog (starting gear included).
+        this._toast(`New quest: ${ev.quest.title}`);
+        applyFlagList(this.flags, ev.quest.flags?.accept);
+        if (ev.quest.startReward) this._grantReward(ev.quest.startReward);
+        this._spawnQuestPacks(ev.quest);
+        // The player may already be standing in the new quest's visit area —
+        // forget the last checked cell so the next frame re-tests it.
+        this._visitCell = null;
+      } else if (ev.completed) {
+        this._toast(`Quest complete: ${ev.quest.title}`);
+        applyFlagList(this.flags, ev.quest.flags?.complete);
+        if (ev.reward) this._grantReward(ev.reward);
+      } else if (ev.ready) {
+        const giver = getNpcType(ev.quest.giver)?.name ?? ev.quest.giver;
+        this._toast(`Objective complete — return to ${giver}`);
+      }
     }
     if (events.length) this._updateQuestHud();
+  }
+
+  /** Feed the quest log the player's feet cell whenever it changes — visit
+   *  objectives (marked areas) are met by walking onto them. */
+  _updateVisit() {
+    const p = this.walk.position;
+    const cx = Math.floor(p.x / CELL_SIZE);
+    const cy = Math.floor(p.y / CELL_SIZE);
+    const cz = Math.floor(p.z / CELL_SIZE);
+    const last = this._visitCell;
+    if (last && last[0] === cx && last[1] === cy && last[2] === cz) return;
+    this._visitCell = [cx, cy, cz];
+    this._questEvents(this.quests.onVisit(cx, cy, cz));
   }
 
   /** WoW-style objective tracker top-right: every in-flight quest as a gold
@@ -1302,10 +1535,15 @@ export class GameApp {
       const title = this.doc.createElement('div');
       title.className = 'q-title';
       title.textContent = e.title;
-      const obj = this.doc.createElement('div');
-      obj.className = 'q-obj';
-      obj.textContent = e.text;
-      entry.append(title, obj);
+      entry.appendChild(title);
+      // One line per objective; met ones stay listed but dimmed, so a
+      // multi-goal quest reads as a checklist.
+      for (const line of e.lines ?? [{ text: e.text, done: false }]) {
+        const obj = this.doc.createElement('div');
+        obj.className = line.done ? 'q-obj done' : 'q-obj';
+        obj.textContent = line.text;
+        entry.appendChild(obj);
+      }
       this.ui.questList.appendChild(entry);
     }
     this.ui.quest.classList.remove('hidden');
@@ -1322,14 +1560,21 @@ export class GameApp {
     this.mobs.spawnAt(typeId, objective.spawnCell, n);
   }
 
+  /** Materialize every slay pack a freshly started quest calls for (one per
+   *  kill objective with an authored spawn point). */
+  _spawnQuestPacks(quest) {
+    for (const o of objectivesOf(quest)) this._spawnQuestMobs(o, o.count);
+  }
+
   /** Re-materialize outstanding slay packs after a load: dynamically spawned
    *  quest mobs aren't part of the world's spawn points, so a save made
    *  mid-quest would otherwise come back with an unfinishable objective.
    *  Spawns only what's still owed (count minus kills already made). */
   _restoreQuestMobs() {
     for (const { quest, progress } of this.quests.activeQuests()) {
-      const o = quest.objective;
-      this._spawnQuestMobs(o, (o?.count ?? 0) - progress);
+      objectivesOf(quest).forEach((o, i) => {
+        this._spawnQuestMobs(o, o.count - (progress[i] ?? 0));
+      });
     }
   }
 
@@ -1344,6 +1589,14 @@ export class GameApp {
     if (!target) return;
     if (target.door) {
       this._toggleDoor(target.door);
+      return;
+    }
+    if (target.switch) {
+      // The flag store is the source of truth — the rocker art (and any
+      // lights or door locks bound to the flag) mirrors it via reactions.
+      // An unwired switch still clicks its rocker; it just drives nothing.
+      flipSwitch(this.world, this.flags, target.switch);
+      this._updatePickup();
       return;
     }
     const def = getEquipItem(target.item.itemId);
@@ -1361,6 +1614,8 @@ export class GameApp {
    *  the doorway (mobs can't open doors — they re-route or give up), an
    *  opened one lets them path through. */
   _toggleDoor(voxel) {
+    // A locked door doesn't budge — the prompt already says so.
+    if (!canToggle(voxel)) return;
     if (!toggleDoor(this.world, voxel)) return;
     this.mobs.refreshNav();
   }
@@ -1497,8 +1752,11 @@ export class GameApp {
     this.hand.group.visible = false;
     if (document.pointerLockElement) document.exitPointerLock();
     this._renderSlots();
+    this.ui.loading?.classList.add('hidden');
     this.ui.menu.classList.toggle('cover', !this._splashesReady);
-    // Every menu visit rotates to the next authored splash shot (if any).
+    // Every menu visit rotates to the next authored splash shot (if any),
+    // shown straight away — no leftover black cover.
+    this._clearSplashFade();
     this._showNextSplash();
   }
 
@@ -1509,6 +1767,8 @@ export class GameApp {
     // its splash world even if it is the same file (_lastSplash = null).
     this.menuFly.setSplash(null);
     this._lastSplash = null;
+    // Starting mid-fade must not leave the black cover over the game.
+    this._clearSplashFade();
     if (this.renderer.camera.fov !== this._defaultFov) {
       this.renderer.camera.fov = this._defaultFov;
       this.renderer.camera.updateProjectionMatrix();
@@ -1522,6 +1782,18 @@ export class GameApp {
     this.hand.group.visible = true;
     this._updateHud();
     this._updateQuestHud();
+    // Quest lifecycle signals are derived state, not one-shots: replay them
+    // from quest history on every play start, so a flag authored onto an
+    // already-finished quest (or missing from an old save) still fires.
+    applyFlagList(this.flags, this.quests.lifecycleFlags());
+    // Reactions first, quest chain openers second: flags an auto-accepted
+    // opener raises must land on already-listening doors.
+    this._bindReactions();
+    // Chain openers: quests flagged autoAccept start by themselves — on a new
+    // game and equally on a load (already-active ones are simply not
+    // 'available' anymore, so this is idempotent).
+    this._visitCell = null;
+    this._questEvents(this.quests.autoAcceptAvailable());
     if (!this.isTouch && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
   }
 
@@ -1546,16 +1818,30 @@ export class GameApp {
     if (!this.isTouch && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
   }
 
-  /** Start a fresh game from the current editor world. */
-  newGame() {
-    this._loadBaseWorld();
+  /** Start a fresh game from the current authored world. */
+  async newGame() {
+    await this._loadBaseWorld();
     this.stats = new PlayerStats();
     this.quests = new QuestLog();
+    this.flags = new GameFlags();
+    seedSwitchFlags(this.world, this.flags);
     this._ammo = new Map();
     this._reloading = false;
     const [cx, cy, cz] = this._spawnCell();
     this.walk.spawnAt(cx, cy, cz, ((this.world.spawnYaw ?? 0) * Math.PI) / 180);
     this.startPlaying();
+  }
+
+  /** (Re)subscribe the current world's reaction carriers — doors gated by an
+   *  `unlockFlag` — to the current flag store. Runs on every play start,
+   *  when both world and store are final; listener catch-up settles every
+   *  bound door to its flag right here, so a loaded game (or an edited map)
+   *  can never disagree with its flags. */
+  _bindReactions() {
+    this._unbindReactions?.();
+    this._unbindReactions = bindWorldReactions(this.world, this.flags, {
+      onDoorUnlock: () => this._toast('You hear a lock click open.'),
+    });
   }
 
   // --- save slots ---
@@ -1569,12 +1855,12 @@ export class GameApp {
       pitch: this.walk.pitch,
     };
     const bundle = serializeBundle(this.world);
-    writeSlot(i, makeSlot({ bundle, player, stats: this.stats.serialize(), quests: this.quests.serialize() }), this.storage);
+    writeSlot(i, makeSlot({ bundle, player, stats: this.stats.serialize(), quests: this.quests.serialize(), flags: this.flags.serialize() }), this.storage);
     this._toast(`Saved to slot ${i + 1}`);
     this._renderSlots();
   }
 
-  loadSlot(i) {
+  async loadSlot(i) {
     const slot = readSlot(i, this.storage);
     if (!slot) {
       this._toast(`Slot ${i + 1} is empty`);
@@ -1582,8 +1868,15 @@ export class GameApp {
     }
     const { world } = deserializeBundle(slot.bundle);
     this._applyWorld(world);
+    // The save's bundle just re-registered the registries as they were when
+    // it was written. The world (geometry, placed items) is the save's to
+    // keep, but authored CONTENT — NPCs and questlines — must be current, so
+    // a dialogue/service/quest edited after the save reaches it too.
+    await this._refreshAuthoredContent();
+    this.npcs.rebuild(this._npcSpawns()); // re-instance NPCs on live defs
     this.stats = PlayerStats.deserialize(slot.stats);
     this.quests = QuestLog.deserialize(slot.quests);
+    this.flags = GameFlags.deserialize(slot.flags);
     this._restoreQuestMobs();
     this._ammo = new Map();
     this._reloading = false;
@@ -1648,6 +1941,8 @@ export class GameApp {
     this.ui.btnQuit?.addEventListener('click', () => this.showMenu());
     this.ui.btnRespawn?.addEventListener('click', () => this.newGame());
     this.ui.btnDeathMenu?.addEventListener('click', () => this.showMenu());
+    this.ui.btnRepairFix?.addEventListener('click', () => this._repairFix());
+    this.ui.btnRepairClose?.addEventListener('click', () => this._closeRepair());
     // Clear the hit-flash when its vignette animation completes (event-driven,
     // so it stays in sync even if the page's timers are throttled).
     const hitFeedback = this.doc.querySelector('#hit-feedback');
@@ -1663,6 +1958,10 @@ export class GameApp {
 
     on(this.doc, 'keydown', (e) => {
       if (e.code === 'Escape') {
+        if (this._repair) {
+          this._closeRepair();
+          return;
+        }
         if (this.mode === 'playing') this.pauseGame();
         else if (this.mode === 'paused') this.resumeGame();
         else if (this.mode === 'dead') this.showMenu();
@@ -1673,6 +1972,9 @@ export class GameApp {
         return;
       }
       if (this.mode !== 'playing') return;
+      // The repair screen is mouse-driven — keys must not leak through to the
+      // dialogue replies or the hotbar underneath it.
+      if (this._repair) return;
       const digit = parseInt(e.code.slice(-1), 10);
       // With dialogue replies on screen, digits pick a reply, not a weapon.
       if (this._dialog?.convo.choices() && e.code.startsWith('Digit')) {
@@ -1720,7 +2022,7 @@ export class GameApp {
     // enter pointer lock, so they pause on backgrounding instead (below).
     on(this.doc, 'pointerlockchange', () => {
       const locked = document.pointerLockElement === this.webgl.domElement;
-      if (!this.isTouch && this.mode === 'playing' && !locked) this.pauseGame();
+      if (!this.isTouch && this.mode === 'playing' && !locked && !this._repair) this.pauseGame();
     });
     // Mobile: when the app is backgrounded, auto-pause (there's no Esc and
     // pointer-lock loss never fires) so the player isn't killed while away.

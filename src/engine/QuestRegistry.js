@@ -1,23 +1,41 @@
 // QuestRegistry.js — registry of questlines, keyed by their NPC giver.
 //
 // A questline is an ordered array of quest tiers; the runtime (game/quests.js
-// QuestLog) walks it one tier at a time. The editor's F4 panel authors these,
-// they persist to localStorage and ship inside the world bundle. A built-in
+// QuestLog) walks it one tier at a time. The editor's F4 panel authors these;
+// they persist in the world bundle file. A built-in
 // starter line (the granny's) is always present on a fresh install and can be
 // edited or replaced like any authored one.
 //
 // A quest tier:
 //   { id, title, giver,
-//     objective: { type:'kill', target:'any'|mobId, count, noun }
-//              | { type:'collect', kinds?:[equipKind...], ids?:[itemId...], count, noun },
+//     objectives: [ { type:'kill', target:'any'|mobId, count, noun }
+//                 | { type:'collect', kinds?:[equipKind...], ids?:[itemId...], count, noun }
+//                 | { type:'visit', cells:[[x,y,z]...], count:1, noun }, ... ],
+//     autoAccept?:true,    // starts by itself the moment it becomes available
+//                          // (previous tier turned in, or game start) — chains
+//     autoComplete?:true,  // completes in the field the moment every objective
+//                          // is met; the reward is granted on the spot, no turn-in
 //     offer: [lines], progressLine: '...{n}/{count}...', ready: [lines],
 //     offerPrompt, turninPrompt,  // the player's replies that open the offer / hand the job in
+//     startReward?: same shape as reward,  // handed over the moment the quest
+//                          // STARTS (accepted or auto-started) — gear for the job
+//     about?: DialogueGraph,  // branching "about the quest" talk while active;
+//                          // replaces the single progressLine (see DialogueGraph.js)
+//     debrief?: DialogueGraph,  // branching turn-in talk — plays instead of the
+//                          // `ready` lines once the job is handed in (quest already
+//                          // completed, reward already granted)
 //     reward: { health?, armor?, ammo?: {type, amount}, items?: [itemId...] } | null,
 //     epilogue?: [lines] }   // last tier only: played once the line is done
+//
+// A tier authored before multi-goal quests carried a single `objective`;
+// normalizeQuest folds that legacy field into a one-entry `objectives` array.
+// A 'visit' objective is met when the player walks onto any of its marked
+// cells (top faces painted in the F4 editor); count is always 1.
 //
 // Pure module (no three.js/DOM) so it unit tests in Node.
 
 import { isAmmoId } from './AmmoTypes.js';
+import { normalizeDialogueGraph } from './DialogueGraph.js';
 
 export const BUILTIN_QUESTLINES = Object.freeze({
   // Bolek — the player's father, in his wheelchair upstairs. His line opens
@@ -176,11 +194,12 @@ export const BUILTIN_QUESTLINES = Object.freeze({
 const questlines = new Map();
 resetQuestRegistry();
 
-/** Restore the registry to the built-in questlines. */
+/** Restore the registry to the built-in questlines (normalized, so every
+ *  stored tier carries the canonical `objectives` array shape). */
 export function resetQuestRegistry() {
   questlines.clear();
   for (const [giver, line] of Object.entries(BUILTIN_QUESTLINES)) {
-    questlines.set(giver, line.map((q) => ({ ...q })));
+    questlines.set(giver, line.map((q) => normalizeQuest(q, giver)).filter(Boolean));
   }
 }
 
@@ -197,6 +216,19 @@ function posInt(v, fallback) {
 
 /** Coerce a candidate objective into a valid one. */
 export function normalizeObjective(o = {}) {
+  if (o.type === 'visit') {
+    // Marked cells: the voxels whose top faces the editor painted. The
+    // runtime treats standing on (or just above) any of them as "entered".
+    const cells = (Array.isArray(o.cells) ? o.cells : [])
+      .filter((c) => Array.isArray(c) && c.length === 3 && c.every((v) => Number.isFinite(Number(v))))
+      .map((c) => c.map((v) => Math.round(Number(v))));
+    return {
+      type: 'visit',
+      cells,
+      count: 1,
+      noun: typeof o.noun === 'string' && o.noun.trim() ? o.noun.trim() : 'area reached',
+    };
+  }
   if (o.type === 'collect') {
     const kinds = lines(o.kinds);
     const ids = lines(o.ids);
@@ -241,17 +273,48 @@ export function normalizeReward(r) {
   return Object.keys(out).length ? out : null;
 }
 
+/** A candidate flag list — array or comma-separated string — as clean flag
+ *  names ('name' raises, '!name' clears; see game/Reactions.js). */
+function flagList(v) {
+  const raw = Array.isArray(v) ? v : typeof v === 'string' ? v.split(',') : [];
+  return raw.filter((s) => typeof s === 'string').map((s) => s.trim()).filter((s) => s && s !== '!');
+}
+
+/** Coerce a candidate `flags` field — flags the quest raises on lifecycle
+ *  moments, `{ accept: [...], complete: [...] }` — or null when empty. */
+export function normalizeQuestFlags(f) {
+  if (!f || typeof f !== 'object') return null;
+  const accept = flagList(f.accept);
+  const complete = flagList(f.complete);
+  const out = {
+    ...(accept.length ? { accept } : {}),
+    ...(complete.length ? { complete } : {}),
+  };
+  return Object.keys(out).length ? out : null;
+}
+
 /** Coerce a candidate quest tier into a valid one, or null (bad id/giver). */
 export function normalizeQuest(q, giver) {
   if (!q || typeof q !== 'object') return null;
   const id = typeof q.id === 'string' && q.id.trim() ? q.id.trim() : null;
   if (!id || !giver) return null;
   const epilogue = lines(q.epilogue);
+  const startReward = normalizeReward(q.startReward);
+  const about = normalizeDialogueGraph(q.about);
+  const debrief = normalizeDialogueGraph(q.debrief);
+  const flags = normalizeQuestFlags(q.flags);
+  // Multi-goal: `objectives` is the canonical shape; a lone legacy `objective`
+  // becomes a one-entry array so older bundles load unchanged.
+  const rawObjectives = Array.isArray(q.objectives) && q.objectives.length
+    ? q.objectives
+    : [q.objective ?? {}];
   return {
     id,
     title: typeof q.title === 'string' && q.title.trim() ? q.title.trim() : id,
     giver,
-    objective: normalizeObjective(q.objective),
+    objectives: rawObjectives.map((o) => normalizeObjective(o)),
+    ...(q.autoAccept ? { autoAccept: true } : {}),
+    ...(q.autoComplete ? { autoComplete: true } : {}),
     offer: lines(q.offer).length ? lines(q.offer) : ['I could use a hand with something.'],
     progressLine:
       typeof q.progressLine === 'string' && q.progressLine.trim()
@@ -262,8 +325,12 @@ export function normalizeQuest(q, giver) {
       typeof q.offerPrompt === 'string' && q.offerPrompt.trim() ? q.offerPrompt.trim() : 'Do you need help?',
     turninPrompt:
       typeof q.turninPrompt === 'string' && q.turninPrompt.trim() ? q.turninPrompt.trim() : 'It’s done.',
+    ...(startReward ? { startReward } : {}),
+    ...(about ? { about } : {}),
+    ...(debrief ? { debrief } : {}),
     reward: normalizeReward(q.reward),
     ...(epilogue.length ? { epilogue } : {}),
+    ...(flags ? { flags } : {}),
   };
 }
 

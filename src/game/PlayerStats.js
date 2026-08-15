@@ -3,7 +3,9 @@
 // Holds health (0..100) and armor (0..100) plus four equipment slots
 // (primary / secondary / extra / injection). Slots hold item ids (strings) or
 // null, and an ammo inventory tracks how many rounds of each ammo type the
-// player carries (capped by the type's max stack). No three.js/DOM, so it can
+// player carries (capped by the type's max stack). Each slot also tracks wear
+// — how many hits its melee weapon has landed on mobs — so weapons can break
+// when wear reaches their durability (see GameApp). No three.js/DOM, so it can
 // be unit tested in Node. Save slots persist the whole model via
 // serialize()/deserialize().
 
@@ -31,8 +33,9 @@ export class PlayerStats {
    *   extra?: string, injection?: string } — item ids
    * @param {object} [init.ammo]  { pistol?: number, rifle?: number,
    *   shotgun?: number } — carried ammo per type
+   * @param {object} [init.wear]  landed melee hits per slot (weapon wear)
    */
-  constructor({ health = MAX_HEALTH, armor = 0, equipment = {}, ammo } = {}) {
+  constructor({ health = MAX_HEALTH, armor = 0, equipment = {}, ammo, wear } = {}) {
     this.health = clamp(health);
     // Armor starts at zero — it only comes from armor pickups (vests built
     // in the F3 editor). NaN-safe clamp would default to max, so guard it.
@@ -42,6 +45,15 @@ export class PlayerStats {
     if (equipment && typeof equipment === 'object') {
       for (const slot of EQUIPMENT_SLOTS) {
         if (equipment[slot]) this.equipment[slot] = equipment[slot];
+      }
+    }
+    /** @type {Record<string, number>} landed melee hits per slot — wear on the
+     *  equipped weapon. Resets whenever the slot's item changes. */
+    this.wear = { primary: 0, secondary: 0, extra: 0, injection: 0 };
+    if (wear && typeof wear === 'object') {
+      for (const slot of EQUIPMENT_SLOTS) {
+        const w = Math.round(Number(wear[slot]));
+        if (Number.isFinite(w) && w > 0 && this.equipment[slot]) this.wear[slot] = w;
       }
     }
     /** @type {Record<string, number>} carried ammo per type, capped by max stack. */
@@ -88,10 +100,27 @@ export class PlayerStats {
     return this.armor;
   }
 
-  /** Equip an item id into a slot. @param {string} slot @param {string|null} itemId */
+  /** Equip an item id into a slot. A different item arrives fresh — its wear
+   *  resets. @param {string} slot @param {string|null} itemId */
   equip(slot, itemId) {
     if (!EQUIPMENT_SLOTS.includes(slot)) return false;
+    if (this.equipment[slot] !== (itemId ?? null)) this.wear[slot] = 0;
     this.equipment[slot] = itemId ?? null;
+    return true;
+  }
+
+  /** Count one landed melee hit on the item in a slot.
+   *  @returns {number} the slot's total wear */
+  addWear(slot) {
+    if (!EQUIPMENT_SLOTS.includes(slot)) return 0;
+    this.wear[slot] += 1;
+    return this.wear[slot];
+  }
+
+  /** Undo a slot's weapon wear (an NPC repair service). @returns {boolean} */
+  repairWear(slot) {
+    if (!EQUIPMENT_SLOTS.includes(slot)) return false;
+    this.wear[slot] = 0;
     return true;
   }
 
@@ -127,6 +156,7 @@ export class PlayerStats {
       equipment: { ...this.equipment },
       activeSlot: this.activeSlot,
       ammo: { ...this.ammo },
+      wear: { ...this.wear },
     };
   }
 
@@ -138,6 +168,7 @@ export class PlayerStats {
       armor: data.armor,
       equipment: data.equipment,
       ammo: data.ammo,
+      wear: data.wear,
     });
     if (Number.isInteger(data.activeSlot)) stats.setActiveSlot(data.activeSlot);
     return stats;

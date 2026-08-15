@@ -10,13 +10,15 @@ import { ChunkMesh } from '../src/engine/ChunkMesh.js';
 import { FlyControls, applyLook, clampPitch } from '../src/editor/FlyControls.js';
 import { BuildTool } from '../src/editor/tools/BuildTool.js';
 import { SquareTool } from '../src/editor/tools/SquareTool.js';
+import { CubeDeleteTool, boxBetween, previewCells, contentInBox } from '../src/editor/tools/CubeDeleteTool.js';
 import { SpawnTool } from '../src/editor/tools/SpawnTool.js';
 import { MobTool } from '../src/editor/tools/MobTool.js';
 import { ItemTool } from '../src/editor/tools/ItemTool.js';
 import { registerItem } from '../src/engine/ItemRegistry.js';
 import { DecalTool, faceFromNormal } from '../src/editor/tools/DecalTool.js';
+import { PaintTool } from '../src/editor/tools/PaintTool.js';
 import { orthogonalLineAnchors } from '../src/editor/tools/line.js';
-import { placeItemCommand, removeItemCommand } from '../src/editor/commands.js';
+import { placeItemCommand, removeItemCommand, cubeDeleteCommand } from '../src/editor/commands.js';
 import { SelectionGhost } from '../src/editor/SelectionGhost.js';
 import { EditorState } from '../src/editor/EditorState.js';
 import { History } from '../src/editor/History.js';
@@ -424,6 +426,100 @@ test('decal tool pins a decal to the aimed face, with undo and RMB removal', () 
   assert.equal(world.decalAt(0, 0, 0, 'py').decalId, 'decal_crack', 'removal is undoable');
 });
 
+// --- paint tool ---
+
+function paintSetup(state) {
+  const world = makeFloor();
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25); // straight down onto the top face of (0,0,0)
+  const ghost = new SelectionGhost({
+    THREE, scene: new THREE.Scene(),
+    atlasTexture: new THREE.Texture(),
+    tileIndexFor: () => 0,
+    atlas: { width: 8, height: 4 },
+  });
+  const history = new History();
+  const tool = new PaintTool({ THREE, world, camera, ghost, state, history, input: { isDown: () => false } });
+  return { world, camera, ghost, history, tool };
+}
+
+test('paint tool repaints the aimed face with the palette block, undoably', () => {
+  const state = new EditorState({ blockId: 'brick', size: SIZE.SMALL });
+  const { world, ghost, history, tool } = paintSetup(state);
+
+  tool.update(0.016);
+  assert.equal(ghost.texPlace.visible, true, 'the brush tile previews on the face');
+  assert.equal(ghost.remove.visible, true, 'the voxel taking the paint is outlined');
+
+  tool.onMouseDown(0);
+  tool.onMouseUp(0);
+  assert.equal(world.paintAt(0, 0, 0, 'py'), 'brick');
+  assert.equal(world.get(0, 0, 0).type, 'grass', 'the block itself is untouched');
+  assert.equal(history.length, 1, 'a stroke is one history entry');
+
+  history.undo();
+  assert.equal(world.paintAt(0, 0, 0, 'py'), null);
+  history.redo();
+  assert.equal(world.paintAt(0, 0, 0, 'py'), 'brick');
+});
+
+test('holding LMB sweeps a stroke of faces into ONE history entry', () => {
+  const state = new EditorState({ blockId: 'brick', size: SIZE.SMALL });
+  const { world, camera, history, tool } = paintSetup(state);
+
+  tool.onMouseDown(0); // paints (0,0,0) py
+  for (const x of [0.75, 1.25, 1.75]) { // cells 1, 2, 3 (0.5 m each)
+    camera.position.set(x, 2, 0.25);
+    camera.lookAt(x, 0, 0.25);
+    tool.update(0.016);
+  }
+  tool.onMouseUp(0);
+
+  assert.equal(world.paintCount, 4, 'every face the crosshair crossed took paint');
+  assert.equal(world.paintAt(3, 0, 0, 'py'), 'brick');
+  assert.equal(history.length, 1, 'the whole sweep undoes in one step');
+
+  history.undo();
+  assert.equal(world.paintCount, 0);
+});
+
+test('RMB strips a face back to its own texture; re-aiming a face does not re-add it', () => {
+  const state = new EditorState({ blockId: 'brick', size: SIZE.SMALL });
+  const { world, history, tool } = paintSetup(state);
+
+  tool.onMouseDown(0);
+  tool.update(0.016); // still on the same face — must not queue a second entry
+  tool.onMouseUp(0);
+  assert.equal(world.paintCount, 1);
+
+  tool.onMouseDown(2);
+  tool.onMouseUp(2);
+  assert.equal(world.paintAt(0, 0, 0, 'py'), null, 'RMB strips the paint');
+  assert.equal(history.length, 2);
+
+  history.undo();
+  assert.equal(world.paintAt(0, 0, 0, 'py'), 'brick', 'stripping is undoable');
+});
+
+test('paint needs a block in hand and leaves panes alone', () => {
+  const state = new EditorState({ blockId: null, size: SIZE.SMALL });
+  const { world, history, tool } = paintSetup(state);
+
+  tool.onMouseDown(0);
+  tool.onMouseUp(0);
+  assert.equal(world.paintCount, 0, 'no palette selection, no paint');
+  assert.equal(history.length, 0);
+
+  state.set('blockId', 'brick');
+  world.remove(0, 0, 0);
+  world.place('fence', SIZE.SMALL, 0, 0, 0); // shape: 'pane'
+  tool.onMouseDown(0);
+  tool.onMouseUp(0);
+  assert.equal(world.paintCount, 0, 'panes mesh their art as a slab');
+  assert.equal(history.length, 0);
+});
+
 // --- square tool ---
 
 test('square tool drag places a rectangle on the plane of the clicked face', () => {
@@ -683,6 +779,102 @@ test('square tool LMB cancels an in-progress erase drag without removing', () =>
   assert.equal(tool._drag, null);
   tool.onMouseUp(2); // leftover release must not erase anything
   assert.equal(world.count, 5, 'cancelled erase drag must not remove voxels');
+});
+
+// --- cube delete tool: two corner voxels, everything between them goes ---
+
+function makeCubeDeleteTool(world) {
+  const camera = new THREE.PerspectiveCamera();
+  camera.position.set(0.25, 2, 0.25);
+  camera.lookAt(0.25, 0, 0.25); // straight down onto cell (0,0,0)
+  const scene = new THREE.Scene();
+  const ghost = new SelectionGhost({ THREE, scene });
+  const state = new EditorState({ blockId: 'concrete', size: SIZE.SMALL });
+  const history = new History();
+  const tool = new CubeDeleteTool({ THREE, world, camera, ghost, state, history, input: { isDown: () => false } });
+  return { world, camera, tool, history };
+}
+
+test('boxBetween normalizes either diagonal into inclusive min/max corners', () => {
+  assert.deepEqual(boxBetween([4, 7, -1], [1, 2, 3]), { min: [1, 2, -1], max: [4, 7, 3] });
+  assert.deepEqual(boxBetween([2, 2, 2], [2, 2, 2]), { min: [2, 2, 2], max: [2, 2, 2] });
+});
+
+test('cube preview fills small boxes and switches to edges only when huge', () => {
+  assert.equal(previewCells([0, 0, 0], [1, 1, 1]).length, 8, 'a 2x2x2 box ghosts every cell');
+  // 20x20x20 = 8000 cells -> edges only: 12 edges of 20, minus double-counted corners.
+  const edges = previewCells([0, 0, 0], [19, 19, 19]);
+  assert.equal(edges.length, 12 * 20 - 16);
+  assert.ok(edges.every(([x, y, z]) => [x, y, z].filter((c) => c === 0 || c === 19).length >= 2));
+  // A flat box has no interior to hide, so both forms agree on a 1-thick slab.
+  assert.equal(previewCells([0, 0, 0], [2, 0, 2]).length, 9);
+});
+
+test('contentInBox takes any voxel whose footprint reaches into the cube', () => {
+  const world = new World();
+  world.place('grass', SIZE.SMALL, 0, 0, 0);
+  world.place('concrete', SIZE.BIG, 2, 0, 0); // 2x2x2, cells x=2..3
+  world.place('grass', SIZE.SMALL, 9, 0, 0); // far outside
+  const { voxels } = contentInBox(world, [0, 0, 0], [2, 0, 0]);
+  assert.equal(voxels.length, 2, 'the BIG voxel counts — one cell inside is enough');
+  assert.equal(contentInBox(world, [4, 0, 0], [8, 0, 0]).voxels.length, 0);
+});
+
+test('cube delete tool needs a voxel for the first corner', () => {
+  const { tool } = makeCubeDeleteTool(new World());
+  tool.onMouseDown(0);
+  assert.equal(tool._corner, null, 'aiming at empty space pins nothing');
+});
+
+test('cube delete tool clears the cube between the two picked corners in one undo step', () => {
+  const world = makeFloor();
+  world.place('grass', SIZE.SMALL, 2, 1, 0); // sits above the floor row -> outside the cube
+  const { camera, tool, history } = makeCubeDeleteTool(world);
+
+  tool.onMouseDown(0); // first corner: cell (0,0,0)
+  assert.deepEqual(tool._corner, [0, 0, 0]);
+  assert.equal(world.count, 6, 'pinning a corner deletes nothing');
+
+  camera.position.set(2.25, 2, 0.25); // over cell (4,0,0)
+  tool.onMouseDown(0);
+  assert.equal(tool._corner, null, 'the selection resets after the delete');
+  assert.equal(world.count, 1, 'the whole row goes; the voxel a layer up stays');
+  assert.ok(world.get(2, 1, 0), 'nothing outside the cube is touched');
+  assert.equal(history.length, 1, 'the cube is ONE history entry');
+
+  history.undo();
+  assert.equal(world.count, 6, 'undo restores the whole cube');
+  history.redo();
+  assert.equal(world.count, 1);
+});
+
+test('cube delete tool RMB cancels a pending corner without deleting', () => {
+  const world = makeFloor();
+  const { camera, tool, history } = makeCubeDeleteTool(world);
+  tool.onMouseDown(0);
+  assert.ok(tool._corner);
+  tool.onMouseDown(2);
+  assert.equal(tool._corner, null);
+  camera.position.set(2.25, 2, 0.25);
+  tool.onMouseDown(0); // starts a fresh selection instead of completing the old one
+  assert.deepEqual(tool._corner, [4, 0, 0]);
+  assert.equal(world.count, 5, 'a cancelled selection removes nothing');
+  assert.equal(history.length, 0);
+});
+
+test('cube delete takes placed items with the blocks and undo puts them back', () => {
+  registerItem({ id: 'cubecrate', name: 'Cube Crate', cells: SIZE.SMALL, microVoxels: [] });
+  const world = makeFloor();
+  world.placeItem('cubecrate', SIZE.SMALL, 1, 1, 0); // object resting on the floor row
+  const { voxels, items } = contentInBox(world, [0, 0, 0], [4, 1, 0]);
+  assert.equal(items.length, 1);
+  const cmd = cubeDeleteCommand(world, { voxels, items });
+  assert.equal(cmd.do(), 6, 'five blocks + one object');
+  assert.equal(world.count, 0);
+  assert.equal(world.itemAt(1, 1, 0), null);
+  cmd.undo();
+  assert.equal(world.count, 5);
+  assert.equal(world.itemAt(1, 1, 0)?.itemId, 'cubecrate');
 });
 
 // --- spawn tool ---

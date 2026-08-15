@@ -24,6 +24,12 @@ import { CELL_SIZE } from '../engine/Space.js';
 
 const rgbToHex = (c) => ((Math.round(c[0]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[2])) >>> 0;
 
+/** Min ms between item relight passes. Blinking lights bump the light field's
+ *  version many times per second; relighting at up to ~10 Hz keeps the strobe
+ *  visible without paying the per-frame cost of touching every item near the
+ *  flicker. */
+const RELIGHT_INTERVAL_MS = 100;
+
 /** Resolve a placed item id from either registry (equipment items can be
  *  placed on the map from the E menu's Equippable Items section). */
 const resolveItem = (id) => getItem(id) ?? getEquipItem(id);
@@ -43,8 +49,9 @@ export class ItemRenderer {
     this.world = world;
     this.lightField = lightField;
     this.material = material;
-    this._groups = new Map(); // anchor key -> { group, mesh, geo, placement, offset }
+    this._groups = new Map(); // anchor key -> { group, mesh, geo, placement, offset, lightCells }
     this._lightVersion = -1;
+    this._lastRelight = 0;
     /** placement object -> anchor key string (avoids re-joining every frame). */
     this._keyCache = new WeakMap();
   }
@@ -63,12 +70,21 @@ export class ItemRenderer {
     // Re-bake per-vertex light whenever the light field changed. Incremental
     // edits only touch their recomputeEdit box, so only the items inside it
     // need new baked light — full worlds (lastBox null) re-bake everything.
+    // Throttled: blinking lights change the version many times per second and
+    // a relight pass over a furnished room is the expensive part of the frame.
     const lightVersion = this.lightField?.version ?? 0;
     if (lightVersion !== this._lightVersion) {
-      this._lightVersion = lightVersion;
-      const box = this.lightField?.lastBox ?? null;
-      for (const entry of this._groups.values()) {
-        if (!box || this._touchesBox(entry, box)) this._relight(entry);
+      const now = typeof performance !== 'undefined' ? performance.now() : 0;
+      if (now - this._lastRelight >= RELIGHT_INTERVAL_MS) {
+        this._lightVersion = lightVersion;
+        this._lastRelight = now;
+        // Far-apart edits produce separate boxes (lastBoxes); an item relights
+        // when it touches any of them. Full worlds (no boxes) re-bake all.
+        const lf = this.lightField;
+        const boxes = lf?.lastBoxes ?? (lf?.lastBox ? [lf.lastBox] : null);
+        for (const entry of this._groups.values()) {
+          if (!boxes || boxes.some((b) => this._touchesBox(entry, b))) this._relight(entry);
+        }
       }
     }
 
@@ -168,22 +184,41 @@ export class ItemRenderer {
     }
 
     this.scene.add(group);
-    return { group, mesh, geo, placement, offset };
+    const entry = { group, mesh, geo, placement, offset, lightCells: null };
+    this._cacheLightCells(entry);
+    return entry;
   }
 
-  /** Rebuild an item's geometry so its per-vertex light reflects the current
-   *  light field (world edits, item light changes). */
+  /** Cache each vertex's world light cell once, so relighting rewrites only
+   *  the `light` attribute instead of rebuilding the whole geometry. Positions
+   *  are rotated (by createItemGeometry) but unscaled — the mesh's scale and
+   *  position turn them into world meters. */
+  _cacheLightCells(entry) {
+    const attr = entry.geo.getAttribute('position');
+    if (!attr || !this.lightField) return;
+    const cells = new Int16Array(attr.count * 3);
+    const o = entry.offset;
+    for (let i = 0; i < attr.count; i++) {
+      cells[i * 3] = Math.floor((o[0] + attr.getX(i) * MICRO_SIZE) / CELL_SIZE);
+      cells[i * 3 + 1] = Math.floor((o[1] + attr.getY(i) * MICRO_SIZE) / CELL_SIZE);
+      cells[i * 3 + 2] = Math.floor((o[2] + attr.getZ(i) * MICRO_SIZE) / CELL_SIZE);
+    }
+    entry.lightCells = cells;
+  }
+
+  /** Rewrite the baked per-vertex light from the current light field. The
+   *  vertex positions never change between relights, so only the `light`
+   *  attribute is touched — no geometry rebuild, no allocation. */
   _relight(entry) {
-    const item = resolveItem(entry.placement.itemId);
-    const geo = createItemGeometry(this.THREE, item ? item.microVoxels : [], {
-      lightField: this.lightField,
-      scale: MICRO_SIZE,
-      offset: entry.offset,
-      rotation: entry.placement.rotation ?? 0,
-      grid: gridOf(item),
-    });
-    entry.mesh.geometry.dispose();
-    entry.mesh.geometry = geo;
-    entry.geo = geo;
+    const light = entry.mesh.geometry.getAttribute('light');
+    const cells = entry.lightCells;
+    if (!light || !cells || !this.lightField) return;
+    const arr = light.array;
+    const lf = this.lightField;
+    for (let i = 0; i < cells.length / 3; i++) {
+      arr[i * 2] = lf.skyAt(cells[i * 3], cells[i * 3 + 1], cells[i * 3 + 2]) / 15;
+      arr[i * 2 + 1] = lf.blockAt(cells[i * 3], cells[i * 3 + 1], cells[i * 3 + 2]) / 15;
+    }
+    light.needsUpdate = true;
   }
 }

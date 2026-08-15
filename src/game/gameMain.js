@@ -3,9 +3,9 @@
 import { GameApp } from './GameApp.js';
 
 if (typeof window !== 'undefined') {
-  window.addEventListener('DOMContentLoaded', () => {
+  window.addEventListener('DOMContentLoaded', async () => {
     const game = new GameApp();
-    game.start();
+    await game.start();
     window.__voxelgame = game;
   });
 }

@@ -1,7 +1,10 @@
 // MobRenderer.js — Doom-style billboarded sprites for mobs.
 //
-// Each live mob is a THREE.Sprite carrying a frame-strip texture built by
-// mobSprites. Sprites always face the camera (true billboards) and are scaled
+// Each live mob is a textured quad carrying a frame-strip texture built by
+// mobSprites. Quads yaw toward the camera around the world Y axis only
+// (cylindrical billboards): a mob always shows its face horizontally, but
+// stays upright when the player looks up or down — a full screen-aligned
+// billboard would tip back and read as lying on the ground. They are scaled
 // so the drawn character stands exactly mob.height tall with its feet on the
 // mob's position, which makes them depth-test correctly against the voxel
 // world. A hurt flash tints the sprite through the material color.
@@ -53,10 +56,11 @@ export class MobRenderer {
     this.lightField = lightField;
     this.material = material;
     this.camera = camera;
-    /** @type {Map<object, {sprite: THREE.Sprite, texture: THREE.Texture}>} */
+    /** @type {Map<object, {sprite: THREE.Mesh, texture: THREE.Texture}>} */
     this.sprites = new Map();
     this._sheetCache = new Map(); // skin -> sheet (shared by every mob wearing it)
     this._toCam = new THREE.Vector3();
+    this._quadGeo = new THREE.PlaneGeometry(1, 1); // unit quad shared by all mobs
   }
 
   _sheetFor(skin) {
@@ -85,13 +89,14 @@ export class MobRenderer {
     // glass pass (ChunkMesh gives transparent chunk meshes renderOrder 1):
     // glass in front of a zombie tints it, a zombie in front of glass
     // depth-rejects the pane behind — no more sprites glowing through glass.
-    const material = new T.SpriteMaterial({
+    const material = new T.MeshBasicMaterial({
       map: texture,
       transparent: true,
       alphaTest: 0.4,
       depthWrite: true,
+      side: T.DoubleSide, // never cull, even if the yaw lags a frame
     });
-    const sprite = new T.Sprite(material);
+    const sprite = new T.Mesh(this._quadGeo, material);
     this.scene.add(sprite);
     // The sheet canvas is blank until its art decodes (see mobSprites), so
     // re-upload it once that lands — otherwise the first mobs stay invisible.
@@ -129,6 +134,13 @@ export class MobRenderer {
     const underfoot = (sheet.frameH - SHEET_GROUND_ROW) / sheet.frameH * quadH;
     sprite.scale.set(quadW, quadH, 1);
     sprite.position.set(mob.pos.x, mob.pos.y + quadH / 2 - underfoot, mob.pos.z);
+
+    // Cylindrical billboard: yaw the quad's +Z normal toward the camera, but
+    // keep it plumb — no pitch/roll, so it stays upright under any view angle.
+    if (this.camera) {
+      const cp = this.camera.position;
+      sprite.rotation.y = Math.atan2(cp.x - sprite.position.x, cp.z - sprite.position.z);
+    }
 
     // Pick the frame for the current anim.
     const idx = frameFor(mob.animName, mob.animTime);

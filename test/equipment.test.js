@@ -45,11 +45,26 @@ test('empty equippable item has defaults and no grip', () => {
 
 test('normalizeStats clamps out-of-range weapon stats', () => {
   // Reach is in meters and may go up to sniper range (1000 m).
-  assert.deepEqual(normalizeStats({ damage: 5, reach: 99, cooldown: 0 }), { damage: 5, reach: 99, cooldown: 0.1 });
-  assert.deepEqual(normalizeStats({ damage: 500, reach: 0.1, cooldown: 20 }), { damage: 100, reach: 0.5, cooldown: 3 });
+  assert.deepEqual(
+    normalizeStats({ damage: 5, reach: 99, cooldown: 0 }),
+    { damage: 5, reach: 99, cooldown: 0.1, durability: DEFAULT_EQUIP_STATS.durability },
+  );
+  assert.deepEqual(
+    normalizeStats({ damage: 500, reach: 0.1, cooldown: 20 }),
+    { damage: 100, reach: 0.5, cooldown: 3, durability: DEFAULT_EQUIP_STATS.durability },
+  );
   assert.deepEqual(normalizeStats({ reach: 1000 }), { ...DEFAULT_EQUIP_STATS, reach: 1000 });
   assert.equal(normalizeStats({ reach: 9999 }).reach, 1000, 'reach must clamp at 1000 m');
   assert.deepEqual(normalizeStats({}), DEFAULT_EQUIP_STATS);
+});
+
+test('normalizeStats durability counts whole landed hits', () => {
+  assert.equal(normalizeStats({ durability: 6 }).durability, 6);
+  assert.equal(normalizeStats({ durability: 0 }).durability, 0, '0 = unbreakable is allowed');
+  assert.equal(normalizeStats({ durability: -3 }).durability, 0);
+  assert.equal(normalizeStats({ durability: 5000 }).durability, 999, 'durability clamps at 999');
+  assert.equal(normalizeStats({ durability: 4.6 }).durability, 5, 'durability is a whole number of hits');
+  assert.equal(normalizeStats({}).durability, DEFAULT_EQUIP_STATS.durability, 'missing durability falls back to the default');
 });
 
 test('normalizeWeapon builds a canonical composable profile', () => {
@@ -134,7 +149,7 @@ test('single item serialize/deserialize round-trips grip, yaw and stats', () => 
   item.grip = { x: 1, y: 1, z: 1 };
   item.grip2 = { x: 1, y: 2, z: 1 };
   item.yaw = 270;
-  item.stats = { damage: 34, reach: 1.5, cooldown: 0.6 };
+  item.stats = { damage: 34, reach: 1.5, cooldown: 0.6, durability: 25 };
   item.weapon = { kind: 'ranged', hands: 'one', orientation: 'horizontal', muzzle: { x: 3, y: 4, z: 5 }, anim: 'gun', recoil: 0.1, magazine: 12, ammo: 'pistol', reload: 0.8, spread: 0.02, pellets: 6 };
 
   const text = serializeEquipItem(item);

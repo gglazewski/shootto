@@ -10,7 +10,9 @@ Voxels come in two sizes: **small (0.5 m)** for half-walls and fine detail, and
 
 1. **Play:** open `index.html` (the editor) or `game.html` (the playable game).
    That's it. Each loads a prebuilt single classic script from `build/`, so
-   both work from `file://`.
+   both work from `file://`. (The editor persists through the dev server —
+   `npm run server` — so run it there to save your work; the game is fully
+   offline.)
 2. **Develop:** edit the ES modules in `src/`, then run `npm run build` to
    regenerate `build/game.js`, and `npm test` to run the unit + editor tests.
 
@@ -27,9 +29,10 @@ post-communist concrete estates, bazaars, kiosks and crumbling industry set
 the visual tone for maps, blocks and decals.
 
 Alongside the editor there is a playable game page (`game.html`, built to
-`build/game-play.js`) that runs your world. It shares the editor's
-`localStorage`, so anything the editor saves — the map (`voxelmap.save`) and
-your objects (`voxelitem.items`) — is picked up by the game after a refresh.
+`build/game-play.js`) that runs your world. Everything the editor authors is
+**file driven** — it lives in `map/voxelbundle.json` (written via the dev
+server), so the game picks up the latest map and objects after a refresh with
+no browser storage in between.
 
 - **Main menu:** **New Game** loads the current editor world (falling back to
   the bundled world) and spawns you at the map's spawn point.
@@ -47,36 +50,32 @@ your objects (`voxelitem.items`) — is picked up by the game after a refresh.
   **and** health/armor/equipment, so loading a slot restores exactly what was
   saved. Slots live in `localStorage` under `voxelgame.save.0..2`.
 
-To share data between the editor and the game, open both from the same origin:
-`npm run server` then `http://localhost:4173/index.html` (editor) and
-`http://localhost:4173/game.html` (game). `game.html` also works straight from
-`file://`, but then it only sees the editor's data when both pages share an
-origin.
+To share data between the editor and the game, run both off the dev server:
+`npm run server`, then `http://localhost:4173/index.html` (editor) and
+`http://localhost:4173/game.html` (game). Both read and write the same
+`map/voxelbundle.json`, so a save in the editor shows up in the game on
+refresh. Only the player's save slots stay in the browser (`localStorage`),
+since a deployed static build has no filesystem to put them in.
 
 ## Shipping a map with the game
 
-The editor keeps your work in `localStorage`, which only lives in *your*
-browser. To deploy a world that every visitor sees — map **and** the objects
-it uses — the world lives in `map/voxelbundle.json`, and the editor writes it
-there directly:
+The editor is **fully file driven**: the world (map + placeable objects,
+equipment, NPCs and quests) lives in `map/voxelbundle.json` and the editor
+reads/writes it through the dev server — there is no `localStorage` shadow
+copy, so nothing desyncs across browsers or after a deploy.
 
 1. **Run the dev server:** `npm run server`, then open `http://localhost:4173`.
-   (Double-clicking `index.html` still works, but then **Save File** falls back
-   to browser storage — the file can't be reached from `file://`.)
+   The editor autosaves as you work (debounced) and `Ctrl+S` / **Save File**
+   write immediately.
 2. Build your map + objects in the editor.
-3. Click **Save File**. No download prompt: the world + objects are written
-   straight to `map/voxelbundle.json` on disk.
-4. Run `npm run build`, then deploy `index.html` + `build/game.js` (+ the
-   rest of the repo) as usual.
+3. Run `npm run build`, then deploy `index.html` + `build/` (+ the rest of the
+   repo) as usual.
 
-On startup the game loads the world in this order: your browser save (while
-editing) → the `map/voxelbundle.json` on disk (when served) → the version baked
-into the build (for deployed visitors) → the seeded ground. So a fresh
-deployment is your authored map — blocks, placed objects, catalogue, spawn and
-all.
-
-The committed default (`map/voxelbundle.json`) is an empty world, which keeps
-fresh checkouts behaving like the old "seed ground" default.
+On startup the editor loads the world from the server file; a fresh checkout
+without one falls back to the build-baked bundle, then the seeded ground. The
+game loads the live world file when served, else the bundle embedded at build
+time — so a fresh deployment is your authored map: blocks, placed objects,
+catalogue, spawn and all.
 
 ### The editor server
 
@@ -93,15 +92,18 @@ directly on disk:
 | `/api/worlds/<path>` | GET / PUT / DELETE | read / write / delete a library world (folders delete recursively) |
 | `/api/worlds-ops` | POST | `{op:'mkdir', path}` or `{op:'move', from, to}` — organize the library |
 | `/api/splash` | GET / PUT | read / write `map/splash.json`, the menu's splash-screen manifest |
+| `/api/editor-state` | GET / PUT | read / write `map/editor.json` (which library world is open) |
 
 `node server.mjs [port]` (default `4173`). The API is only reachable over
-http(s), so `file://` and static hosting fall back to browser storage + the
-bundled world. Later the game reads the same `map/voxelbundle.json` (via the
-build or the server) to simulate the authored world.
+http(s). The editor always runs on this server (it is never deployed); without
+it edits stay in memory and Export/Import is the manual persistence path. The
+game is static-friendly: with no server it plays the world baked into the
+build. Later the game reads the same `map/voxelbundle.json` (via the build or
+the server) to simulate the authored world.
 
-### The world library (Worlds button)
+### The world catalogue (Worlds button, `F7`)
 
-**Worlds** (top-right) opens a tree browser over `map/worlds/` for building
+**Worlds…** in the sidebar opens a tree browser over `map/worlds/` for building
 more than one map — campaign levels, splash-screen scenes, sandboxes. Save the
 current world under a name (into the selected folder), load one with a click,
 create folders, rename inline (**Ren**), and drag a world onto a folder — or
@@ -109,8 +111,8 @@ onto the heading for the root — to move it. Deleting is a two-step confirm;
 deleting a folder removes everything inside it. The library lives on disk, so
 it needs the dev server (`npm run server`); worlds are ordinary
 `voxelbundle.json` files you can also commit, diff and copy around.
-`map/voxelbundle.json` stays the deploy target: **Save File** still decides
-what ships as the playable world.
+`map/voxelbundle.json` stays the deploy target: **Save** still decides what
+ships as the playable world.
 
 ### Splash screens (F8)
 
@@ -147,8 +149,10 @@ static hosting shows the same shots.
 | `Right click` (hold) + sweep | Erase every block the crosshair moves onto; the whole sweep is one undo step |
 | `Shift` + `Right click` | Erase a straight line from the last removed voxel |
 | Middle click | Pick the block under the cursor (sets the current block + size) |
+| Left click on a door | Open the door's settings: lock/unlock it, gate it on a game flag (it stays locked until a quest raises the flag — see the quest editor's Flags fields), and pick which jamb it hinges on and which way it swings. Every door draws an architectural plan arc showing that choice (red when locked). `Shift` + left click builds there instead |
 | `Shift` + `Left click` | Draw a line from the last placed voxel |
 | `Tab` | Hold for the radial tool selector (release to pick); tap to cycle |
+| Paint tool: `Left click` (hold) + sweep / `Right click` (hold) + sweep | Repaint every block face the crosshair crosses with the selected block's texture / strip them back to their own (see **Face paint** below) |
 | `Left click` (hold) + drag | Square tool: start on a voxel, drag, release to place. Orientation follows the camera — look down for a horizontal square, look forward for a vertical one; it can extend into empty space from the starting voxel |
 | `Right click` (hold) + drag | Square tool: erase a rectangle on the clicked voxel's layer, release to apply (one undo step) |
 | Spawn tool: `Left click` / `Right click` | Place/move the player spawn point / clear it |
@@ -156,21 +160,39 @@ static hosting shows the same shots.
 | `B` | Toggle 0.5 m / 1 m voxel size |
 | `R` | Rotate the selected placeable object 90° around its vertical axis |
 | `E` | Open inventory — hover a block **or placeable object** and press `1`–`9`/`0` to assign it to that hotbar slot; click to select it directly |
-| `Items` (top-right) | Open the **item catalogue** — browse, place, edit, export or delete saved objects |
-| `Worlds` (top-right) | Open the **world library** — save, load and organize worlds in `map/worlds/` (see above) |
+| `I` | Open the **item catalogue** — browse, place, edit, export or delete saved objects |
+| `F7` | Open the **world catalogue** — save, load and organize worlds in `map/worlds/` (see above) |
 | `F2` | Item editor — build a placeable object from colored micro voxels (see below) |
 | `F5` | Toggle **test run**: walk at the player spawn (`C` crouch, `Space` idle) |
 | `F8` / `Shift`+`F8` | Capture the current view as a **menu splash screen** / delete the nearest splash camera |
 | `P` | Toggle the **polaroid filter** — bloom on bright lights + film grain, vignette and faded print colors |
 | `Ctrl`+`Z` / `Ctrl`+`Shift`+`Z` | Undo / Redo (last 10 actions) |
-| `Ctrl`+`S` | Save to browser storage |
+| `Ctrl`+`S` | Save the world to `map/voxelbundle.json` |
+| `Ctrl`+`Alt`+`N` | **New world** — discard the open world and start on bare ground (press twice to confirm) |
+| `Ctrl`+`O` / `Ctrl`+`E` | Load a `.json` map or bundle from disk / export the map as `.json` |
+| `` ` `` | Hide / show the sidebar |
 | `Esc` | Release the pointer |
 
-The top-right buttons **Save / Load / Save File / Export / Clear** handle
-persistence: Save keeps a map in `localStorage`, Load reads a `.json` map or
-`voxelbundle.json` back, **Save File** writes the world **plus** its objects
-straight to `map/voxelbundle.json` (no download prompt — see "Shipping a map
-with the game"), and Export downloads a plain `voxelmap.json`.
+### The sidebar
+
+Every editor action lives in the left sidebar, grouped **World** (New, Worlds…,
+Save, Load file…, Export), **Edit** (Undo/Redo), **Libraries** (Items…,
+Prefabs…, Object editor, Equipment, NPCs & quests) and **Play** (Test run);
+each button shows its shortcut. The card at the top names the world open from
+the catalogue, with an amber dot while there are unsaved edits. Pinned to the
+bottom is the **inspector** — block in hand, size, tool, camera position, fly
+speed, FPS and the world's voxel/object/mob/NPC counts. `` ` `` collapses the
+whole panel to a chevron for a clean view of the world.
+
+**New** empties the world and drops the catalogue link, so the next save can't
+silently overwrite the world that was open; it keeps the item, equipment and
+NPC catalogues, which are the author's toolbox rather than part of one map.
+It takes two presses to fire.
+
+**Save** writes the world **plus** its objects straight to
+`map/voxelbundle.json` (the editor also autosaves as you work), **Load file…**
+reads a `.json` map or `voxelbundle.json` back, and **Export** downloads a
+plain `voxelmap.json`.
 
 ## Item editor (F2)
 
@@ -183,9 +205,10 @@ world's centre axes, so you always know where the object is aligned. You build
 a small voxel sculpture out of colored micro-voxels, then save it.
 
 **Saving is handled by the editor.** `Save` (or `Ctrl`+`S`) adds the object to
-the **item catalogue** — persisted in browser storage and listed in the
-inventory's *Placeable Objects* — without producing a file. The catalogue
-(top-right **Items** button, or **Catalogue** in the item editor) lets you
+the **item catalogue** — persisted in the world file (`map/voxelbundle.json`)
+and listed in the inventory's *Placeable Objects* — without producing a
+separate file. The catalogue
+(the sidebar's **Items…** button / `I`, or **Catalogue** in the item editor) lets you
 browse saved objects, click one to place it, **Edit** it back into the item
 editor, **Export** it to a `voxelitem.json` file when you want to share it, or
 **Delete** it (which also removes any copies already placed in the world). Item
@@ -205,9 +228,10 @@ field, omitted when 0) and middle-click picking copies a block's rotation
 along with its type and size. The
 item placement tool shows a translucent preview with a green/red footprint
 box. Items occupy their footprint (blocks can't be placed through them), render
-as independent colored meshes (not chunk geometry), are **lit by the same light
-engine as chunks** (per-vertex sky/block light, so they darken in sealed rooms
-and at night), and are saved in the map file. Placing or removing a
+as independent colored meshes (not chunk geometry — coplanar micro-voxel
+faces are greedily merged into rectangles, so furnished rooms stay cheap),
+are **lit by the same light engine as chunks** (per-vertex sky/block light, so
+they darken in sealed rooms and at night), and are saved in the map file. Placing or removing a
 light-emitting object **bakes its light into the surrounding chunks
 immediately** — no rebuild delay.
 
@@ -271,6 +295,53 @@ Items occupy their footprint (blocks can't be placed through them), render as
 independent colored meshes (not chunk geometry), and are saved in the map file.
 
 
+## Prefabs (F6)
+
+Prefabs are reusable buildings: a bounded box of world blocks, placed objects,
+decals and face paint that you build once and stamp anywhere. `F6` (or the **Prefabs**
+button) opens the library; each card shows a screenshot thumbnail, the build
+volume in meters and the content size.
+
+**Building one.** *New Prefab* (or *Edit* on a card) swaps the editor onto a
+scratch volume: the current world is stashed in memory, a concrete baseplate
+appears under a cyan wireframe of the build volume, and every world tool works
+exactly as usual — blocks, the square tool, decals, placed objects, undo. The
+panel on the right holds the name and the volume's W×H×D cell steppers; grow
+or shrink them at any point (shrinking refuses while content would stick out,
+so a save can never silently clip your build). Each stepper is flanked by two
+side buttons (`◧`/`◨`) picking WHICH wall the number moves.
+
+**Resizing by hand.** `Tab` → **Resize** turns the six sides of the cyan box
+into grab handles. Aim at a side (it lights up), hold `LMB` and pull: the wall
+tracks the mouse along its own axis with an orange ghost box showing where it
+lands, the panel counting the cells live. Release commits, `RMB` cancels.
+Pulling a min wall (−X/−Y/−Z) grows the volume that way and slides the whole
+build — and the camera — by the same amount, so the box's corner stays at the
+origin while, on screen, only the wall moves. A wall stops where the content
+starts, so a pull can never cut a block off. Every resize, dragged or typed, is
+ONE history entry: `Ctrl+Z` puts the volume, the content and the view back.
+The baseplate is scaffolding —
+anything below y=0 never saves. `Ctrl+S` or *Save* writes the prefab to the
+server library (`map/prefabs/<id>.json`) together with a thumbnail framed on
+the content; `F6` goes back to the world, asking first when there are unsaved
+changes.
+
+**Stamping one.** Click a library card and the Prefab tool arms with a
+translucent full-mesh preview (built by the regular chunk mesher, so it looks
+exactly like the pasted result). The content footprint centers on the
+crosshair and stands on the clicked face; `R` spins it in quarter turns —
+block texture rotations, door footprints, item yaws and decal faces all turn
+together. The outline is green when the area is free and orange when some
+cells are occupied; `LMB` stamps (occupied cells keep their existing content,
+the skipped count is reported), `RMB` puts the prefab away. A paste is ONE
+history entry — `Ctrl+Z` removes the whole building.
+
+The on-disk format (`format: "voxelprefab"`) mirrors the map file's entries
+(`PrefabSerializer.js` / `PrefabStamp.js`); `server.mjs` serves the library
+under `/api/prefabs`. Cards also Export/Import prefab `.json` files for
+sharing, and `tools/make_kiosk_prefab.mjs` shows how to author one from a
+script.
+
 ## Test run
 
 `F5` drops a walk controller at the player spawn (feet at the bottom of the
@@ -300,14 +371,14 @@ server.mjs                 dev/deploy server: static files + /api/world (filesys
 map/voxelbundle.json       the world + objects shipped with the game (edited via Save File)
 src/
   game/
-    GameApp.js             playable game: reads editor localStorage, walk, stats, attack, save/load
+    GameApp.js             playable game: reads the world file/bundle, walk, stats, attack, save/load
     PlayerStats.js         PURE player model: health/armor, 4 equipment slots, damage/heal
     weapons.js             PURE attack profiles (fists default + equipped items)
     SaveSlots.js           PURE 3-slot save/load (world snapshot + player + stats)
     gameMain.js            thin bootstrap for game.html
   App.js                   composition root (construction, input, restore, loop)
   GameLoop.js              rAF loop with clamped delta
-  PersistenceService.js    save/load/export/clear (localStorage + files + bundles + server API)
+  PersistenceService.js    save/load/export (files + bundles + server API; no localStorage)
   bundledWorld.js          embeds map/voxelbundle.json into the build
   config.js                central tunables (camera, controls, history depth)
   engine/
@@ -334,8 +405,10 @@ src/
     tools/
       BuildTool.js         place/remove + Shift-line drawing
       SquareTool.js        drag rectangle on the clicked face's plane
+      CubeDeleteTool.js    pick two corner voxels, delete the cuboid between them
       SpawnTool.js         place/move/clear the player spawn point
       ItemTool.js          place/remove registered placeable objects
+      PaintTool.js         sweep-repaint block faces with another block's texture
     items/
       MicroVoxelEditor.js  shared editor core: orbit camera, painting, undo, box/mirror/fill tools
       microOps.js          PURE grid ops (mirror, box, flood fill, translate)
@@ -360,7 +433,7 @@ src/
   engine/
     ItemTypes.js           PURE item data model (grid, palette, light, solidity, serialization)
     ItemRegistry.js        PURE runtime registry of saved items
-    ItemMeshBuilder.js     PURE geometry for a micro-voxel item
+    ItemMeshBuilder.js     PURE geometry for a micro-voxel item (greedy coplanar merge)
   main.js                  thin bootstrap (new App().start())
   test/                    node:test suites (unit, editor, e2e)
 ```
@@ -396,6 +469,11 @@ src/
    the chunk shader's directional sun (direction + warm dawn/dusk tint) to match
    the sun actually drawn in the dome. The scene's
    `AmbientLight`/`DirectionalLight` only affect the editor overlays now.
+   Half slabs block light by their real shape, not by their cell: a slab cell
+   still holds light in its open half (a slab floor is lit on top, a slab roof
+   catches the sky) while the solid half seals the side it sits on, so the
+   room underneath stays dark. A BIG slab's carved-away cell layer is fully
+   open.
  - **Chunk streaming for huge worlds.** `World` keeps a voxel index
    (`anchorKey -> voxel`) and a per-chunk occupancy counter, so counting,
    bounds and chunk enumeration cost O(#voxels)/O(#chunks) instead of O(#cells).
@@ -409,19 +487,23 @@ src/
    (film curve, warm highlights / cool shadows, faded saturation, vignette,
    animated grain, subtle chromatic aberration). Toggle with `P`; pure
    three.js core, no examples/jsm imports.
- - **Edits mark a 27-chunk neighborhood dirty** so face culling and AO stay
-  correct across chunk borders. Small edits re-flood only a bounded box around
-  the edited cells (via `recomputeEdit`), keeping per-edit cost independent of
-  world size; big batches fall back to a full recompute. Chunk rebuilds are
-  time-sliced: the edited chunk rebuilds the same frame, up to two neighbors
-  per frame after that, so the game never freezes on a single placement.
+  - **Edits mark a 27-chunk neighborhood dirty** so face culling and AO stay
+   correct across chunk borders. Small edits re-flood only bounded boxes around
+   the edited cells (via `recomputeEdit`), keeping per-edit cost independent of
+   world size; far-apart edits get separate boxes and emission-only edits
+   (blinking lights swapping lit/dark phases, same opacity) skip the sky
+   re-flood and only re-stamp block light. Big batches fall back to a full
+   recompute. Chunk rebuilds are time-sliced by a millisecond budget: chunks
+   touched by a player edit rebuild the same frame, soft edits (blinkers) and
+   plain dirty chunks rebuild within budget over the next frames, so the game
+   never freezes on a single placement.
 - **Data-driven blocks.** Blocks and tiles are plain data in `VoxelTypes.js`
   and `TextureAtlas.js`; everything else reads from the registry. Block defs
   accept optional `opacity` (255 = opaque, 0 = lets light through), `light`
   (0–15 block light emitted), and `transparent` (render in the blended pass).
 - **Command pattern + capped history.** Every world edit is a `{ do, undo }`
   Command pushed onto `History` (depth 10). Undo/redo work across single
-  placements, lines and squares.
+  placements, lines, squares and whole cube deletions.
 - **Tool registry.** Tools implement a small lifecycle (`onActivate`,
   `onMouseDown/Up`, `update`). BuildTool, SquareTool and SpawnTool are the
   tools today; new tools just register themselves.
@@ -457,12 +539,13 @@ Optional fields on the block def:
   never lights the far side. A sealed emit face emits nothing. Omit for
   omnidirectional glow.
 - `blink: 'flicker'` + `blinkOff: <id>` — the block strobes between itself
-  and its hidden dark phase (`hidden: true` keeps that state out of the
-  palette), in the game AND the editor (`engine/Blinkers.js`). The toggle
-  swaps the voxel type in place and pushes a light edit, so the
-  surroundings really flicker — horror-movie cadence: lit stretches with
-  the odd dip, broken by fits of rapid ~20Hz chatter. Saves and
-  middle-click picking normalize a mid-blink dark phase back to the lit id.
+   and its hidden dark phase (`hidden: true` keeps that state out of the
+   palette), in the game AND the editor (`engine/Blinkers.js`). The toggle
+   swaps the voxel type in place and pushes a soft light edit (rebuilt on the
+   deferred budget, capped at ~10 Hz per lamp), so the surroundings really
+   flicker — horror-movie cadence: lit stretches with the odd dip, broken by
+   fits of rapid erratic chatter. Saves and middle-click picking normalize a
+   mid-blink dark phase back to the lit id.
 - `transparent: true` — render in the alpha-blended pass (needed when the
   tiles have transparent pixels, and keeps glass-on-glass faces culled).
 - `shape: 'pane'` — instead of cube faces, mesh a single quad centered in
@@ -520,6 +603,35 @@ texture is rebuilt in place. Signs persist as an additive `textDecals` array
 of specs next to the `decals` placements and re-register on load — in the
 editor, the game, and save-slot bundles alike.
 
+## Face paint
+
+Every block face can show a **different texture**. `Tab` → **Paint**: the block
+selected in the palette is the brush, holding `LMB` paints every face the
+crosshair sweeps across, holding `RMB` strips faces back to the block's own
+texture. Each stroke is one undo step. The ghost previews the brush tile on
+the exact face it will land on, with the voxel that takes it outlined — a 1 m
+block paints a whole side at a time, not the 0.5 m cell you happened to hit.
+
+Paint is **purely visual**: the voxel keeps its own type, opacity, emitted
+light, collision and shape. Only full cube blocks take paint — panes and doors
+mesh their art as a whole slab, so there is no per-face tile to swap. A
+painted face is not permuted by the voxel's yaw (the painter picked what they
+saw), and it still culls, shades and takes decals like any other face — a face
+buried behind a neighbour costs nothing at all.
+
+**Cost: zero.** Painting emits no extra geometry, no extra draw call and no
+extra material — `buildChunkMesh` simply samples a different atlas tile for
+that quad, so a fully repainted world renders exactly as fast as a bare one.
+The mesher's only added work is one map lookup per meshed voxel (not per
+face), and even that is skipped entirely while `world.paintCount` is 0, which
+it is for every unpainted world. Nothing runs per frame.
+
+Paint lives in `World.paint` (cell key -> `{ face: blockId }`) and persists as
+an additive `paint` array (`{ x, y, z, face, type }`) in both the map file and
+prefabs — omitted when empty, so untouched files stay byte-identical. Removing
+a block strips its paint; stamping a rotated prefab turns each painted face
+with the building, and never repaints a block the stamp could not place.
+
 ## Voxel-size rules
 
 - Placement targets the cell adjacent to the face you click.
@@ -537,14 +649,16 @@ editor, the game, and save-slot bundles alike.
   "cellSize": 0.5,
   "spawn": [2, 4, 6],
   "blocks": [{ "x": 0, "y": 0, "z": 0, "size": "big", "type": "grass" }],
-  "items": [{ "itemId": "lamp", "x": 2, "y": 4, "z": 2, "cells": [1, 1, 1], "rotation": 1.5707963267948966 }]
+  "items": [{ "itemId": "lamp", "x": 2, "y": 4, "z": 2, "cells": [1, 1, 1], "rotation": 1.5707963267948966 }],
+  "paint": [{ "x": 0, "y": 0, "z": 0, "face": "py", "type": "brick" }]
 }
 ```
 
 `spawn` is the player spawn cell (`[x, y, z]`, or `null`). `items` lists placed
 placeable objects (referencing registered item ids); `rotation` is the object's
-yaw in radians about its vertical axis (default `0`). Both are additive — older
-maps without them load fine.
+yaw in radians about its vertical axis (default `0`). `paint` lists per-face
+texture overrides (see **Face paint**) and is omitted when nothing is painted.
+All are additive — older maps without them load fine.
 
 Item files use their own format (`voxelitem`):
 ```json
@@ -566,8 +680,8 @@ Version-1 files stored `size: "small"|"big"` instead; they load fine —
 `small` maps to 1×1×1 and `big` to 2×2×2 with micro-voxels upscaled ×2
 (visually identical). Placed items with a non-square footprint swap their
 w/d span on odd 90° rotations, like doors.
-The item registry is kept in browser storage (`voxelitem.items`), so saved
-objects persist across sessions without any server. `solid` (default `true`)
+The item registry ships inside the world bundle (`map/voxelbundle.json`), so
+saved objects persist across sessions and machines. `solid` (default `true`)
 marks whether a placed object blocks the player in test run. To ship your
 objects to other players, use **Save File** and rebuild — the bundled item
 registry is loaded automatically for visitors (see "Shipping a map with the
@@ -601,5 +715,6 @@ npm run server  # run the editor server on http://localhost:4173 (static files +
 ```
 
 The e2e suite (`test/e2e.test.js`) boots the real page in headless Chromium
-over `file://` and asserts the render loop, chunking and persistence work. It
-is skipped automatically when Chromium isn't available.
+against a throwaway dev server and asserts the render loop, chunking and
+file persistence work. It is skipped automatically when Chromium isn't
+available.

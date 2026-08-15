@@ -44,8 +44,9 @@ export function listSlots(storage) {
 }
 
 /** Build a fresh slot payload from a bundle + player state. `quests` is the
- *  serialized QuestLog (older saves without it load with a fresh log). */
-export function makeSlot({ bundle, player, stats, quests = null }) {
+ *  serialized QuestLog, `flags` the serialized GameFlags (older saves
+ *  without either load with a fresh log/store). */
+export function makeSlot({ bundle, player, stats, quests = null, flags = null }) {
   return {
     format: SAVE_FORMAT,
     version: SAVE_VERSION,
@@ -54,5 +55,6 @@ export function makeSlot({ bundle, player, stats, quests = null }) {
     player,
     stats,
     quests,
+    flags,
   };
 }

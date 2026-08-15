@@ -45,9 +45,6 @@ export function treeify(entries) {
 }
 
 export class WorldBrowser {
-  /** localStorage key remembering which library world is open. */
-  static PATH_KEY = 'voxelworld.path';
-
   /**
    * @param {object} deps
    * @param {Document} [deps.doc]
@@ -55,20 +52,17 @@ export class WorldBrowser {
    * @param {object} deps.callbacks
    *   { list(): Promise<entries|null>, load(path), save(path): Promise<bool>,
    *     remove(path): Promise<bool>, move(from,to): Promise<bool>,
-   *     mkdir(path): Promise<bool> }
+   *     mkdir(path): Promise<bool>, saveState(state): Promise<bool> }
    */
   constructor({ doc = document, container, callbacks }) {
     this.doc = doc;
     this.container = container;
     this.cb = callbacks;
     this.onClose = null;
-    // Survives reloads: the editor restores its world from browser storage,
-    // and this remembers which library world that is (F8 splash capture and
-    // "Save here" depend on it).
+    // Which library world is open survives reloads via the editor-state file
+    // (map/editor.json) — restored in App.restore(); F8 splash capture and
+    // "Save here" depend on it.
     this._currentPath = null;
-    try {
-      this._currentPath = localStorage.getItem(WorldBrowser.PATH_KEY) || null;
-    } catch { /* no storage (tests) */ }
     this._selectedFolder = ''; // '' = root
     this._collapsed = new Set();
     this._entries = [];
@@ -77,7 +71,7 @@ export class WorldBrowser {
     panel.innerHTML = '';
 
     this.head = doc.createElement('h2');
-    this.head.textContent = 'World Library';
+    this.head.textContent = 'World Catalogue';
     this.count = doc.createElement('span');
     this.count.className = 'cat-count';
     this.head.appendChild(this.count);
@@ -178,10 +172,15 @@ export class WorldBrowser {
 
   set currentPath(path) {
     this._currentPath = path;
-    try {
-      if (path) localStorage.setItem(WorldBrowser.PATH_KEY, path);
-      else localStorage.removeItem(WorldBrowser.PATH_KEY);
-    } catch { /* no storage (tests) */ }
+    // Persisted file-side (map/editor.json) so reloads remember the open
+    // world without any browser storage.
+    this.cb.saveState?.({ currentPath: path ?? null });
+  }
+
+  /** Restore the remembered path from the editor-state file without
+   *  writing it back (used by App.restore). */
+  adoptCurrentPath(path) {
+    this._currentPath = path ?? null;
   }
 
   // --- actions ---

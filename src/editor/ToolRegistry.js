@@ -8,6 +8,22 @@ export class ToolRegistry {
     /** @type {Map<string, import('./Tool.js').Tool>} */
     this._tools = new Map();
     this._active = null;
+    this._available = null; // (tool) => boolean, or null for "all of them"
+  }
+
+  /**
+   * Restrict which tools list()/cycle() offer — the prefab session shows its
+   * own tools and hides world-only ones. get()/activate() still reach every
+   * registered tool, so a mode switch can put one back by id.
+   * @param {((tool: object) => boolean)|null} fn
+   */
+  setAvailability(fn) {
+    this._available = fn ?? null;
+  }
+
+  /** Every registered tool, availability ignored. */
+  all() {
+    return [...this._tools.values()];
   }
 
   register(tool) {
@@ -19,8 +35,9 @@ export class ToolRegistry {
     return this._tools.get(id);
   }
 
+  /** The tools currently on offer (see setAvailability). */
   list() {
-    return [...this._tools.values()];
+    return this.all().filter((t) => this._available?.(t) ?? true);
   }
 
   /** Activate a tool by id; deactivates the previous one. @returns {object|null} */

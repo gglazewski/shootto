@@ -45,7 +45,9 @@ export class ChunkMesh {
       this.meshTransparent.visible = false;
       // Glass blends LAST among transparent objects, so depth-writing
       // cutout sprites (mobs) and particles drawn before it are correctly
-      // tinted when they stand behind a pane.
+      // tinted when they stand behind a pane. Initial value only: the
+      // Renderer re-assigns a back-to-front order (still > 0) every frame,
+      // since baked world-space geometry defeats three.js's own sort.
       this.meshTransparent.renderOrder = 1;
     }
   }

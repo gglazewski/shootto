@@ -1,18 +1,21 @@
 // game.e2e.test.js — browser smoke test for the playable game (game.html).
 //
-// Loads game.html, seeds the editor's localStorage keys the game reads, then
-// checks: the main menu renders with 3 slots, New Game loads the editor world,
-// the player can move, and save/load slots round-trip through localStorage.
+// Serves game.html with server.mjs (the game is file driven: the world lives
+// in the world file behind /api/world). Tests seed the editor's localStorage
+// keys exactly like before, then call window.__syncNewGame() which mirrors
+// those keys into the world file and starts a new game. Checks: the main menu
+// renders with 3 slots, New Game loads the authored world, the player can
+// move, and save/load slots round-trip through localStorage.
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { homedir } from 'node:os';
-import { existsSync, readdirSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { existsSync, readdirSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startServer } from '../server.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const GAME = `file://${join(ROOT, 'game.html')}`;
 
 function findChromium() {
   const cache = join(homedir(), '.cache', 'ms-playwright');
@@ -56,6 +59,58 @@ const ITEMS = JSON.stringify([
 
 let browser;
 let page;
+let srv; // running server.mjs instance
+
+// An empty map (used to blank the world file for the slot round-trip test).
+const EMPTY_MAP = { format: 'voxelmap', version: 1, cellSize: 0.5, spawn: null, spawnYaw: 0, blocks: [], items: [], mobs: [], decals: [] };
+
+/** Write (merge) the world file the game reads. Only the provided keys are
+ *  replaced; the rest carry over from whatever is on disk, mirroring how the
+ *  old per-key localStorage seeds accumulated. */
+async function writeWorld(patch) {
+  const url = `http://localhost:${srv.port}/api/world`;
+  let cur = {};
+  try {
+    const res = await fetch(url);
+    const t = await res.text();
+    if (t && t !== 'null') cur = JSON.parse(t);
+  } catch { /* fresh file */ }
+  const norm = (v) => (typeof v === 'string' ? JSON.parse(v) : v);
+  const bundle = {
+    format: 'voxelbundle', version: 1,
+    map: patch.map ? norm(patch.map) : cur.map ?? EMPTY_MAP,
+    items: patch.items ? norm(patch.items) : cur.items ?? [],
+    equip: patch.equip ? norm(patch.equip) : cur.equip ?? [],
+  };
+  await fetch(url, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bundle) });
+}
+
+/** Injected into the page: mirrors the legacy localStorage seed keys into the
+ *  world file, then starts a new game (which loads from that file). With no
+ *  keys set it is exactly newGame(). */
+function installSyncNewGame() {
+  window.__syncNewGame = async () => {
+    let cur = {};
+    try {
+      const res = await fetch('/api/world');
+      const t = await res.text();
+      if (t && t !== 'null') cur = JSON.parse(t);
+    } catch { /* fresh file */ }
+    const read = (key) => {
+      const raw = localStorage.getItem(key);
+      if (raw == null) return undefined;
+      try { return JSON.parse(raw); } catch { return undefined; }
+    };
+    const bundle = {
+      format: 'voxelbundle', version: 1,
+      map: read('voxelmap.save') ?? cur.map,
+      items: read('voxelitem.items') ?? cur.items ?? [],
+      equip: read('voxelequip.items') ?? cur.equip ?? [],
+    };
+    await fetch('/api/world', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bundle) });
+    await window.__voxelgame.newGame();
+  };
+}
 
 before(async () => {
   if (!available) return;
@@ -64,17 +119,31 @@ before(async () => {
     args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
   });
   page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+  await page.addInitScript(installSyncNewGame);
+
+  // The game reads the world file, so point the server at a temp file and seed
+  // it with the map + items the first test expects (the editor's authored world).
+  const tmp = join(tmpdir(), `voxelgame-game-e2e-${Date.now().toString(36)}`);
+  mkdirSync(join(tmp, 'worlds'), { recursive: true });
+  srv = await startServer({
+    port: 0, worldFile: join(tmp, 'voxelbundle.json'), root: ROOT,
+    worldsDir: join(tmp, 'worlds'),
+    splashFile: join(tmp, 'splash.json'),
+    editorStateFile: join(tmp, 'editor.json'),
+  });
+  await writeWorld({ map: MAP, items: ITEMS, equip: [] });
 });
 
 after(async () => {
   if (mobile) await mobile.close();
   if (browser) await browser.close();
+  if (srv) srv.server.close();
 });
 
 const T = (name, fn) => test(name, { skip }, fn);
 
 async function loadGame() {
-  await page.goto(GAME);
+  await page.goto(`http://localhost:${srv.port}/game.html`);
   await page.waitForFunction(() => !!window.__voxelgame, { timeout: 15000 });
   await page.waitForTimeout(300);
 }
@@ -148,8 +217,11 @@ T('save then load slots round-trips world + position', async () => {
   assert.equal(saved.hasBundle, true, 'slot must snapshot the world bundle');
   assert.equal(saved.savedAt, true);
 
-  // Overwrite the editor map, reload, then load slot 0: the saved world wins.
-  await page.addInitScript(({ map }) => localStorage.setItem('voxelmap.save', map), { map: JSON.stringify({ format: 'voxelmap', version: 1, cellSize: 0.5, spawn: null, blocks: [], items: [] }) });
+  // Overwrite the authored map, reload, then load slot 0: the saved world wins.
+  // The game now boots from the world file, so blank it; the init script keeps
+  // the cumulative localStorage state in step for later __syncNewGame calls.
+  await writeWorld({ map: EMPTY_MAP });
+  await page.addInitScript(({ map }) => localStorage.setItem('voxelmap.save', map), { map: JSON.stringify(EMPTY_MAP) });
   await loadGame();
   await page.evaluate(() => window.__voxelgame.loadSlot(0));
   await page.waitForTimeout(200);
@@ -171,7 +243,7 @@ T('save then load slots round-trips world + position', async () => {
 
 T('HUD shows health, armor, equipment slots and fists by default', async () => {
   await loadGame();
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const hud = await page.evaluate(() => {
@@ -199,7 +271,7 @@ T('HUD shows health, armor, equipment slots and fists by default', async () => {
 
 T('equipped items render their editor-style icon in the hotbar', async () => {
   await loadGame();
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
   const out = await page.evaluate(() => {
     const g = window.__voxelgame;
@@ -231,7 +303,7 @@ T('equipped items render their editor-style icon in the hotbar', async () => {
 
 T('equipment switching, injection use and attack work', async () => {
   await loadGame();
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const result = await page.evaluate(() => {
@@ -271,7 +343,7 @@ T('equipment switching, injection use and attack work', async () => {
 
 T('left click attacks but does not destroy blocks', async () => {
   await loadGame();
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const attacked = await page.evaluate(() => {
@@ -292,9 +364,9 @@ T('left click attacks but does not destroy blocks', async () => {
 
 T('attack pops smoke on a wall hit but not on empty air', async () => {
   await loadGame();
-  await page.evaluate(() => {
+  await page.evaluate(async () => {
     const g = window.__voxelgame;
-    g.newGame();
+    await window.__syncNewGame();
     g.world.clear();
     g.renderer.clearChunks();
     g.world.place('grass', 'big', 2, 0, 2); // block at world x 1..2, y 0..1, z 1..2
@@ -344,9 +416,9 @@ T('attack pops smoke on a wall hit but not on empty air', async () => {
 
 T('smoke is lit by the world — dark in a sealed room, bright in open sky', async () => {
   await loadGame();
-  const out = await page.evaluate(() => {
+  const out = await page.evaluate(async () => {
     const g = window.__voxelgame;
-    g.newGame();
+    await window.__syncNewGame();
     // The game starts at night; force midday so "open sky" is actually bright.
     g.renderer._skyTime = 0;
     g.renderer._updateSky(0);
@@ -418,7 +490,7 @@ T('a placed equippable item renders in the game', async () => {
       items: [{ itemId: 'pistol', x: 0, y: 2, z: 0, size: 'small', rotation: 0 }],
     }));
   }, FLOOR);
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(200);
 
   const result = await page.evaluate(() => {
@@ -452,7 +524,7 @@ T('aiming at an equippable item highlights it and E picks it up', async () => {
       items: [{ itemId: 'pistol', x: 0, y: 2, z: 0, size: 'small', rotation: 0 }],
     }));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   // Aim at the pistol: highlight + prompt appear, then E picks it up.
@@ -532,7 +604,7 @@ T('rapid pickups queue up and are granted one at a time', async () => {
       ],
     }));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const out = await page.evaluate(() => {
@@ -596,7 +668,7 @@ T('equipping an item renders it in the hand at the grip voxel', async () => {
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const result = await page.evaluate(() => {
@@ -681,7 +753,7 @@ T('a ranged weapon recoils, flashes at the muzzle and smokes at the range-limite
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const result = await page.evaluate(() => {
@@ -752,7 +824,7 @@ T('firing lights the barrel and the surrounding scene', async () => {
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
   const out = await page.evaluate(() => {
     const g = window.__voxelgame;
@@ -803,7 +875,7 @@ T('a long-range weapon can hit far past melee reach', async () => {
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const result = await page.evaluate(() => {
@@ -838,7 +910,7 @@ T('a long-range weapon can hit far past melee reach', async () => {
 
 T('ranged weapons scatter shots away from the exact crosshair', async () => {
   await loadGame();
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
   const out = await page.evaluate(() => {
     const g = window.__voxelgame;
@@ -881,7 +953,7 @@ T('the crosshair opens with weapon spread and blooms with each shot', async () =
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
   const out = await page.evaluate(() => {
     const g = window.__voxelgame;
@@ -949,7 +1021,7 @@ T('a magazine gun fires, empties, and auto-reloads from carried ammo', async () 
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   // One-handed weapon → the left hand stays lowered. The HUD shows the full mag
@@ -995,7 +1067,13 @@ T('a magazine gun fires, empties, and auto-reloads from carried ammo', async () 
   assert.equal(emptied.hud, '0/30', 'HUD must show 0 in the mag, carried intact');
 
   // Wait for the reload to finish → a full mag is pulled from carried ammo.
-  await page.waitForTimeout(1700);
+  // Drive simulated time instead of wall-clock waiting: the reload timer
+  // counts down by dt per frame (clamped at 0.1 s), so under slow swiftshader
+  // frames a 1.4 s reload can take arbitrarily long in real time.
+  await page.evaluate(() => {
+    const g = window.__voxelgame;
+    for (let i = 0; i < 240 && g._reloading; i++) g._frame(1 / 60);
+  });
   const ready = await page.evaluate(() => {
     const g = window.__voxelgame;
     const ammo = g._ammo.get('pistol');
@@ -1030,23 +1108,24 @@ T('a magazine gun fires, empties, and auto-reloads from carried ammo', async () 
   assert.equal(fists.ammo, '∞/∞', 'fists/melee must show infinite ammo');
 });
 
-T('ammo counter is always visible and shows infinite for fists/melee', async () => {
+T('ammo counter is always visible: infinite for fists, durability for melee', async () => {
   await loadGame();
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
   const out = await page.evaluate(() => {
     const g = window.__voxelgame;
     const ammo = document.querySelector('#ammo');
     const read = () => ({ hidden: ammo.classList.contains('hidden'), text: ammo.textContent });
     const fists = read();
-    // A melee item (sword) is also magazine-less.
+    // A melee item (sword) is magazine-less but wears out — the counter
+    // shows its remaining durability instead.
     g.stats.equip('primary', 'sword');
     g._updateHud();
     const melee = read();
     return { fists, melee };
   });
   assert.deepEqual(out.fists, { hidden: false, text: '∞/∞' }, 'fresh game (fists) shows infinite ammo');
-  assert.deepEqual(out.melee, { hidden: false, text: '∞/∞' }, 'a melee weapon shows infinite ammo');
+  assert.deepEqual(out.melee, { hidden: false, text: '10/10' }, 'a breakable melee weapon shows durability');
 });
 
 T('an empty gun with no carried ammo cannot reload', async () => {
@@ -1062,7 +1141,7 @@ T('an empty gun with no carried ammo cannot reload', async () => {
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const out = await page.evaluate(() => {
@@ -1100,7 +1179,7 @@ T('R reloads the weapon in hand using the weapon reload time', async () => {
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   // Carry ammo, equip the gun, fire one round so the mag is not full.
@@ -1120,19 +1199,24 @@ T('R reloads the weapon in hand using the weapon reload time', async () => {
 
   // Press R → a reload starts, timed by the weapon's reload field (0.5 s).
   await page.keyboard.press('KeyR');
-  await page.waitForTimeout(120);
+  await page.waitForFunction(() => window.__voxelgame._reloading, { timeout: 2000 });
+  await page.evaluate(() => { const g = window.__voxelgame; g._frame(1 / 60); g._frame(1 / 60); });
   const started = await page.evaluate(() => {
     const g = window.__voxelgame;
     return { reloading: g._reloading, handsDown: !!g.hand._reload, timer: g._reloadTimer };
   });
   assert.equal(started.reloading, true, 'R must start a reload');
   assert.equal(started.handsDown, true, 'hands must dip to reload');
-  // The timer started at the weapon's 0.5 s and is counting down (~0.38 left
-  // after the wait); a default 1.4 s reload would still be near 1.3.
+  // The timer started at the weapon's 0.5 s and is counting down; a default
+  // 1.4 s reload would still be above 1 s here.
   assert.ok(started.timer > 0 && started.timer < 0.5, `the 0.5 s weapon reload must be used (got ${started.timer})`);
 
-  // It finishes after ~0.5 s and pulls a full mag from carried ammo.
-  await page.waitForTimeout(700);
+  // It finishes after ~0.5 s and pulls a full mag from carried ammo — drive
+  // simulated time (wall-clock waits flake when swiftshader frames are slow).
+  await page.evaluate(() => {
+    const g = window.__voxelgame;
+    for (let i = 0; i < 60 && g._reloading; i++) g._frame(1 / 60);
+  });
   const done = await page.evaluate(() => {
     const g = window.__voxelgame;
     return { current: g._ammo.get('smg').current, reloading: g._reloading, carried: g.stats.ammo.pistol };
@@ -1161,7 +1245,7 @@ async function loadMobGame() {
     localStorage.setItem('voxelitem.items', items);
   }, { map: MOB_MAP, items: ITEMS });
   await loadGame();
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(300);
 }
 
@@ -1233,6 +1317,67 @@ T('mobs aggro, chase, attack and die to the player', async () => {
   assert.ok(out.health < out.startHealth, 'the mob must have hurt the player');
 });
 
+T('a melee weapon wears out on mobs and breaks — wall hits cost nothing', async () => {
+  await loadMobGame();
+  await page.evaluate(() => {
+    localStorage.setItem('voxelequip.items', JSON.stringify([
+      {
+        id: 'bat', name: 'Bat',
+        microVoxels: [{ x: 3, y: 3, z: 4, color: [120, 90, 60] }],
+        grip: { x: 3, y: 3, z: 4 }, yaw: 0,
+        // Damage 1 keeps the imp alive through both swings; durability 2
+        // means the second landed hit snaps the bat.
+        stats: { damage: 1, reach: 3, cooldown: 0.2, durability: 2 },
+        weapon: { kind: 'melee', hands: 'one', anim: 'punch' },
+      },
+    ]));
+  });
+  await page.evaluate(() => window.__syncNewGame());
+  await page.waitForTimeout(300);
+
+  const out = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    const mob = g.mobs.mobs[0];
+    g.stats.equip('primary', 'bat');
+    g._updateHud();
+    document.pointerLockElement = g.webgl.domElement;
+    const hud = () => document.querySelector('#ammo').textContent;
+
+    // Beating on the floor costs nothing — degradation is flesh-only.
+    g.walk.position.set(1.75, 1.0, 4.75);
+    g.walk.camera.position.set(1.75, 2.6, 4.75);
+    g.walk.camera.lookAt(1.75, 0, 4.75);
+    g._attackCooldown = 0;
+    g._attack();
+    const wall = { wear: g.stats.wear.primary, hud: hud() };
+
+    // Two landed hits on the mob: the first wears the bat, the second breaks
+    // it (aim at the chest — see the fists fight above).
+    const mp = mob.pos;
+    g.walk.position.set(mp.x, 1.0, mp.z + 0.6);
+    g.walk.camera.position.set(mp.x, 2.62, mp.z + 0.6);
+    g.walk.camera.lookAt(mp.x, 1.2, mp.z);
+    g._attackCooldown = 0;
+    g._attack();
+    const afterOne = { wear: g.stats.wear.primary, item: g.stats.equipment.primary, hud: hud() };
+    g._attackCooldown = 0;
+    g._attack();
+    const afterTwo = {
+      item: g.stats.equipment.primary,
+      hud: hud(),
+      toast: document.querySelector('#toast').textContent,
+    };
+    document.pointerLockElement = null;
+    return { wall, afterOne, afterTwo, mobAlive: !mob.dead };
+  });
+  assert.deepEqual(out.wall, { wear: 0, hud: '2/2' }, 'hitting the world must not wear the weapon');
+  assert.deepEqual(out.afterOne, { wear: 1, item: 'bat', hud: '1/2' }, 'a landed hit costs one durability');
+  assert.equal(out.afterTwo.item, null, 'the bat breaks and the slot empties');
+  assert.equal(out.afterTwo.hud, '∞/∞', 'back to fists after the break');
+  assert.equal(out.afterTwo.toast, 'Your Bat broke!');
+  assert.equal(out.mobAlive, true, 'the 1-damage swings must not have killed the imp');
+});
+
 T('gun shots stop and knock a mob back', async () => {
   await loadMobGame();
   await page.evaluate(() => {
@@ -1246,7 +1391,7 @@ T('gun shots stop and knock a mob back', async () => {
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const out = await page.evaluate(() => {
@@ -1286,7 +1431,7 @@ T('hitting a mob splatters blood in front of its billboard', async () => {
       },
     ]));
   });
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const out = await page.evaluate(() => {
@@ -1321,7 +1466,7 @@ T('hitting a mob splatters blood in front of its billboard', async () => {
 
 T('being hit flashes the red vignette + screen blur', async () => {
   await loadGame();
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
 
   const flashed = await page.evaluate(() => {
@@ -1352,7 +1497,7 @@ T('being hit flashes the red vignette + screen blur', async () => {
 
 T('hit feedback grows stronger as health drops', async () => {
   await loadGame();
-  await page.evaluate(() => window.__voxelgame.newGame());
+  await page.evaluate(() => window.__syncNewGame());
   await page.waitForTimeout(150);
   const out = await page.evaluate(() => {
     const g = window.__voxelgame;
@@ -1394,12 +1539,13 @@ async function loadMobileGame() {
       hasTouch: true,
       isMobile: true,
     });
+    await mobile.addInitScript(installSyncNewGame);
   }
   await mobile.addInitScript(({ map, items }) => {
     localStorage.setItem('voxelmap.save', map);
     localStorage.setItem('voxelitem.items', items);
   }, { map: MAP, items: ITEMS });
-  await mobile.goto(GAME);
+  await mobile.goto(`http://localhost:${srv.port}/game.html`);
   await mobile.waitForFunction(() => !!window.__voxelgame, { timeout: 15000 });
   await mobile.waitForTimeout(300);
 }
@@ -1422,7 +1568,7 @@ T('mobile: coarse pointer enables the touch layer and controls', async () => {
     document.getElementById('touch-layer').classList.contains('hidden'));
   assert.equal(inMenu, true, 'touch layer hidden in the menu');
 
-  await mobile.evaluate(() => window.__voxelgame.newGame());
+  await mobile.evaluate(() => window.__syncNewGame());
   await mobile.waitForTimeout(150);
   const inPlay = await mobile.evaluate(() => ({
     hidden: document.getElementById('touch-layer').classList.contains('hidden'),
@@ -1442,7 +1588,7 @@ T('mobile: coarse pointer enables the touch layer and controls', async () => {
 
 T('mobile: joystick moves the player and look drag rotates the camera', async () => {
   await loadMobileGame();
-  await mobile.evaluate(() => window.__voxelgame.newGame());
+  await mobile.evaluate(() => window.__syncNewGame());
   await mobile.waitForTimeout(150);
   const moved = await mobile.evaluate(() => {
     const g = window.__voxelgame;
@@ -1481,7 +1627,7 @@ T('mobile: joystick moves the player and look drag rotates the camera', async ()
 
 T('mobile: attack holds to fire, slots select and crouch toggles', async () => {
   await loadMobileGame();
-  await mobile.evaluate(() => window.__voxelgame.newGame());
+  await mobile.evaluate(() => window.__syncNewGame());
   await mobile.waitForTimeout(150);
   const out = await mobile.evaluate(() => {
     const g = window.__voxelgame;

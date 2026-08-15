@@ -14,6 +14,10 @@
 
 import { CONFIG } from '../config.js';
 
+/** Max dynamic flicker-lamp lights the shader evaluates per fragment; the
+ *  Renderer keeps the nearest ones when a map has more lit flickering lamps. */
+export const MAX_LAMPS = 8;
+
 /**
  * @param {import('three')} THREE
  * @param {object} deps
@@ -47,9 +51,18 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       uFlashColor: { value: new THREE.Color(1.0, 0.72, 0.38) },
       uFlashIntensity: { value: 0 },
       uFlashRange: { value: 6 },
+      uLamps: { value: Array.from({ length: MAX_LAMPS }, () => new THREE.Vector4()) },
+      uLampI: { value: new Float32Array(MAX_LAMPS) },
+      uLampCount: { value: 0 },
+      uLampGain: { value: L.flickerGain ?? 0.5 },
     },
     transparent,
-    depthWrite: !transparent,
+    // The transparent pass writes depth too: chunk transparent buffers hold
+    // glass panes AND glazed door leaves in one unsorted draw call, so a
+    // depth-writing pane rejects mis-ordered translucent geometry behind it
+    // (a door blending on top of the glass in front of it) instead of letting
+    // it poke through. Costs only some glass-behind-glass tint on mis-order.
+    depthWrite: true,
     side: transparent ? THREE.DoubleSide : THREE.FrontSide,
     vertexShader: `
       attribute vec3 color;
@@ -92,6 +105,10 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       uniform vec3 uFlashColor;
       uniform float uFlashIntensity;
       uniform float uFlashRange;
+      uniform vec4 uLamps[${MAX_LAMPS}]; // xyz world pos, w range (m)
+      uniform float uLampI[${MAX_LAMPS}]; // 0..1 gutter signal per lamp
+      uniform int uLampCount;
+      uniform float uLampGain;
       ${hasMap ? 'varying vec2 vUv;' : ''}
       varying vec3 vColor;
       varying vec2 vLight;
@@ -116,9 +133,29 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
         vec3 lit = tex.rgb * vColor * (uAmbientMin + tint * base * uLightScale);
         // Directional sun shading only where the surface is sky-exposed.
         lit += uSunColor * tex.rgb * vColor * vSun * sky * uSunStrength;
+        // Dynamic flicker lamps: each lit flickering lamp adds its guttering
+        // remainder on top of its dimmed baked base — smooth per-frame
+        // flicker with zero chunk rebuilds. The baked block channel gates the
+        // add: the flood fill already solved occlusion, and the lamp's own
+        // baked base guarantees block > 0 anywhere it can legitimately reach,
+        // so fragments behind a wall (block ~ 0) get no leak. The bulb factor
+        // drags the lamp's emissive faces (and their bloom) through the same
+        // gutter.
+        float lampAdd = 0.0;
+        float bulb = 1.0;
+        float lampOcc = smoothstep(0.02, 0.25, block);
+        for (int i = 0; i < ${MAX_LAMPS}; i++) {
+          if (i >= uLampCount) break;
+          vec4 lamp = uLamps[i];
+          float ld = distance(vWorldPos, lamp.xyz);
+          float att = max(0.0, 1.0 - ld / lamp.w);
+          lampAdd += uLampI[i] * att * att * lampOcc;
+          bulb = min(bulb, mix(mix(0.3, 1.0, uLampI[i]), 1.0, smoothstep(0.9, 1.4, ld)));
+        }
+        lit += uBlockTint * tex.rgb * vColor * lampAdd * uLampGain * uLightScale;
         // Self-emission: lamps/torches stay bright regardless of baked light
         // and push past 1.0 so the bloom pass picks them up.
-        lit += tex.rgb * vColor * vEmissive * uEmissiveBoost;
+        lit += tex.rgb * vColor * vEmissive * uEmissiveBoost * bulb;
         // Dynamic muzzle flash: soft warm point light fading with distance.
         float dist = length(vWorldPos - uFlashPos);
         float flash = uFlashIntensity * pow(max(0.0, 1.0 - dist / uFlashRange), 2.0);

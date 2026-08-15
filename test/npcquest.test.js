@@ -65,6 +65,37 @@ test('registerNpc normalizes and rejects bad ids', () => {
   assert.ok(isNpcId('doc'));
 });
 
+test('services normalize: unknown types drop, labels default, flags trim', () => {
+  fresh();
+  const def = registerNpc({
+    id: 'smith',
+    name: 'Smith',
+    skin: 'granny',
+    dialog: ['hi'],
+    services: [
+      { type: 'repair', label: '  ', flag: ' workshop-open ' },
+      { type: 'teleport', label: 'Beam me up' }, // not a thing (yet)
+      'garbage',
+    ],
+  });
+  assert.deepEqual(def.services, [{ type: 'repair', label: 'Could you fix up my gear?', flag: 'workshop-open' }]);
+
+  const ungated = registerNpc({ id: 'fixer', skin: 'granny', dialog: ['hi'], services: [{ type: 'repair', label: 'Fix it?' }] });
+  assert.deepEqual(ungated.services, [{ type: 'repair', label: 'Fix it?' }], 'no flag field when ungated');
+
+  const none = registerNpc({ id: 'plain', skin: 'granny', dialog: ['hi'], services: [] });
+  assert.ok(!('services' in none), 'empty services stay off the def');
+});
+
+test('services survive the registry round-trip', () => {
+  fresh();
+  registerNpc({ id: 'smith', skin: 'granny', dialog: ['hi'], services: [{ type: 'repair', flag: 'workshop-open' }] });
+  const text = serializeNpcRegistry();
+  fresh();
+  deserializeNpcRegistry(text);
+  assert.deepEqual(getNpc('smith').services, [{ type: 'repair', label: 'Could you fix up my gear?', flag: 'workshop-open' }]);
+});
+
 test('NPC registry round-trips, and deletion is authoritative', () => {
   fresh();
   registerNpc({ id: 'doc', name: 'Doc', skin: 'granny', height: 1.7, dialog: ['hi'] });
@@ -92,8 +123,8 @@ test('bolek’s questline opens with the trip downstairs', () => {
   fresh();
   const [first] = getQuestline('bolek');
   assert.equal(first.id, 'bolek-downstairs');
-  assert.equal(first.objective.type, 'kill');
-  assert.equal(first.objective.count, 1);
+  assert.equal(first.objectives[0].type, 'kill');
+  assert.equal(first.objectives[0].count, 1);
   assert.ok(first.offer.some((l) => l.includes('baseball bat')), 'dad reminds the player to take the bat');
 
   // The line plays through: accept, put down what's downstairs, turn in.
@@ -113,7 +144,7 @@ test('normalizeQuest fills defaults and drops garbage', () => {
   assert.equal(normalizeQuest({ title: 'no id' }, 'granny'), null);
   assert.equal(normalizeQuest({ id: 'q' }, ''), null);
   const q = normalizeQuest({ id: 'q1', objective: { type: 'collect', kinds: ['ammo'], count: '4' }, reward: { armor: '10', ammo: { type: 'nope', amount: 5 } } }, 'doc');
-  assert.equal(q.objective.count, 4);
+  assert.equal(q.objectives[0].count, 4, 'legacy single `objective` folds into the objectives array');
   assert.deepEqual(q.reward, { armor: 10 }, 'unknown ammo type dropped');
   assert.ok(q.offer.length && q.ready.length && q.progressLine.includes('{count}'));
 });
@@ -233,8 +264,8 @@ test('the granny questline opens with the teapot fetch', () => {
   fresh();
   const [first] = getQuestline('granny');
   assert.equal(first.id, 'granny-teapot');
-  assert.equal(first.objective.type, 'collect');
-  assert.deepEqual(first.objective.ids, ['granny-teapot']);
+  assert.equal(first.objectives[0].type, 'collect');
+  assert.deepEqual(first.objectives[0].ids, ['granny-teapot']);
 });
 
 test('wantsItem gates quest items to their active quest only', () => {
@@ -258,19 +289,62 @@ test('wantsItem gates quest items to their active quest only', () => {
 test('kill objectives keep a valid spawnCell and drop malformed ones', () => {
   fresh();
   const q = normalizeQuest({ id: 'q', objective: { type: 'kill', count: 3, spawnCell: [4.2, 2, -1] } }, 'granny');
-  assert.deepEqual(q.objective.spawnCell, [4, 2, -1], 'rounded to cells');
+  assert.deepEqual(q.objectives[0].spawnCell, [4, 2, -1], 'rounded to cells');
   const bad = normalizeQuest({ id: 'q', objective: { type: 'kill', count: 3, spawnCell: [1, 'x', 3] } }, 'granny');
-  assert.ok(!('spawnCell' in bad.objective), 'malformed spawn dropped');
+  assert.ok(!('spawnCell' in bad.objectives[0]), 'malformed spawn dropped');
   const roundTrip = normalizeQuest(q, 'granny');
-  assert.deepEqual(roundTrip.objective.spawnCell, [4, 2, -1], 'survives re-normalization');
+  assert.deepEqual(roundTrip.objectives[0].spawnCell, [4, 2, -1], 'survives re-normalization');
 });
 
 test('spawnCell survives the quest registry round-trip', () => {
   fresh();
   setQuestline('doc', [{ id: 'doc-1', title: 'Cull', objective: { type: 'kill', count: 4, spawnCell: [10, 2, 10] } }]);
   deserializeQuestRegistry(serializeQuestRegistry());
-  assert.deepEqual(getQuestline('doc')[0].objective.spawnCell, [10, 2, 10]);
+  assert.deepEqual(getQuestline('doc')[0].objectives[0].spawnCell, [10, 2, 10]);
   fresh();
+});
+
+// --- visit objectives + multi-goal + chain flags (registry side) ---
+
+test('visit objectives normalize their marked cells and drop malformed ones', () => {
+  fresh();
+  const q = normalizeQuest({
+    id: 'q',
+    objective: { type: 'visit', cells: [[1.4, 2, 3], [1, 'x', 3], 'junk', [5, 0, -2.6]], noun: '  cellar  ' },
+  }, 'granny');
+  const o = q.objectives[0];
+  assert.equal(o.type, 'visit');
+  assert.equal(o.count, 1, 'visit count is always 1');
+  assert.deepEqual(o.cells, [[1, 2, 3], [5, 0, -3]], 'cells rounded, malformed entries dropped');
+  assert.equal(o.noun, 'cellar');
+});
+
+test('multi-goal tiers and chain flags survive the registry round-trip', () => {
+  fresh();
+  setQuestline('doc', [{
+    id: 'doc-1',
+    title: 'Chain Opener',
+    autoAccept: true,
+    autoComplete: true,
+    objectives: [
+      { type: 'visit', cells: [[4, 2, 4]], noun: 'room entered' },
+      { type: 'kill', target: 'any', count: 3, noun: 'zombies' },
+    ],
+  }]);
+  deserializeQuestRegistry(serializeQuestRegistry());
+  const [q] = getQuestline('doc');
+  assert.equal(q.autoAccept, true);
+  assert.equal(q.autoComplete, true);
+  assert.equal(q.objectives.length, 2);
+  assert.deepEqual(q.objectives[0].cells, [[4, 2, 4]]);
+  assert.equal(q.objectives[1].count, 3);
+  fresh();
+});
+
+test('chain flags default to absent (not false) so authored JSON stays lean', () => {
+  fresh();
+  const q = normalizeQuest({ id: 'q', objective: { type: 'kill', count: 1 } }, 'granny');
+  assert.ok(!('autoAccept' in q) && !('autoComplete' in q));
 });
 
 test('MobManager.spawnAt stands a pack on the floor around the cell', async () => {
@@ -303,7 +377,7 @@ test('activeQuests reports active quests with progress', () => {
   const active = log.activeQuests();
   assert.equal(active.length, 1);
   assert.equal(active[0].quest.id, 'granny-teapot');
-  assert.equal(active[0].progress, 0);
+  assert.deepEqual(active[0].progress, [0], 'one progress slot per objective');
   fresh();
 });
 

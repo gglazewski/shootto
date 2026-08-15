@@ -5,11 +5,6 @@
 // through the codebase again.
 
 export const CONFIG = Object.freeze({
-  saveKey: 'voxelmap.save',
-  itemSaveKey: 'voxelitem.items',
-  equipSaveKey: 'voxelequip.items',
-  npcSaveKey: 'voxelnpc.npcs',
-  questSaveKey: 'voxelquest.quests',
   groundSpan: 16, // big voxels per side of the seeded ground plane
   camera: {
     fov: 70,
@@ -31,6 +26,17 @@ export const CONFIG = Object.freeze({
     lightScale: 1.0, // overall light intensity multiplier
     sunStrength: 0.35, // directional sun shading strength
     emissiveBoost: 1.5, // self-emission strength of lamps/torches (>1 feeds bloom)
+    // Flickering lamps: this fraction of the lamp's light level is baked
+    // into the light field (steady base with real shadows); the rest
+    // gutters as a dynamic per-frame shader light (no rebuilds, no shadows).
+    flickerBakedLevel: 0.55,
+    flickerGain: 0.5, // strength of that dynamic top-up in the shader
+    // Indirect fill: a direct-lit cell leaks this fraction of its light into
+    // adjacent cells the line-of-sight stamp left darker; the leak spreads as
+    // a normal flood. Softens shadow edges + fills concave corners (fake
+    // bounce light). 0 disables. Must stay < 0.5 so bounce never reaches
+    // farther than the direct stamp (the MARGIN invariant relies on it).
+    blockBounce: 0.35,
     nightSky: [0.05, 0.07, 0.15], // scene background at night
     fogColor: [0.66, 0.78, 0.9], // distance fog by day; lerps to nightSky at night
   },
@@ -113,6 +119,10 @@ export const CONFIG = Object.freeze({
     // How far the F5 test run's E key reaches, in cells (2 cells = 1 m).
     // Matches the game's door reach (GameApp DOOR_RANGE).
     interactCells: 5,
+  },
+  editor: {
+    // How far LMB reaches to open a door's settings window, in cells.
+    doorClickCells: 12,
   },
   history: {
     max: 10,

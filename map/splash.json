@@ -17,6 +17,18 @@
     {
       "world": "start.json",
       "cam": "cam_mslvuzke"
+    },
+    {
+      "world": "prolog.json",
+      "cam": "cam_msuctogy"
+    },
+    {
+      "world": "prolog.json",
+      "cam": "cam_msucu99b"
+    },
+    {
+      "world": "prolog.json",
+      "cam": "cam_msuj4wzc"
     }
   ]
 }

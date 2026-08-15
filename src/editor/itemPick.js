@@ -41,6 +41,9 @@ export function collisionWorld(world) {
       return getItem(item.itemId)?.solid !== false ? item : null;
     },
     bounds: () => world.bounds(),
+    // Ladders: WalkControls._ladderContact needs decal lookups; without this
+    // passthrough climbable decals are invisible to the walk controller.
+    decalAt: (x, y, z, face) => world.decalAt(x, y, z, face),
   };
 }
 

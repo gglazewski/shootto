@@ -1,20 +1,22 @@
 // e2e.test.js — real browser smoke test against the built bundle.
 //
-// Loads index.html over file:// in headless Chromium, verifies the page
-// boots without console errors, the WebGL canvas renders, and the editor's
-// world/rendering pipeline responds to programmatic edits.
+// Serves the editor with server.mjs (the editor is file driven: the world
+// lives in map/voxelbundle.json behind /api/world), loads index.html over
+// http in headless Chromium, verifies the page boots without console errors,
+// the WebGL canvas renders, and the editor's world/rendering pipeline
+// responds to programmatic edits.
 //
 // Requires playwright-core + a cached Chromium (see package.json devDeps).
 
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { homedir } from 'node:os';
-import { existsSync, readdirSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { existsSync, readdirSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { startServer } from '../server.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const INDEX = `file://${join(ROOT, 'index.html')}`;
 
 function findChromium() {
   const cache = join(homedir(), '.cache', 'ms-playwright');
@@ -41,7 +43,14 @@ const skip = available ? false : 'playwright-core or cached Chromium not availab
 
 let browser;
 let page;
+let srv; // running server.mjs instance
 const consoleErrors = [];
+
+/** Read the world file the editor persists to (via the server API). */
+async function readWorldFile() {
+  const res = await fetch(`http://localhost:${srv.port}/api/world`);
+  return JSON.parse(await res.text());
+}
 
 before(async () => {
   if (!available) return;
@@ -52,22 +61,36 @@ before(async () => {
   page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   page.on('console', (msg) => { if (msg.type() === 'error') consoleErrors.push(msg.text()); });
   page.on('pageerror', (err) => consoleErrors.push(String(err)));
-  // These tests assume an empty world: the bundled map/voxelbundle.json holds
-  // the real migrated world, so seed the editor's localStorage with an empty
-  // map + empty item registry BEFORE the page loads. The editor then restores
-  // the empty save (count 0) and falls back to seeding ground, matching the
-  // original "fresh editor" behaviour these tests were written against.
-  await page.addInitScript(() => {
-    localStorage.setItem('voxelmap.save', JSON.stringify({ format: 'voxelmap', version: 1, cellSize: 0.5, spawn: null, blocks: [], items: [] }));
-    localStorage.setItem('voxelitem.items', '[]');
+
+  // These tests assume an empty world: the repo's map/voxelbundle.json holds
+  // the real migrated world, so point the server at a temp world file seeded
+  // with an empty map BEFORE the page loads. The editor restores the empty
+  // world (count 0) and falls back to seeding ground, matching the original
+  // "fresh editor" behaviour. npcs/quests are omitted so the built-in granny
+  // and her questline stay registered (an absent field keeps the built-ins).
+  const tmp = join(tmpdir(), `voxelgame-e2e-${Date.now().toString(36)}`);
+  mkdirSync(join(tmp, 'worlds'), { recursive: true });
+  const worldFile = join(tmp, 'voxelbundle.json');
+  writeFileSync(worldFile, JSON.stringify({
+    format: 'voxelbundle', version: 1,
+    map: { format: 'voxelmap', version: 1, cellSize: 0.5, spawn: null, spawnYaw: 0, blocks: [], items: [], mobs: [], decals: [] },
+    items: [], equip: [],
+  }));
+  srv = await startServer({
+    port: 0, worldFile, root: ROOT,
+    worldsDir: join(tmp, 'worlds'),
+    splashFile: join(tmp, 'splash.json'),
+    editorStateFile: join(tmp, 'editor.json'),
   });
-  await page.goto(INDEX);
+
+  await page.goto(`http://localhost:${srv.port}/index.html`);
   await page.waitForFunction(() => !!window.__voxelgame, { timeout: 15000 });
   await page.waitForTimeout(800);
 });
 
 after(async () => {
   if (browser) await browser.close();
+  if (srv) srv.server.close();
 });
 
 const T = (name, fn) => test(name, { skip }, fn);
@@ -130,6 +153,63 @@ T('direct world edit triggers chunk rebuild and canvas updates', async () => {
   });
   assert.equal(info.count > 0, true);
   assert.ok(info.total > triBefore, 'chunk geometry did not grow after placement');
+});
+
+T('face paint repaints a rendered face without adding geometry', async () => {
+  const info = await page.evaluate(async () => {
+    const { world, renderer } = window.__voxelgame;
+    const snapshot = () => {
+      let uvs = '';
+      let tris = 0;
+      for (const c of renderer.chunks.values()) {
+        uvs += [...c.geometry.attributes.uv.array].join(',');
+        tris += c.geometry.index.count;
+      }
+      return { uvs, tris };
+    };
+    world.place('concrete', 'small', 30, 20, 30);
+    await new Promise((r) => setTimeout(r, 300));
+    const before = snapshot();
+
+    world.paintFace(30, 20, 30, 'py', 'brick');
+    await new Promise((r) => setTimeout(r, 300));
+    const after = snapshot();
+
+    world.unpaintFace(30, 20, 30, 'py');
+    await new Promise((r) => setTimeout(r, 300));
+    const stripped = snapshot();
+
+    world.remove(30, 20, 30);
+    await new Promise((r) => setTimeout(r, 300));
+    return { before, after, stripped };
+  });
+  assert.notEqual(info.after.uvs, info.before.uvs, 'painting must change what the face samples');
+  assert.equal(info.after.tris, info.before.tris, 'painting must not add a single triangle');
+  assert.equal(info.stripped.uvs, info.before.uvs, 'stripping restores the original texture');
+});
+
+T('painted faces reach the saved world file and leave when stripped', async () => {
+  await page.evaluate(async () => {
+    const { world, app } = window.__voxelgame;
+    world.place('concrete', 'small', 32, 20, 32);
+    world.paintFace(32, 20, 32, 'nz', 'brick');
+    await app.save();
+  });
+  const saved = await readWorldFile();
+  const entry = saved.map.paint?.find((p) => p.x === 32 && p.y === 20 && p.z === 32);
+  assert.ok(entry, 'the paint must reach the world file');
+  assert.equal(entry.face, 'nz');
+  assert.equal(entry.type, 'brick');
+
+  // Removing the block takes its paint with it, and an unpainted world writes
+  // no `paint` field at all.
+  await page.evaluate(async () => {
+    const { world, app } = window.__voxelgame;
+    world.remove(32, 20, 32);
+    await app.save();
+  });
+  const cleaned = await readWorldFile();
+  assert.equal('paint' in cleaned.map, false, 'an unpainted map stays free of the field');
 });
 
 T('lighting pipeline: sealed room is dark, roof hole lets light in', async () => {
@@ -283,17 +363,17 @@ T('hovering a block in the inventory and pressing a number assigns it to that sl
   assert.equal(await page.evaluate(() => window.__voxelgame.inventory.isOpen), false);
 });
 
-T('save writes a valid serialized map to localStorage', async () => {
-  const saved = await page.evaluate(() => {
-    const { world, ui } = window.__voxelgame;
-    ui.cb.save();
-    const raw = localStorage.getItem('voxelmap.save');
-    const parsed = JSON.parse(raw);
-    return { format: parsed.format, version: parsed.version, blocks: parsed.blocks.length, count: world.count };
+T('save writes a valid serialized world to the world file', async () => {
+  const count = await page.evaluate(async () => {
+    const { world, app } = window.__voxelgame;
+    await app.save(); // Ctrl+S path — PUTs the bundle to the server
+    return world.count;
   });
-  assert.equal(saved.format, 'voxelmap');
-  assert.equal(saved.version, 1);
-  assert.equal(saved.blocks, saved.count);
+  const bundle = await readWorldFile();
+  assert.equal(bundle.format, 'voxelbundle');
+  assert.equal(bundle.map.format, 'voxelmap');
+  assert.equal(bundle.map.version, 1);
+  assert.equal(bundle.map.blocks.length, count);
 });
 
 T('help overlay is hidden by default and toggles with F1', async () => {
@@ -544,6 +624,79 @@ T('E opens and closes a door in the test run, and the map is left untouched', as
   assert.equal(r.afterExit, 'door_wood', 'leaving the test run must restore every door');
   assert.equal(r.promptAfterExit, null, 'the prompt must clear when the test run ends');
   assert.equal(r.inventoryOpen, false, 'E must not open the editor inventory while test-running');
+});
+
+T('clicking a door in the editor opens its settings and applies them', async () => {
+  const r = await page.evaluate(() => {
+    const { app } = window.__voxelgame;
+    app.world.clear();
+    for (let x = 0; x < 12; x += 2)
+      for (let z = 0; z < 12; z += 2) app.world.place('grass', 'big', x, 0, z);
+    app.world.place('door_wood', 'door', 8, 2, 8); // x[4,5] m, y[1,3] m, z[4,4.5] m
+    app.renderer.clearChunks();
+    app.renderer.loadWorldBounds();
+
+    // Stand 1 m in front of the leaf, aiming straight at it.
+    const cam = app.renderer.camera;
+    cam.position.set(4.5, 1.5, 3.0);
+    cam.lookAt(4.5, 1.5, 4.25);
+    cam.updateMatrixWorld(true);
+
+    const modal = document.querySelector('#door-settings');
+    const hit = app._clickDoor();
+    const wasOpen = modal.classList.contains('open');
+    const opts = [...modal.querySelectorAll('.door-opt')];
+    const locks = [...modal.querySelectorAll('.door-lock')];
+
+    locks[1].click(); // 🔒 Locked
+    const afterLock = !!app.world.get(8, 2, 8).locked;
+    // Pick the opening that is neither the current one nor its mirror: the
+    // captions name the swing and the hinge, so this is the "north" one.
+    const north = opts.find((b) => /north/.test(b.textContent) && /east/.test(b.textContent));
+    north.click();
+    const v = app.world.get(8, 2, 8);
+
+    // A locked door must not budge in a playtest.
+    app.doorModal.hide();
+    app.enterTestMode();
+    const w = app.walk;
+    w.position.set(4.5, 1.0, 3.0);
+    w.yaw = Math.PI;
+    w.pitch = 0;
+    w.grounded = true;
+    w.velocity.set(0, 0, 0);
+    w.keys.clear();
+    w.update(1 / 60);
+    app._updateTestPrompt();
+    const prompt = document.querySelector('#ui-prompt').textContent;
+    document.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyE', key: 'e', bubbles: true }));
+    const afterE = app.world.get(8, 2, 8).type;
+    app.exitTestMode();
+
+    return {
+      hit,
+      wasOpen,
+      optionCount: opts.length,
+      afterLock,
+      hinge: v.hinge ?? 'left',
+      rotation: v.rotation ?? 0,
+      closedNow: modal.classList.contains('open'),
+      prompt,
+      afterE,
+      gizmos: app.doorMarker.group.children.length,
+    };
+  });
+
+  assert.equal(r.hit, true, 'LMB on a door must be consumed by the settings window');
+  assert.equal(r.wasOpen, true, 'the door settings window must open');
+  assert.equal(r.optionCount, 4, 'four ways for the door to open');
+  assert.equal(r.afterLock, true, 'the lock button must lock the voxel');
+  assert.equal(r.hinge, 'right', 'the picked plan must set the hinge');
+  assert.equal(r.rotation, 2, 'the picked plan must flip the swing to -z');
+  assert.equal(r.closedNow, false, 'the window closes when dismissed');
+  assert.match(r.prompt, /locked/i, 'a locked door must say so instead of prompting');
+  assert.equal(r.afterE, 'door_wood', 'E must not open a locked door');
+  assert.ok(r.gizmos > 0, 'the door draws a plan gizmo in the editor');
 });
 
 T('test-run player auto-steps up 0.5m blocks while walking', async () => {
@@ -799,20 +952,19 @@ T('F2 item editor builds, saves and places a placeable object', async () => {
     ie._rebuild();
   });
 
-  // Save: registers + persists to localStorage + exports a file.
+  // Save: registers the item and (via the explicit save) persists it in the
+  // world file's items registry.
   await page.evaluate(() => window.__voxelgame.itemEditor.save());
-  await page.waitForTimeout(150);
-  const saved = await page.evaluate(() => {
-    const raw = localStorage.getItem('voxelitem.items');
-    const arr = raw ? JSON.parse(raw) : [];
-    return {
-      count: arr.length,
-      id: arr[0]?.id,
-      name: arr[0]?.name,
-      hasLight: !!arr[0]?.light,
-      voxels: arr[0]?.microVoxels?.length,
-    };
-  });
+  await page.evaluate(() => window.__voxelgame.app.save());
+  const itemBundle = await readWorldFile();
+  const itemArr = itemBundle.items ?? [];
+  const saved = {
+    count: itemArr.length,
+    id: itemArr[0]?.id,
+    name: itemArr[0]?.name,
+    hasLight: !!itemArr[0]?.light,
+    voxels: itemArr[0]?.microVoxels?.length,
+  };
   assert.equal(saved.count, 1, 'item registry must persist one item');
   assert.equal(saved.id, 'lamp');
   assert.equal(saved.name, 'Lamp');
@@ -1034,18 +1186,16 @@ T('F3 items editor builds, sets grip/direction and saves an equippable item', as
     ee._ui.cooldown.value = '0.4';
     ee.save();
   });
-  await page.waitForTimeout(150);
-  const saved = await page.evaluate(() => {
-    const raw = localStorage.getItem('voxelequip.items');
-    const arr = raw ? JSON.parse(raw) : [];
-    return { count: arr.length, item: arr[0] };
-  });
+  await page.evaluate(() => window.__voxelgame.app.save());
+  const equipBundle = await readWorldFile();
+  const equipArr = equipBundle.equip ?? [];
+  const saved = { count: equipArr.length, item: equipArr[0] };
   assert.equal(saved.count, 1, 'equipment registry must persist one item');
   assert.equal(saved.item.id, 'club');
   assert.equal(saved.item.name, 'Club');
   assert.equal(saved.item.yaw, 90);
   assert.deepEqual(saved.item.grip, grip, 'grip must round-trip through save');
-  assert.deepEqual(saved.item.stats, { damage: 22, reach: 1000, cooldown: 0.4 });
+  assert.deepEqual(saved.item.stats, { damage: 22, reach: 1000, cooldown: 0.4, durability: 40 });
   assert.deepEqual(saved.item.weapon.muzzle, muzzle.muzzle, 'muzzle must round-trip through save');
   assert.equal(saved.item.weapon.kind, 'ranged');
   assert.ok(Math.abs(saved.item.weapon.spread - (3 * Math.PI) / 180) < 1e-6, 'spread must round-trip through save');
@@ -1350,12 +1500,13 @@ T('item catalogue lists saved items and supports select, edit and delete', async
   await page.waitForTimeout(150);
   const afterDelete = await page.evaluate(() => ({
     inCatalogue: document.querySelectorAll('#item-catalogue .cat-item').length,
-    stored: JSON.parse(localStorage.getItem('voxelitem.items') || '[]').length,
     placedInWorld: window.__voxelgame.app.world.itemAt(4, 2, 4) !== null,
   }));
   assert.equal(afterDelete.inCatalogue, 0, 'deleted item must leave the catalogue');
-  assert.equal(afterDelete.stored, 0, 'deleted item must leave localStorage');
   assert.equal(afterDelete.placedInWorld, false, 'deleted item placements must be removed');
+  await page.evaluate(() => window.__voxelgame.app.save());
+  const deletedBundle = await readWorldFile();
+  assert.equal((deletedBundle.items ?? []).length, 0, 'deleted item must leave the world file');
 });
 
 T('placed objects are lit by the light engine (dark in rooms, bright in the open)', async () => {
@@ -1481,4 +1632,200 @@ T('placing a light-emitting object bakes its light into the world instantly', as
   const chunkBlock = await maxChunkBlock();
   assert.ok(after.field > 0, 'light field must contain the object light');
   assert.ok(chunkBlock > 0.1, 'chunk meshes must bake the object light instantly');
+});
+
+T('the Resize tool pulls a prefab wall, moving the build volume and not the build', async () => {
+  const before = await page.evaluate(() => {
+    const app = window.__voxelgame.app;
+    if (app.mode === 'test') app.exitTestMode();
+    const ringOutside = app.toolRing.tools.map((t) => t.id);
+    app.enterPrefabEditor();
+    app.world.clear();
+    app.world.place('brick', 'small', 0, 0, 0);
+    app.world.place('brick', 'small', 3, 0, 2);
+    app._seedPrefabBaseplate();
+
+    // Stand west of the box looking east: the crosshair is on the −X wall.
+    // The aim goes through FlyControls, which rewrites the camera rotation
+    // from its own yaw/pitch on every frame.
+    const cam = app.renderer.camera;
+    cam.position.set(-4, 1, 1);
+    cam.lookAt(2, 1, 1);
+    cam.rotation.reorder('YXZ');
+    app.controls.yaw = cam.rotation.y;
+    app.controls.pitch = cam.rotation.x;
+    cam.updateMatrixWorld(true);
+
+    const tool = app.tools.activate('prefabresize');
+    const face = tool.aimedFace();
+    return {
+      ringOutside,
+      ringInside: app.toolRing.tools.map((t) => t.id),
+      face: face && [face.axis, face.sign],
+      dims: [...app.prefabSession.dims],
+      screenAxis: tool._screenAxis(app.prefabSession.dims, 0, -1),
+    };
+  });
+  assert.equal(before.ringOutside.includes('prefabresize'), false, 'Resize stays out of the world editor ring');
+  assert.equal(before.ringInside.includes('prefabresize'), true, 'Resize joins the ring inside a session');
+  assert.deepEqual(before.face, [0, -1], 'aiming west must grab the −X wall');
+  assert.ok(Math.hypot(before.screenAxis[0], before.screenAxis[1]) > 0, 'the wall needs a screen direction to drag along');
+
+  // Grab it and pull 3 cells outward (the drag's pixel scale is pinned here so
+  // the assertion is about the commit, not about the projection).
+  const after = await page.evaluate(() => {
+    const app = window.__voxelgame.app;
+    const tool = app.tools.active;
+    tool.onMouseDown(0);
+    tool._drag.pixels = [10, 0];
+    tool.onMouseMove(30, 0);
+    const dragging = tool.dragging;
+    // Measured across the commit alone: the fly camera keeps drifting on its
+    // own velocity between calls.
+    const camBefore = app.renderer.camera.position.x;
+    tool.onMouseUp(0);
+    return {
+      dragging,
+      camShift: app.renderer.camera.position.x - camBefore,
+      dims: [...app.prefabSession.dims],
+      atOrigin: app.world.get(0, 0, 0)?.type ?? null,
+      shifted: app.world.get(3, 0, 0)?.type ?? null,
+      baseplate: app.world.get(0, -1, 0)?.type ?? null,
+      dirty: app.prefabSession.dirty,
+    };
+  });
+  assert.equal(after.dragging, true, 'holding the wall must swallow mouse deltas');
+  assert.equal(after.dims[0], before.dims[0] + 3, 'the volume grows by the pull');
+  assert.equal(after.shifted, 'brick', 'content slides so the min corner stays at the origin');
+  assert.equal(after.atOrigin, null);
+  assert.equal(after.baseplate, 'concrete', 'the baseplate is re-laid under the new volume');
+  assert.ok(Math.abs(after.camShift - 1.5) < 1e-6, 'the camera follows the shift, so the build does not jump');
+  assert.equal(after.dirty, true);
+
+  // The panel's side toggle is the typed twin: growing Z from its min wall
+  // slides the content the same way a drag would.
+  const typed = await page.evaluate(() => {
+    const app = window.__voxelgame.app;
+    const panel = app.prefabPanel;
+    panel.setSide(2, 'min');
+    const before = [...app.prefabSession.dims];
+    panel.el.dimZ.value = String(before[2] + 2);
+    panel.el.dimZ.dispatchEvent(new Event('change'));
+    // The far block sat at (6,0,2) after the X drag; +2 on the min Z wall moves it to z=4.
+    const grown = { dims: [...app.prefabSession.dims], moved: app.world.get(6, 0, 4)?.type ?? null };
+
+    // Shrinking past the content is refused, not clipped.
+    panel.el.dimZ.value = '1';
+    panel.el.dimZ.dispatchEvent(new Event('change'));
+    return { before, grown, afterRefusal: [...app.prefabSession.dims], side: panel.sideFor(2) };
+  });
+  assert.equal(typed.side, 'min');
+  assert.equal(typed.grown.dims[2], typed.before[2] + 2, 'the typed size grows the volume');
+  assert.equal(typed.grown.moved, 'brick', 'growing from the min wall slides the content');
+  assert.deepEqual(typed.afterRefusal, typed.grown.dims, 'a shrink that would cut content is refused');
+
+  // One history entry per resize: undo walks them back, content and camera too.
+  const undone = await page.evaluate(() => {
+    const app = window.__voxelgame.app;
+    const camBefore = app.renderer.camera.position.x;
+    app.undo(); // the typed Z growth
+    app.undo(); // the dragged X wall
+    const out = {
+      dims: [...app.prefabSession.dims],
+      atOrigin: app.world.get(0, 0, 0)?.type ?? null,
+      camShift: app.renderer.camera.position.x - camBefore,
+    };
+    app.exitPrefabEditor();
+    return out;
+  });
+  assert.deepEqual(undone.dims, before.dims);
+  assert.equal(undone.atOrigin, 'brick');
+  assert.ok(Math.abs(undone.camShift + 1.5) < 1e-6, 'undo carries the camera back too');
+});
+
+T('a prefab session pastes library prefabs into its own build volume', async () => {
+  const armed = await page.evaluate(() => {
+    const app = window.__voxelgame.app;
+    if (app.mode === 'test') app.exitTestMode();
+    app.enterPrefabEditor();
+    app.world.clear();
+    app._seedPrefabBaseplate();
+
+    // A one-block prefab, straight into the library cache — the tool reads
+    // prefabs from there, so no server round trip is needed.
+    app.prefabs._cache.set('e2e_kiosk', {
+      id: 'e2e_kiosk',
+      name: 'E2E Kiosk',
+      dims: [2, 2, 2],
+      blocks: [{ type: 'brick', size: 'small', x: 0, y: 0, z: 0 }],
+      items: [],
+      decals: [],
+      paint: [],
+    });
+
+    app.openPrefabBrowser();
+    const browser = {
+      open: app.prefabBrowser.isOpen,
+      pasteMode: app.prefabBrowser.pasteMode,
+      newHidden: app.prefabBrowser._newBtn.hidden,
+    };
+    app._placePrefab('e2e_kiosk');
+    return {
+      browser,
+      closedOnPick: !app.prefabBrowser.isOpen,
+      tool: app.tools.active?.id,
+      inHand: app.state.get('prefabId'),
+      stillInSession: !!app.prefabSession,
+    };
+  });
+  assert.equal(armed.browser.open, true, 'the library opens from inside a session');
+  assert.equal(armed.browser.pasteMode, true, 'inside a session it opens in paste mode');
+  assert.equal(armed.browser.newHidden, true, 'New Prefab steps aside — one session at a time');
+  assert.equal(armed.closedOnPick, true);
+  assert.equal(armed.tool, 'prefab', 'a card arms the Prefab tool');
+  assert.equal(armed.inHand, 'e2e_kiosk');
+  assert.equal(armed.stillInSession, true, 'picking a prefab must not end the session');
+
+  // Stamp it on the baseplate. The aim is pinned so the assertion is about
+  // the paste, not about the raycast.
+  const pasted = await page.evaluate(() => {
+    const app = window.__voxelgame.app;
+    const tool = app.tools.active;
+    tool.pick = () => ({ cell: [2, -1, 2], normal: [0, 1, 0] });
+    tool.update(); // builds the ghost, and with it the content box
+    tool.onMouseDown(0);
+    const placed = app.world.get(2, 0, 2)?.type ?? null;
+    app.undo();
+    return {
+      placed,
+      dirty: app.prefabSession.dirty,
+      afterUndo: app.world.get(2, 0, 2)?.type ?? null,
+    };
+  });
+  assert.equal(pasted.placed, 'brick', 'the paste lands on the baseplate, inside the volume');
+  assert.equal(pasted.dirty, true, 'a paste marks the prefab unsaved');
+  assert.equal(pasted.afterUndo, null, 'the paste is one undoable entry');
+
+  // F6 peels back one layer: the open library first, the session only after.
+  const stepped = await page.evaluate(() => {
+    const app = window.__voxelgame.app;
+    app.openPrefabBrowser();
+    app.togglePrefabBrowser();
+    const out = {
+      browserClosed: !app.prefabBrowser.isOpen,
+      stillInSession: !!app.prefabSession,
+    };
+    app.exitPrefabEditor();
+    out.leftSession = !app.prefabSession;
+    app.openPrefabBrowser();
+    out.pasteModeOutside = app.prefabBrowser.pasteMode;
+    app.prefabBrowser.hide();
+    app.state.set('prefabId', null);
+    app.prefabs._cache.delete('e2e_kiosk');
+    return out;
+  });
+  assert.equal(stepped.browserClosed, true, 'F6 shuts the library it opened');
+  assert.equal(stepped.stillInSession, true, 'closing the library must not end the session');
+  assert.equal(stepped.leftSession, true);
+  assert.equal(stepped.pasteModeOutside, false, 'outside a session the library places into the world again');
 });

@@ -21,6 +21,10 @@
 //
 //   GET/PUT /api/splash          -> map/splash.json
 //
+// Editor UI state (which library world is open — survives reloads):
+//
+//   GET/PUT /api/editor-state    -> map/editor.json
+//
 // The editor auto-saves here ("Save File" just PUTs), and the deployed game can
 // be built from this same map/voxelbundle.json. No runtime deps: node:http only.
 //
@@ -34,7 +38,13 @@ import { fileURLToPath } from 'node:url';
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const WORLD_FILE = join(ROOT, 'map', 'voxelbundle.json');
 const WORLDS_DIR = join(ROOT, 'map', 'worlds');
+const PREFABS_DIR = join(ROOT, 'map', 'prefabs');
 const SPLASH_FILE = join(ROOT, 'map', 'splash.json');
+const EDITOR_STATE_FILE = join(ROOT, 'map', 'editor.json');
+
+// Worlds can hold a lot of voxels — accept large uploads (256 MB) so a
+// big map never gets cut off mid-save.
+const MAX_BODY_BYTES = 256 * 1024 * 1024;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -57,10 +67,19 @@ function send(res, code, body, type = 'text/plain; charset=utf-8') {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
-    req.on('data', (c) => { data += c; if (data.length > 32 * 1024 * 1024) { reject(new Error('body too large')); req.destroy(); } });
+    req.on('data', (c) => { data += c; if (data.length > MAX_BODY_BYTES) { reject(new Error('body too large')); req.destroy(); } });
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });
+}
+
+/** Write a file atomically: the world file is the only copy of a map, so a
+ *  crash mid-write must never leave a torn file behind. Writes to a temp
+ *  sibling, then renames over the target (rename is atomic on one volume). */
+async function writeAtomic(abs, body) {
+  const tmp = `${abs}.${process.pid}.${Date.now().toString(36)}.tmp`;
+  await writeFile(tmp, body);
+  await rename(tmp, abs);
 }
 
 /** Resolve a relative world path to an absolute one under `worldsDir`, or
@@ -115,7 +134,7 @@ async function serveStatic(req, res, url) {
   }
 }
 
-export async function startServer({ port = 4173, worldFile = WORLD_FILE, root = ROOT, worldsDir = WORLDS_DIR, splashFile = SPLASH_FILE } = {}) {
+export async function startServer({ port = 4173, worldFile = WORLD_FILE, root = ROOT, worldsDir = WORLDS_DIR, prefabsDir = PREFABS_DIR, splashFile = SPLASH_FILE, editorStateFile = EDITOR_STATE_FILE } = {}) {
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host ?? 'localhost'}`);
     const path = url.pathname;
@@ -143,10 +162,48 @@ export async function startServer({ port = 4173, worldFile = WORLD_FILE, root = 
           const body = await readBody(req);
           JSON.parse(body); // validate
           await mkdir(dirname(abs), { recursive: true });
-          await writeFile(abs, body);
+          await writeAtomic(abs, body);
           return send(res, 200, 'ok');
         } catch (e) {
           return send(res, 400, `invalid world json: ${e.message}`);
+        }
+      }
+      if (req.method === 'DELETE') {
+        try {
+          await rm(abs, { recursive: true });
+          return send(res, 200, 'ok');
+        } catch {
+          return send(res, 404, 'not found');
+        }
+      }
+      return send(res, 405, 'method not allowed');
+    }
+    // --- prefab library (flat tree of prefab files under map/prefabs/) ---
+    if (path === '/api/prefabs') {
+      if (req.method !== 'GET') return send(res, 405, 'method not allowed');
+      return send(res, 200, JSON.stringify(await listWorlds(prefabsDir)), 'application/json; charset=utf-8');
+    }
+    if (path.startsWith('/api/prefabs/')) {
+      const rel = decodeURIComponent(path.slice('/api/prefabs/'.length));
+      const abs = safeWorldPath(prefabsDir, rel);
+      if (!abs) return send(res, 400, 'bad prefab path');
+      if (req.method === 'GET') {
+        try {
+          return send(res, 200, await readFile(abs), 'application/json; charset=utf-8');
+        } catch {
+          return send(res, 404, 'not found');
+        }
+      }
+      if (req.method === 'PUT') {
+        if (!rel.endsWith('.json')) return send(res, 400, 'prefab path must end in .json');
+        try {
+          const body = await readBody(req);
+          JSON.parse(body); // validate
+          await mkdir(dirname(abs), { recursive: true });
+          await writeAtomic(abs, body);
+          return send(res, 200, 'ok');
+        } catch (e) {
+          return send(res, 400, `invalid prefab json: ${e.message}`);
         }
       }
       if (req.method === 'DELETE') {
@@ -201,10 +258,32 @@ export async function startServer({ port = 4173, worldFile = WORLD_FILE, root = 
         try {
           const body = await readBody(req);
           JSON.parse(body); // validate
-          await writeFile(splashFile, body);
+          await writeAtomic(splashFile, body);
           return send(res, 200, 'ok');
         } catch (e) {
           return send(res, 400, `invalid splash json: ${e.message}`);
+        }
+      }
+      return send(res, 405, 'method not allowed');
+    }
+
+    // --- editor UI state (which library world is open) ---
+    if (path === '/api/editor-state') {
+      if (req.method === 'GET') {
+        try {
+          return send(res, 200, await readFile(editorStateFile), 'application/json; charset=utf-8');
+        } catch {
+          return send(res, 200, 'null', 'application/json; charset=utf-8');
+        }
+      }
+      if (req.method === 'PUT') {
+        try {
+          const body = await readBody(req);
+          JSON.parse(body); // validate
+          await writeAtomic(editorStateFile, body);
+          return send(res, 200, 'ok');
+        } catch (e) {
+          return send(res, 400, `invalid editor-state json: ${e.message}`);
         }
       }
       return send(res, 405, 'method not allowed');
@@ -225,7 +304,8 @@ export async function startServer({ port = 4173, worldFile = WORLD_FILE, root = 
         try {
           const body = await readBody(req);
           JSON.parse(body); // validate
-          await writeFile(worldFile, body);
+          await mkdir(dirname(worldFile), { recursive: true });
+          await writeAtomic(worldFile, body);
           send(res, 200, 'ok');
         } catch (e) {
           send(res, 400, `invalid world json: ${e.message}`);
@@ -241,7 +321,7 @@ export async function startServer({ port = 4173, worldFile = WORLD_FILE, root = 
 
   await new Promise((resolve) => server.listen(port, resolve));
   const actual = server.address()?.port ?? port;
-  return { server, port: actual, worldFile, worldsDir, splashFile };
+  return { server, port: actual, worldFile, worldsDir, prefabsDir, splashFile, editorStateFile };
 }
 
 // Run directly: `node server.mjs [port]`

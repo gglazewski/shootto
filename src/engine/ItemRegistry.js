@@ -45,7 +45,7 @@ export function clearItems() {
   REGISTRY.clear();
 }
 
-/** Persist the whole registry as JSON text (localStorage / files). */
+/** Persist the whole registry as JSON text (ships inside the world bundle). */
 export function serializeRegistry() {
   return JSON.stringify(listItems());
 }

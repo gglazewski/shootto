@@ -7,12 +7,22 @@
 // headroom), Space is intentionally inert (no jump, no sprint). Mouse look
 // reuses the pure applyLook/clampPitch math from FlyControls.
 //
+// Ladders: a climbable decal (VoxelTypes `climbable`) turns the wall face it
+// sits on into a ladder. Pressing into that face climbs — up normally, down
+// when looking steeply down; hands-off contact slides down slowly, crouch
+// holds on. No new blocks, no occupancy: the decal alone carries it.
+//
 // Mirrors FlyControls' public surface (update/onMouseMove/onKeyDown/onKeyUp)
 // plus spawnAt() so App can swap the active movement driver.
 
 import { applyLook } from './FlyControls.js';
 import { collides, moveAxis, moveWithStep, groundedAt } from '../engine/Physics.js';
 import { CELL_SIZE } from '../engine/Space.js';
+import { isClimbableDecal } from '../engine/VoxelTypes.js';
+
+// Side faces a ladder can hang on, with the face's outward normal on the
+// walk plane (pointing from the wall toward the player).
+const LADDER_FACES = [['px', 1, 0], ['nx', -1, 0], ['pz', 0, 1], ['nz', 0, -1]];
 
 export class WalkControls {
   /**
@@ -43,6 +53,9 @@ export class WalkControls {
     this.crouchSpeed = opts.crouchSpeed ?? 1.6;
     this.groundAccel = opts.groundAccel ?? 12;
     this.airAccel = opts.airAccel ?? 4;
+    this.climbSpeed = opts.climbSpeed ?? 3;
+    this.ladderSlide = opts.ladderSlide ?? 1.4;
+    this.ladderReach = opts.ladderReach ?? 0.12;
 
     this.yaw = 0;
     this.pitch = 0;
@@ -125,8 +138,6 @@ export class WalkControls {
     const crouched = wantCrouch || this.crouching;
     const height = crouched ? this.crouchHeight : this.height;
 
-    if (!this.grounded && !this.climb) this.velocity.y -= this.gravity * dt;
-
     // horizontal wish on the yaw plane (walk flat, ignore pitch)
     const forward = new this.THREE.Vector3(-Math.sin(this.yaw), 0, -Math.cos(this.yaw));
     const right = new this.THREE.Vector3(Math.cos(this.yaw), 0, -Math.sin(this.yaw));
@@ -135,6 +146,19 @@ export class WalkControls {
     if (k.has('KeyS') || k.has('ArrowDown')) wish.sub(forward);
     if (k.has('KeyD') || k.has('ArrowRight')) wish.add(right);
     if (k.has('KeyA') || k.has('ArrowLeft')) wish.sub(right);
+
+    // Ladder contact replaces gravity with directed climb velocity: pressing
+    // into the rungs climbs (down when looking steeply below the horizon),
+    // crouch holds on, hands-off contact bleeds down slowly.
+    const ladder = this.climb ? null : this._ladderContact(height);
+    if (ladder) {
+      const pressing = wish.x * ladder[0] + wish.z * ladder[1] < -0.01;
+      if (pressing) this.velocity.y = this.pitch < -0.6 ? -this.climbSpeed : this.climbSpeed;
+      else if (crouched) this.velocity.y = 0;
+      else this.velocity.y = -this.ladderSlide;
+    } else if (!this.grounded && !this.climb) {
+      this.velocity.y -= this.gravity * dt;
+    }
 
     const maxSpeed = crouched ? this.crouchSpeed : this.walkSpeed;
     const accel = this.grounded || this.climb ? this.groundAccel : this.airAccel;
@@ -212,6 +236,44 @@ export class WalkControls {
   /** Move the box on one axis, mutating it in place. */
   _step(box, axis, delta) {
     return moveAxis(this.world, box, axis, delta);
+  }
+
+  /**
+   * Climbable decal (ladder) whose face plane the player AABB touches within
+   * ladderReach, or null. Returns the face's outward normal [nx, nz] so the
+   * caller can tell "pressing into the ladder" from brushing past it.
+   */
+  _ladderContact(height) {
+    const w = this.world;
+    if (!w.decalAt) return null;
+    const m = this.ladderReach;
+    const box = this._boxAt(this.position.x, this.position.y, this.position.z, height);
+    const x0 = Math.floor((box.minX - m) / CELL_SIZE);
+    const x1 = Math.floor((box.maxX + m) / CELL_SIZE);
+    const y0 = Math.floor(box.minY / CELL_SIZE);
+    const y1 = Math.floor(box.maxY / CELL_SIZE);
+    const z0 = Math.floor((box.minZ - m) / CELL_SIZE);
+    const z1 = Math.floor((box.maxZ + m) / CELL_SIZE);
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        for (let cz = z0; cz <= z1; cz++) {
+          for (const [face, nx, nz] of LADDER_FACES) {
+            const decal = w.decalAt(cx, cy, cz, face);
+            if (!decal || !isClimbableDecal(decal.decalId)) continue;
+            // The rungs live on the face plane; touch = plane inside the
+            // reach-expanded box, which also rejects a ladder hanging on the
+            // far side of the wall the player leans against.
+            const plane = nx
+              ? (face === 'px' ? cx + 1 : cx) * CELL_SIZE
+              : (face === 'pz' ? cz + 1 : cz) * CELL_SIZE;
+            const lo = (nx ? box.minX : box.minZ) - m;
+            const hi = (nx ? box.maxX : box.maxZ) + m;
+            if (plane >= lo && plane <= hi) return [nx, nz];
+          }
+        }
+      }
+    }
+    return null;
   }
 
   _boxAt(fx, fy, fz, height) {

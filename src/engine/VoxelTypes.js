@@ -51,12 +51,15 @@ export const SIZE = Object.freeze({
  * @property {[number,number]} [tileSpan]  atlas slots [cols, rows] of this
  *   block's tile art (doors: [2,4] = one 32x64 px artwork across the leaf).
  * @property {boolean} [hidden]  true = kept out of the editor palette
- *   (internal states like the blinking lights' off phase).
- * @property {'flicker'} [blink]  the game strobes this block between itself
- *   and `blinkOff` — horror-movie cadence: lit stretches broken by fits of
- *   rapid erratic chatter (see GameApp._flickerState).
- * @property {string} [blinkOff]  block id of the dark phase.
- * @property {string} [blinkOn]   back-reference from the dark phase.
+ *   (internal states like a light's dark phase).
+ * @property {string} [lightOff]  block id of this light's dark phase. A def
+ *   carrying it is a LIGHT: one palette entry with three authored states —
+ *   'on' (default), 'off', 'flicker' — stored on the voxel as `lightMode`
+ *   and driven by engine/Lights.js + engine/Blinkers.js. An optional
+ *   `lightFlag` on the voxel lets a game flag cut its power
+ *   (see game/Reactions.js).
+ * @property {string} [lightOn]   back-reference from the dark phase; also
+ *   the id a light is normalized to when a map is saved.
  */
 
 /** @type {BlockDef[]} */
@@ -91,14 +94,12 @@ const BLOCKS = [
   { id: 'glass', name: 'Glass', tiles: 'glass', shape: 'pane', opacity: 0, transparent: true, shootThrough: true, glass: true },
   // Lights are directional (emitFaces): a ceiling panel shines DOWN only, a
   // neon tube sideways — embedded in a wall or roof they never light the far
-  // side. Blinking variants (driven by engine/Blinkers.js in both the game
-  // and the editor) toggle to their hidden *_off phase and back.
-  { id: 'lamp', name: 'Ceiling Light', tiles: 'lamp', light: 15, emitFaces: ['ny'] },
-  { id: 'neon', name: 'Red Neon', tiles: 'neon_red', light: 9, emitFaces: ['px', 'nx', 'pz', 'nz'] },
-  { id: 'lamp_blink', name: 'Ceiling Light (blinking)', tiles: 'lamp', light: 15, emitFaces: ['ny'], blink: 'flicker', blinkOff: 'lamp_blink_off' },
-  { id: 'lamp_blink_off', name: 'Ceiling Light (off)', tiles: 'lamp_off', hidden: true, blinkOn: 'lamp_blink' },
-  { id: 'neon_blink', name: 'Red Neon (blinking)', tiles: 'neon_red', light: 9, emitFaces: ['px', 'nx', 'pz', 'nz'], blink: 'flicker', blinkOff: 'neon_blink_off' },
-  { id: 'neon_blink_off', name: 'Red Neon (off)', tiles: 'neon_off', hidden: true, blinkOn: 'neon_blink' },
+  // side. Each is ONE palette entry with three authored states (on/off/
+  // flicker, engine/Lights.js) toggling to its hidden *_off phase and back.
+  { id: 'lamp', name: 'Ceiling Light', tiles: 'lamp', light: 15, emitFaces: ['ny'], lightOff: 'lamp_off' },
+  { id: 'lamp_off', name: 'Ceiling Light (off)', tiles: 'lamp_off', hidden: true, lightOn: 'lamp' },
+  { id: 'neon', name: 'Red Neon', tiles: 'neon_red', light: 9, emitFaces: ['px', 'nx', 'pz', 'nz'], lightOff: 'neon_off' },
+  { id: 'neon_off', name: 'Red Neon (off)', tiles: 'neon_off', hidden: true, lightOn: 'neon' },
   // --- mid-90s Poland set: post-communist estates, bazaars, kiosks ---
   { id: 'panel', name: 'Prefab Panel', tiles: 'panel' },
   { id: 'plaster_pastel', name: 'Pastel Plaster', tiles: 'plaster_pastel' },
@@ -108,9 +109,8 @@ const BLOCKS = [
   { id: 'paving', name: 'Paving Slabs', tiles: { py: 'paving', ny: 'concrete', px: 'concrete', nx: 'concrete', pz: 'concrete', nz: 'concrete' } },
   { id: 'brick_sooty', name: 'Sooty Brick', tiles: 'brick_sooty' },
   { id: 'lino', name: 'Linoleum', tiles: 'lino' },
-  { id: 'neon_white', name: 'White Neon', tiles: 'neon_white', light: 10, emitFaces: ['px', 'nx', 'pz', 'nz'] },
-  { id: 'neon_white_blink', name: 'White Neon (blinking)', tiles: 'neon_white', light: 10, emitFaces: ['px', 'nx', 'pz', 'nz'], blink: 'flicker', blinkOff: 'neon_white_blink_off' },
-  { id: 'neon_white_blink_off', name: 'White Neon (off)', tiles: 'neon_white_off', hidden: true, blinkOn: 'neon_white_blink' },
+  { id: 'neon_white', name: 'White Neon', tiles: 'neon_white', light: 10, emitFaces: ['px', 'nx', 'pz', 'nz'], lightOff: 'neon_white_off' },
+  { id: 'neon_white_off', name: 'White Neon (off)', tiles: 'neon_white_off', hidden: true, lightOn: 'neon_white' },
   // --- estate facades & garage colony (built from the examples/ photos) ---
   { id: 'plaster_yellow', name: 'Pastel Plaster (yellow)', tiles: 'plaster_yellow' },
   { id: 'plaster_orange', name: 'Pastel Plaster (orange)', tiles: 'plaster_orange' },
@@ -260,6 +260,16 @@ export function registerBlock(def) {
  *   The atlas art is span*16px (one 16px slot per covered cell), so big
  *   decals — graffiti, road text — keep the same texel density as blocks.
  *   Rotation turns the footprint with the artwork (odd rotations swap w/h).
+ * @property {boolean} [hidden]  true = kept out of the editor palette
+ *   (internal states like the wall switch's flipped-on art).
+ * @property {string} [switchOn]   decal id of this switch's ON art. A def
+ *   carrying it is a SWITCH: the placed decal stores the game flag it
+ *   drives (`flag` on the decal entry) and E in the game flips flag and
+ *   art together — see engine/Switches.js + game/Reactions.js.
+ * @property {string} [switchOff]  back-reference from the ON art; also the
+ *   id a switch is normalized to when a map is saved.
+ * @property {boolean} [climbable]  true = a player whose AABB touches the
+ *   decal's face plane can climb it (ladders) — see editor/WalkControls.js.
  */
 
 /** @type {DecalDef[]} */
@@ -276,6 +286,9 @@ const DECALS = [
   { id: 'decal_cans', name: 'Cans', tile: 'decal_cans' },
   { id: 'decal_stain', name: 'Oil Stain', tile: 'decal_stain' },
   { id: 'decal_food', name: 'Food Scraps', tile: 'decal_food' },
+  { id: 'decal_cigs', name: 'Cigarette Butts', tile: 'decal_cigs' },
+  { id: 'decal_poop', name: 'Dog Poop', tile: 'decal_poop' },
+  { id: 'decal_seeds', name: 'Sunflower Seeds', tile: 'decal_seeds' },
   { id: 'decal_graffiti', name: 'Graffiti', tile: 'decal_graffiti', span: [4, 2] },
   { id: 'decal_stop', name: 'STOP Marking', tile: 'decal_stop', span: [4, 4] },
   { id: 'decal_arrow', name: 'Road Arrow', tile: 'decal_arrow', span: [2, 4] },
@@ -283,6 +296,9 @@ const DECALS = [
   { id: 'decal_poster', name: 'Peeling Poster', tile: 'decal_poster', span: [2, 2] },
   { id: 'decal_sklep', name: 'SKLEP Sign', tile: 'decal_sklep', span: [4, 1] },
   { id: 'decal_club', name: 'Club Graffiti', tile: 'decal_club', span: [4, 2] },
+  { id: 'decal_hwdp', name: 'HWDP Tag', tile: 'decal_hwdp', span: [4, 2] },
+  { id: 'decal_kotwica', name: 'Kotwica Stencil', tile: 'decal_kotwica', span: [2, 2] },
+  { id: 'decal_anarchy', name: 'Anarchy A', tile: 'decal_anarchy', span: [2, 2] },
   { id: 'decal_damp', name: 'Damp Stain', tile: 'decal_damp', span: [2, 2] },
   { id: 'decal_ads', name: 'Tear-off Ads', tile: 'decal_ads' },
   { id: 'decal_zebra', name: 'Zebra Crossing', tile: 'decal_zebra', span: [2, 4] },
@@ -291,6 +307,15 @@ const DECALS = [
   { id: 'decal_curtain', name: 'Lace Curtain', tile: 'decal_curtain' },
   { id: 'decal_hopscotch', name: 'Chalk Hopscotch', tile: 'decal_hopscotch', span: [1, 4] },
   { id: 'decal_domofon', name: 'Domofon Panel', tile: 'decal_domofon' },
+  // Functional: touching its face lets the player climb (WalkControls).
+  { id: 'decal_ladder', name: 'Ladder', tile: 'decal_ladder', span: [1, 4], climbable: true },
+  // The 90s Polish flip switch (wyłącznik): cream plastic plate, one big
+  // rocker. A placed one carries a `flag` — E in the game flips the flag,
+  // and anything bound to it (lights, door locks) reacts. Art swaps between
+  // the two ids at runtime; maps always store the OFF id (state lives in
+  // the flag store, not the map).
+  { id: 'decal_switch', name: 'Light Switch', tile: 'decal_switch', switchOn: 'decal_switch_on' },
+  { id: 'decal_switch_on', name: 'Light Switch (on)', tile: 'decal_switch_on', hidden: true, switchOff: 'decal_switch' },
 ];
 
 const DECAL_REGISTRY = new Map(DECALS.map((d) => [d.id, d]));
@@ -333,6 +358,11 @@ export function listDecalIds() {
 /** True if the id resolves to a known decal. */
 export function isDecalId(id) {
   return DECAL_REGISTRY.has(id);
+}
+
+/** True when the decal id resolves to a climbable decal (ladders). */
+export function isClimbableDecal(id) {
+  return !!DECAL_REGISTRY.get(id)?.climbable;
 }
 
 /** Register a decal definition at runtime (text signs, mods, tests).

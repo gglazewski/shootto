@@ -135,7 +135,7 @@ test('big emissive voxel seeds block light from all its cells', () => {
 
 function cloneWorld(w) {
   const w2 = new World();
-  w.forEachVoxel((v) => w2.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2]));
+  w.forEachVoxel((v) => w2.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0, v.variant ?? null));
   return w2;
 }
 
@@ -242,11 +242,12 @@ test('directional lamp goes dark when its emit face is sealed', () => {
   assert.equal(lf.get(1, 1, 0).block, 0, 'no sideways spill from a sealed panel');
 });
 
-test('block light casts hard shadows: no wrap around a small wall', () => {
+test('block light casts real shadows: only a dim bounce fill behind a small wall', () => {
   const w = new World();
   // a small 3x3 wall right in front of the light — with flooding, light
   // would wrap around it and light the back almost fully; with LOS
-  // stamping the space directly behind is pitch black
+  // stamping the space behind gets only the faint indirect fill of the
+  // bounce pass, far dimmer than the lit side and fading with depth
   for (let y = -1; y <= 1; y++) {
     for (let z = -1; z <= 1; z++) w.place('concrete', SIZE.SMALL, 2, y, z);
   }
@@ -254,8 +255,11 @@ test('block light casts hard shadows: no wrap around a small wall', () => {
   const lf = new LightField(w);
   lf.recompute();
   assert.equal(lf.get(1, 0, 0).block, MAX_LIGHT - 1, 'lit in front of the wall');
-  assert.equal(lf.get(3, 0, 0).block, 0, 'shadow directly behind the wall');
-  assert.equal(lf.get(5, 0, 0).block, 0, 'the shadow extends');
+  const behind = lf.get(3, 0, 0).block;
+  assert.ok(behind > 0, 'the shadow is no longer pitch black (bounce fill)');
+  assert.ok(behind <= 4, `the fill stays dim (got ${behind})`);
+  assert.ok(lf.get(5, 0, 0).block < behind, 'the fill fades deeper into the shadow');
+  assert.equal(lf.get(8, 0, 0).block, 0, 'the deep shadow stays dark');
 });
 
 test('closed door blocks light; opening it lets light through', () => {
@@ -282,6 +286,108 @@ test('closed door blocks light; opening it lets light through', () => {
   toggleDoor(w, w.get(2, 3, 0));
   lf.recomputeEdit(w.drainEdits());
   assert.equal(lf.get(1, 3, 0).sky, 0, 're-closed door seals again');
+});
+
+// --- half slabs (a cell that is only half solid) ---
+
+/** Swap the inner 3x3 of a hollow box's roof for slabs of `variant`. */
+function slabRoof(w, variant) {
+  for (let x = -1; x <= 1; x++) {
+    for (let z = -1; z <= 1; z++) {
+      w.remove(x, 5, z);
+      w.place('concrete', SIZE.SMALL, x, 5, z, 0, variant);
+    }
+  }
+  return w;
+}
+
+test('a lower-slab roof takes sky into its own cell but still shadows the room', () => {
+  const solid = new LightField(hollowBox());
+  solid.recompute();
+  assert.equal(solid.get(0, 5, 0).sky, 0, 'a full roof block is dark');
+
+  const lf = new LightField(slabRoof(hollowBox(), 'lower'));
+  lf.recompute();
+  assert.equal(lf.get(0, 5, 0).sky, MAX_LIGHT, 'the air above the slab is open sky');
+  assert.equal(lf.get(0, 4, 0).sky, 0, 'the room below stays sealed');
+});
+
+test('an upper-slab roof blocks sky at its own cell', () => {
+  const lf = new LightField(slabRoof(hollowBox(), 'upper'));
+  lf.recompute();
+  // the solid half is on top: no direct sky, and nothing floods down past it
+  assert.equal(lf.get(0, 5, 0).sky, 0);
+  assert.equal(lf.get(0, 4, 0).sky, 0);
+});
+
+test('sky lands on a slab floor and stops at its solid half', () => {
+  // open-air plate at y=0: a full ring around an inner 3x3 of lower slabs
+  const w = new World();
+  for (let x = -2; x <= 2; x++) {
+    for (let z = -2; z <= 2; z++) {
+      const slab = Math.abs(x) <= 1 && Math.abs(z) <= 1;
+      w.place('concrete', SIZE.SMALL, x, 0, z, 0, slab ? 'lower' : null);
+    }
+  }
+  const lf = new LightField(w);
+  lf.recompute();
+  assert.equal(lf.get(0, 0, 0).sky, MAX_LIGHT, 'the slab cell is lit, not blacked out');
+  assert.equal(lf.get(2, 0, 0).sky, 0, 'the full block beside it still is not');
+});
+
+test('block light crosses a slab cell but not its solid half', () => {
+  const w = new World();
+  for (let x = -1; x <= 1; x++) {
+    for (let z = -1; z <= 1; z++) w.place('concrete', SIZE.SMALL, x, 0, z, 0, 'lower');
+  }
+  w.place('torch', SIZE.SMALL, 0, 1, 0); // standing on the slab floor
+  const lf = new LightField(w);
+  lf.recompute();
+  assert.equal(lf.get(0, 0, 0).block, MAX_LIGHT - 1, 'the slab top is lit');
+  // The solid half transmits nothing; only a faint bounce remnant creeps
+  // around the platform edge (light spilling off a table edge).
+  assert.ok(lf.get(0, -1, 0).block <= 3, 'the underside gets bounce spill at most');
+  assert.equal(lf.get(0, -3, 0).block, 0, 'deeper below stays dark');
+});
+
+test('a lower and an upper slab side by side do not share light', () => {
+  // The upper slab is walled in on every side but the lower slab next to it,
+  // so that step is the only way light could get there.
+  const w = new World();
+  for (let x = -1; x <= 2; x++) {
+    for (let z = -1; z <= 1; z++) w.place('concrete', SIZE.SMALL, x, 0, z);
+  }
+  w.place('concrete', SIZE.SMALL, 0, 1, 0, 0, 'lower'); // open to the sky
+  w.place('concrete', SIZE.SMALL, 1, 1, 0, 0, 'upper');
+  for (const [x, y, z] of [[1, 1, -1], [1, 1, 1], [2, 1, 0], [1, 2, 0]]) {
+    w.place('concrete', SIZE.SMALL, x, y, z);
+  }
+  const lf = new LightField(w);
+  lf.recompute();
+  // sky pours onto the lower slab's open top; the upper slab's open half is
+  // underneath its own solid lid, so the light cannot step sideways into it
+  assert.equal(lf.get(0, 1, 0).sky, MAX_LIGHT);
+  assert.equal(lf.get(1, 1, 0).sky, 0);
+});
+
+test('incremental: placing and removing a slab matches full recompute', () => {
+  const roomWithHole = (w) => {
+    for (let x = -2; x <= 2; x++) {
+      for (let z = -2; z <= 2; z++) {
+        for (let y = 1; y <= 5; y++) {
+          const wall = Math.abs(x) === 2 || Math.abs(z) === 2 || y === 1 || y === 5;
+          if (wall && !(y === 5 && x === 0 && z === 0)) w.place('concrete', SIZE.SMALL, x, y, z);
+        }
+      }
+    }
+  };
+  assertEditMatchesFull((w) => { w.place('concrete', SIZE.SMALL, 0, 5, 0, 0, 'lower'); }, roomWithHole);
+  assertEditMatchesFull((w) => { w.place('concrete', SIZE.SMALL, 0, 5, 0, 0, 'upper'); }, roomWithHole);
+  assertEditMatchesFull((w) => { w.remove(0, 5, 0); }, (w) => {
+    roomWithHole(w);
+    w.place('concrete', SIZE.SMALL, 0, 5, 0, 0, 'lower');
+    w.drainEdits();
+  });
 });
 
 test('incremental: world growth falls back to a full recompute', () => {

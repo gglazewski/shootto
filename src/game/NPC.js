@@ -43,6 +43,8 @@ export class NPC {
     this.dialog = type.dialog;
     this.greeting = type.greeting;
     this.topics = type.topics ?? [];
+    this.chat = type.chat ?? null;
+    this.services = type.services ?? [];
     this.pos = { x: feet.x, y: feet.y, z: feet.z };
     this.animName = 'idle';
     this.animTime = Math.random() * 2; // desync idle sway between NPCs

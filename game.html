@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
   <title>MARO 93</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -156,6 +157,10 @@
     .quest-entry .q-title { color: #ffd100; font-weight: 600; margin-bottom: 2px; }
     .quest-entry .q-obj { color: #c8c8c8; padding-left: 14px; }
     .quest-entry .q-obj::before { content: '- '; }
+    /* A met objective of a multi-goal quest: stays on the list as a ticked-off
+       checklist row while its siblings are still open. */
+    .quest-entry .q-obj.done { color: #7a7a7a; text-decoration: line-through; }
+    .quest-entry .q-obj.done::before { content: '✓ '; color: #9be07a; }
     .quest-entry.ready .q-obj { color: #9be07a; }
     .quest-entry.ready .q-obj::before { content: '? '; color: #ffd100; font-weight: 700; }
 
@@ -240,6 +245,21 @@
       border-bottom-width: 2px; border-radius: 4px; background: #161815; font-family: inherit; font-size: 12px;
     }
 
+    /* NPC repair screen: the player's breakable weapons as pickable rows —
+       swatch, name, condition; pick one, hit Repair */
+    #repair .box { min-width: 380px; }
+    #repair-list { margin: 14px 0 16px; }
+    #repair-list .hint { margin: 8px 0; }
+    .repair-row {
+      display: flex; align-items: center; gap: 12px; text-align: left; padding: 8px 10px;
+    }
+    .repair-row.selected { border-color: var(--ui-amber); background: rgba(232,178,92,0.12); }
+    .repair-row canvas { flex: 0 0 auto; }
+    .repair-row .r-name { flex: 1; font-size: 14px; }
+    .repair-row .r-cond { font-size: 12px; color: var(--ui-muted); }
+    .repair-row .r-cond.worn { color: var(--ui-amber); }
+    .repair-row .r-cond.broken { color: var(--ui-red-hot); }
+
     /* main menu: transparent over the flyover — title splash, slim panel,
        faint CRT scanlines for the 90s TV feel */
     #menu {
@@ -265,23 +285,43 @@
       line-height: 1; text-shadow: 4px 4px 0 #000, 0 0 60px rgba(201,55,46,0.4);
     }
     #menu .title .dot { color: var(--ui-red-hot); }
-    #menu .tagline {
-      margin-top: 10px; color: var(--ui-muted); font-size: 14px;
-      letter-spacing: 0.04em; text-shadow: 1px 1px 0 #000;
-    }
     #menu .box {
       position: relative; z-index: 1; min-width: 320px; width: min(90vw, 380px);
       backdrop-filter: blur(3px);
     }
-    #menu .hint {
-      position: relative; z-index: 1; margin: 0; max-width: 640px;
-      text-align: center; text-shadow: 1px 1px 0 #000;
-    }
     @media (max-height: 620px) {
       #menu { gap: 14px; }
       #menu .title { font-size: clamp(34px, 8vh, 56px); }
-      #menu .hint { display: none; }
     }
+
+    /* loading screen: first thing on screen — opaque so neither the empty
+       canvas nor another menu flashes up while the build parses and the world
+       loads. GameApp drives the bar/status and swaps it for the main menu. */
+    #loading { background: #080908; flex-direction: column; gap: 22px; z-index: 30; }
+    #loading .load-title {
+      font-size: clamp(38px, 7vw, 64px); font-weight: 900; letter-spacing: 0.12em;
+      line-height: 1; text-shadow: 4px 4px 0 #000, 0 0 60px rgba(201,55,46,0.4);
+    }
+    #loading .load-title .dot { color: var(--ui-red-hot); }
+    #loading .load-track {
+      width: min(70vw, 340px); height: 10px; border-radius: 5px;
+      background: rgba(255,255,255,0.1); overflow: hidden;
+    }
+    #loading .load-fill {
+      display: block; height: 100%; width: 0%; border-radius: 5px;
+      background: linear-gradient(90deg, var(--ui-red), var(--ui-red-hot));
+      transition: width 0.2s;
+    }
+    #loading .load-status { font-size: 12px; color: var(--ui-muted); letter-spacing: 0.08em; }
+
+    /* splash crossfade: sits between the canvas and the menu screen; GameApp
+       fades it in, cuts to the next splash shot behind full black, then fades
+       it back out. Duration must match SPLASH_FADE_SECONDS in GameApp.js. */
+    #splash-fade {
+      position: fixed; inset: 0; z-index: 15; pointer-events: none;
+      background: #080908; opacity: 0; transition: opacity 0.35s ease;
+    }
+    #splash-fade.show { opacity: 1; }
 
     /* death screen: red-tinted flavour of the same look */
     #death .box { border-color: rgba(201,55,46,0.5); }
@@ -384,26 +424,27 @@
     </div>
   </div>
 
-  <div id="menu" class="screen">
+  <div id="splash-fade"></div>
+
+  <div id="loading" class="screen">
+    <div class="load-title">MARO 93<span class="dot">.</span></div>
+    <div class="load-track"><span class="load-fill" id="loading-fill"></span></div>
+    <div class="load-status" id="loading-status">Loading…</div>
+  </div>
+
+  <div id="menu" class="screen hidden">
     <div class="menu-title">
       <div class="kicker">Poland · 1993</div>
       <div class="title">MARO 93<span class="dot">.</span></div>
-      <div class="tagline">Ex-military. Ex-mercenary. He hunted communists under the PRL — now he's hunting something worse.</div>
     </div>
     <div class="box">
       <button id="btn-new" class="primary">New Game</button>
       <h2>Load Game</h2>
       <div id="slots-menu"></div>
     </div>
-    <div class="hint">
-      <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> move &nbsp;·&nbsp;
-      <kbd>C</kbd> crouch &nbsp;·&nbsp;
-      <kbd>LMB</kbd> attack &nbsp;·&nbsp; <kbd>1</kbd>-<kbd>4</kbd> select equipment &nbsp;·&nbsp;
-      <kbd>R</kbd> reload &nbsp;·&nbsp; <kbd>F</kbd> use injection &nbsp;·&nbsp; <kbd>Esc</kbd> pause / save
-    </div>
   </div>
 
-  <div id="pause" class="screen">
+  <div id="pause" class="screen hidden">
     <div class="box">
       <h1>Paused</h1>
       <div class="sub">Save or load a game slot</div>
@@ -411,6 +452,18 @@
       <h2>Save / Load</h2>
       <div id="slots-pause"></div>
       <button id="btn-quit">Quit to Menu</button>
+    </div>
+  </div>
+
+  <!-- NPC repair service (opened from a dialogue reply): the player's worn
+       melee weapons, click one, hit Repair. Closes back into the chat. -->
+  <div id="repair" class="screen hidden">
+    <div class="box">
+      <h1>Repair</h1>
+      <div class="sub" id="repair-sub">Pick a weapon to fix up</div>
+      <div id="repair-list"></div>
+      <button id="btn-repair-fix" class="primary" disabled>Repair</button>
+      <button id="btn-repair-close">Done</button>
     </div>
   </div>
 

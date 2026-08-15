@@ -3,13 +3,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import * as THREE from '../vendor/three.module.js';
 
 import { World } from '../src/engine/World.js';
 import { SIZE } from '../src/engine/VoxelTypes.js';
 import { MobManager } from '../src/game/MobManager.js';
-import { deserializeBundle } from '../src/persistence/WorldBundle.js';
 import { collides } from '../src/engine/Physics.js';
 
 const stubRenderer = { update() {}, addMob() {}, removeMob() {}, clear() {} };
@@ -174,32 +172,50 @@ test('a large clustered pack never clips into walls or teleports', () => {
   assert.ok(engaged >= 1, `the pack should still reach the player (${engaged} within 2m)`);
 });
 
-test('mobs chase the player down the bundled-world staircase without disappearing', () => {
-  // The real shipped map: a staircase descends ~3.5m into a basement. Mobs
-  // chasing the player down it must descend (not vanish / fall through the
-  // world / get flung off the map) — the bug seen at world (7.8, -0.4, 1.0).
-  const raw = JSON.parse(readFileSync(new URL('../map/voxelbundle.json', import.meta.url), 'utf8'));
-  const { world } = deserializeBundle(JSON.stringify(raw));
-  world.addMobSpawn('imp', 15, 2, 5); // on the ground, above the staircase
-  const mgr = new MobManager({ THREE, scene: {}, world, onDamagePlayer: () => {}, renderer: stubRenderer });
+test('mobs chase the player down a staircase without disappearing', () => {
+  // A staircase descends 3 m into a pit. Mobs chasing the player down it must
+  // descend (not vanish / fall through the world / get flung off the map) —
+  // the bug class seen at world (7.8, -0.4, 1.0) in an older shipped map.
+  const world = new World();
+  for (let x = 0; x < 32; x += 2) {
+    for (let z = 0; z < 32; z += 2) world.place('stone', SIZE.BIG, x, 0, z);
+  }
+  // Pit x 10..17, z 10..17 with a floor 3 m below the ground surface.
+  for (let x = 10; x < 18; x += 2) {
+    for (let z = 10; z < 18; z += 2) {
+      world.remove(x, 0, z);
+      world.place('stone', SIZE.BIG, x, -6, z);
+    }
+  }
+  // One-cell steps down along z=12..13 from the ground rim to the pit floor.
+  for (let x = 15; x >= 10; x--) {
+    const surface = 2 - (15 - x);
+    for (let y = surface - 1; y >= -5; y--) {
+      world.place('stone', SIZE.SMALL, x, y, 12);
+      world.place('stone', SIZE.SMALL, x, y, 13);
+    }
+  }
+  world.addMobSpawn('imp', 8, 2, 24); // world (4.25, 1.0, 12.25), on the ground
+  const mgr = makeManager(world);
   mgr.rebuild();
-  assert.ok(mgr.mobs.length >= 1, 'mobs spawn from the bundled map');
+  assert.ok(mgr.mobs.length >= 1, 'the mob spawns');
 
-  // Aggro while the player is on the ground beside the staircase.
-  const onGround = { x: 8.25, y: 1.0, z: 2.75 };
-  for (let i = 0; i < 120; i++) mgr.update(1 / 60, onGround);
+  // Aggro while the player stands on the ground between the mob and the pit.
+  const onGround = { x: 6.25, y: 1.0, z: 12.25 };
+  for (let i = 0; i < 300; i++) mgr.update(1 / 60, onGround);
+  assert.ok(mgr.mobs.some((m) => m.aggro), 'the mob aggroes on sight');
 
-  // The player ducks down the staircase into the basement; mobs must follow
-  // down without any position going non-finite or plunging below the world.
-  // (Teleported out of sight, so seed the mobs' last-known position — the
-  // test exercises the descent, not target acquisition.)
-  const basement = { x: 4.25, y: -2.5, z: 0.75 };
-  for (const m of mgr.mobs) m.lkp = { ...basement };
+  // The player ducks down into the pit; the mob must follow down without any
+  // position going non-finite or plunging below the world. (Seed the
+  // last-known position — the test exercises the descent, not target
+  // acquisition.)
+  const pit = { x: 6.75, y: -2.0, z: 6.25 };
+  for (const m of mgr.mobs) m.lkp = { ...pit };
   let minY = 1e9;
   let nonFinite = false;
-  for (let i = 0; i < 30 * 60; i++) {
+  for (let i = 0; i < 20 * 60; i++) {
     const d = i % 45 === 0 ? 0.1 : 1 / 60; // include lag spikes
-    mgr.update(d, basement);
+    mgr.update(d, pit);
     for (const m of mgr.mobs) {
       minY = Math.min(minY, m.pos.y);
       if (!Number.isFinite(m.pos.x + m.pos.y + m.pos.z)) { nonFinite = true; break; }
@@ -208,7 +224,7 @@ test('mobs chase the player down the bundled-world staircase without disappearin
     if (nonFinite) break;
   }
   assert.equal(nonFinite, false, 'no mob may disappear (non-finite position or plunge)');
-  assert.ok(minY < -1.5, `at least one mob should descend into the basement (minY=${minY.toFixed(1)})`);
+  assert.ok(minY < -1.5, `the mob should descend into the pit (minY=${minY.toFixed(1)})`);
 });
 
 test('a pack funnels through a narrow doorway without deadlocking', () => {

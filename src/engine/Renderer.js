@@ -18,13 +18,18 @@
 import { ChunkMesh } from './ChunkMesh.js';
 import { Sky } from './Sky.js';
 import { LightField } from './LightField.js';
+import { MAX_LAMPS } from './chunkShader.js';
 import { PostFX } from './PostFX.js';
 import { createChunkMaterial } from './chunkShader.js';
 import { CELL_SIZE } from './Space.js';
 import { CONFIG } from '../config.js';
 
-/** Max deferred (non-urgent) chunk rebuilds per frame. */
-const REBUILD_BUDGET = 2;
+/** Time budget (ms) for deferred chunk rebuilds per frame. A dense chunk
+ *  costs ~5-12 ms to remesh, so a count budget would let a few of them blow
+ *  the frame; the time budget keeps catch-up work bounded regardless of how
+ *  heavy the chunks are. */
+const REBUILD_BUDGET_MS = 6;
+const nowMs = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
 /** Worlds with at most this many chunks load fully; bigger ones stream. */
 const FULL_LOAD_MAX = 30000;
 
@@ -166,6 +171,27 @@ export class Renderer {
     }
   }
 
+  /** Drive the dynamic flicker-lamp lights (Blinkers.lampLights): world
+   *  center, range and 0..1 gutter signal per LIT flickering lamp. The
+   *  nearest MAX_LAMPS to the camera win when a map has more. Call every
+   *  frame; an empty list switches the effect off. */
+  setLampLights(lights) {
+    let list = lights ?? [];
+    if (list.length > MAX_LAMPS) {
+      const c = this.camera.position;
+      const d2 = (l) => (l.x - c.x) ** 2 + (l.y - c.y) ** 2 + (l.z - c.z) ** 2;
+      list = [...list].sort((a, b) => d2(a) - d2(b)).slice(0, MAX_LAMPS);
+    }
+    for (const mat of this._litMaterials) {
+      const u = mat.uniforms;
+      u.uLampCount.value = list.length;
+      for (let i = 0; i < list.length; i++) {
+        u.uLamps.value[i].set(list[i].x, list[i].y, list[i].z, list[i].range);
+        u.uLampI.value[i] = list[i].intensity;
+      }
+    }
+  }
+
   /** Toggle the polaroid/bloom pipeline at runtime. @returns {boolean} new state */
   togglePostFX() {
     this.postfxEnabled = !this.postfxEnabled;
@@ -177,10 +203,11 @@ export class Renderer {
    *
    * Light updates come from the World's edit records (place/remove deltas):
    * small batches are patched incrementally in a bounded box, big batches fall
-   * back to a full recompute. Chunk rebuilds are time-sliced: the chunk(s)
-   * directly touched by an edit rebuild this frame so the block appears
-   * instantly, while up to REBUILD_BUDGET neighbors rebuild per frame and the
-   * rest stay dirty (their border AO/light catches up over a few frames).
+   * back to a full recompute. Chunk rebuilds are time-sliced: chunks touched
+   * by a hard (player) edit rebuild this frame so the block appears instantly,
+   * while soft edits (blinking lights) and plain dirty chunks rebuild within
+   * the REBUILD_BUDGET_MS time budget; the rest stay dirty and catch up over
+   * the next frames (their border AO/light follows).
    * Dirty chunks that aren't loaded are skipped — streaming builds them fresh
    * from live world state when the camera approaches. Call every frame.
    */
@@ -190,8 +217,12 @@ export class Renderer {
 
     const keys = this.world.drainDirty();
 
+    // Player edits rebuild instantly so placed blocks appear the same frame;
+    // soft edits (blinking lights) tolerate a frame of latency and queue up
+    // with the deferred, budgeted work.
     const urgent = new Set();
     for (const e of edits) {
+      if (e.soft) continue;
       for (const [x, y, z] of e.cells) urgent.add(this.world.chunkKey(x, y, z));
     }
 
@@ -199,13 +230,13 @@ export class Renderer {
     for (const ckey of keys) {
       if (urgent.has(ckey)) { this._rebuildChunk(ckey); rebuilt.add(ckey); }
     }
-    let deferred = 0;
+    const t0 = nowMs();
     for (const ckey of keys) {
-      if (rebuilt.has(ckey) || deferred >= REBUILD_BUDGET) continue;
+      if (rebuilt.has(ckey)) continue;
       if (!this.chunks.has(ckey)) continue; // streamed in fresh later
+      if (nowMs() - t0 > REBUILD_BUDGET_MS) break;
       this._rebuildChunk(ckey);
       rebuilt.add(ckey);
-      deferred++;
     }
     for (const ckey of keys) {
       if (!rebuilt.has(ckey) && this.chunks.has(ckey)) this.world.dirty.add(ckey);
@@ -268,9 +299,13 @@ export class Renderer {
     if (!pending.length) return;
     pending.sort((a, b) => a[0] - b[0]);
     // A cold world gets a bigger first burst so the view fills quickly;
-    // afterwards the budget keeps streaming hitches out of the frame time.
-    const budget = this.chunks.size === 0 ? Math.max(R.maxLoadsPerFrame, 32) : R.maxLoadsPerFrame;
+    // afterwards the count + time budgets keep streaming hitches out of the
+    // frame time (a dense chunk can take >10 ms to mesh).
+    const cold = this.chunks.size === 0;
+    const budget = cold ? Math.max(R.maxLoadsPerFrame, 32) : R.maxLoadsPerFrame;
+    const t0 = nowMs();
     for (let i = 0; i < pending.length && i < budget; i++) {
+      if (!cold && nowMs() - t0 > REBUILD_BUDGET_MS) break;
       this._rebuildChunk(pending[i][1]);
     }
   }
@@ -453,6 +488,7 @@ export class Renderer {
   render(dt = 0, scene = this.scene) {
     if (scene === this.scene) {
       this.syncChunks();
+      this._sortTransparentChunks();
       this._updateSky(dt);
       this._postTime += dt;
       // Fog is measured from the camera; keep the shared uniform current.
@@ -466,6 +502,26 @@ export class Renderer {
       return;
     }
     this.webgl.render(scene, this.camera);
+  }
+
+  /** Order chunk transparent meshes back-to-front for this frame.
+   *  Chunk geometry is baked in world space with every mesh parked at the
+   *  origin, so three.js's own transparent sort (by object position) sees all
+   *  chunks at the same depth and falls back to insertion order — glass in a
+   *  far chunk could blend over nearer glass. Nearer chunks get a higher
+   *  renderOrder; every value stays above the default 0 so glass keeps
+   *  blending after sprites/particles (see ChunkMesh). */
+  _sortTransparentChunks() {
+    const cam = this.camera.position;
+    const half = (this.chunkSize * CELL_SIZE) / 2;
+    for (const mesh of this.chunks.values()) {
+      const t = mesh.meshTransparent;
+      if (!t || !t.visible) continue;
+      const dx = mesh.origin[0] * CELL_SIZE + half - cam.x;
+      const dy = mesh.origin[1] * CELL_SIZE + half - cam.y;
+      const dz = mesh.origin[2] * CELL_SIZE + half - cam.z;
+      t.renderOrder = 1 + 1 / (1 + dx * dx + dy * dy + dz * dz);
+    }
   }
 
   /** Move the camera to a good vantage point above the world. */

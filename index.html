@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
   <title>Voxel Editor</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -26,19 +27,107 @@
     #ui-crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
     #ui-crosshair::after  { left: 0; top: 8px; width: 18px; height: 2px; }
 
-    #ui-hud {
-      top: 12px; left: 12px; padding: 10px 14px; border-radius: 8px;
-      background: rgba(0,0,0,0.45); font-size: 13px; line-height: 1.5;
-      min-width: 190px; pointer-events: none;
+    /* --- left sidebar: every editor action plus the inspector ---
+       Not an .overlay: it owns its clicks and sits above the crosshair layer
+       but below the modals (item/equip editors, catalogues). */
+    #sidebar {
+      position: fixed; top: 0; left: 0; bottom: 0; z-index: 11;
+      width: 236px; display: flex; flex-direction: column;
+      background: rgba(10,12,16,0.88); border-right: 1px solid #232a33;
+      font-size: 13px; transition: transform 0.16s ease;
     }
-    #ui-hud .row { display: flex; justify-content: space-between; gap: 14px; }
-    #ui-hud .label { opacity: 0.7; }
-    #ui-hud .value { font-variant-numeric: tabular-nums; }
+    body.sb-collapsed #sidebar { transform: translateX(-100%); }
+
+    #sb-show {
+      position: fixed; top: 10px; left: 10px; z-index: 11; display: none;
+      width: 30px; height: 30px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.85); color: #e8e8e8; cursor: pointer;
+      font-family: inherit; font-size: 14px; line-height: 1;
+    }
+    body.sb-collapsed #sb-show { display: block; }
+    #sb-show:hover { background: rgba(40,46,56,0.95); }
+
+    .sb-head {
+      display: flex; align-items: center; gap: 8px;
+      padding: 10px 12px; border-bottom: 1px solid #232a33;
+    }
+    .sb-title { flex: 1; font-size: 12px; font-weight: 600; letter-spacing: 1px; color: #9cd7c4; }
+    .sb-icon {
+      width: 24px; height: 24px; flex-shrink: 0;
+      border: 1px solid #3a3f47; border-radius: 5px;
+      background: rgba(20,24,30,0.9); color: #9aa; cursor: pointer;
+      font-family: inherit; font-size: 12px; line-height: 1;
+    }
+    .sb-icon:hover { background: rgba(40,46,56,0.95); color: #e8e8e8; }
+
+    .sb-scroll {
+      flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .sb-scroll::-webkit-scrollbar { width: 8px; }
+    .sb-scroll::-webkit-scrollbar-thumb { background: #2a313b; border-radius: 4px; }
+
+    .sb-group-title {
+      font-size: 10px; letter-spacing: 1.2px; text-transform: uppercase;
+      color: #6f7c8c; margin-bottom: 5px;
+    }
+
+    /* current-world card */
+    .sb-world {
+      display: flex; align-items: center; gap: 7px; margin-bottom: 5px;
+      padding: 6px 9px; border: 1px solid #2a313b; border-radius: 7px;
+      background: rgba(0,0,0,0.3);
+    }
+    #sb-world-name {
+      flex: 1; font-size: 12px; color: #cfe;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #sb-dirty { width: 7px; height: 7px; border-radius: 50%; background: #454b54; flex-shrink: 0; }
+    #sb-dirty.on { background: #e2b24a; box-shadow: 0 0 6px rgba(226,178,74,0.7); }
+
+    .sb-btns { display: flex; flex-direction: column; gap: 3px; }
+    .sb-btns button {
+      display: flex; align-items: center; gap: 8px; width: 100%;
+      padding: 5px 9px; border: 1px solid #313842; border-radius: 6px;
+      background: rgba(22,26,33,0.9); color: #e8e8e8; cursor: pointer;
+      font-family: inherit; font-size: 12.5px; text-align: left;
+    }
+    .sb-btns button:hover { background: rgba(42,50,62,0.95); border-color: #46505e; }
+    .sb-key {
+      margin-left: auto; padding: 0 4px; border: 1px solid #303743;
+      border-bottom-width: 2px; border-radius: 4px; background: rgba(0,0,0,0.35);
+      font-size: 10px; color: #7d8a99; white-space: nowrap;
+    }
+    .sb-btns button.primary { border-color: #4d7a5f; background: rgba(45,80,60,0.5); }
+    .sb-btns button.primary:hover { background: rgba(58,102,76,0.7); }
+    .sb-btns button.armed { border-color: #d66; background: rgba(140,40,40,0.9); color: #fff; }
+    .sb-btns button.armed .sb-key { color: #fbb; border-color: #a55; }
+
+    /* inspector — pinned below the scrolling actions so the live readout is
+       never the thing that falls off the bottom of a short window */
+    .sb-inspector {
+      flex-shrink: 0; padding: 9px 12px 11px;
+      border-top: 1px solid #232a33; background: rgba(0,0,0,0.25);
+    }
+    .sb-rows { display: flex; flex-direction: column; gap: 2px; }
+    .sb-row { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; line-height: 1.35; }
+    .sb-row .label { opacity: 0.6; }
+    .sb-row .value {
+      font-variant-numeric: tabular-nums; color: #dfe6ee; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    /* world contents: two columns, the number carrying its own unit */
+    .sb-counts {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 2px 10px;
+      margin-top: 6px; padding-top: 6px; border-top: 1px solid #1e242c;
+      font-size: 11.5px; line-height: 1.35; color: #8b97a5;
+    }
+    .sb-counts b { color: #dfe6ee; font-weight: 600; font-variant-numeric: tabular-nums; }
 
     /* --- test-run mode (F5) --- */
-    body.test-mode #ui-buttons,
+    body.test-mode .sb-actions,
     body.test-mode #toolbar,
-    body.test-mode #ui-hud .editor-row { display: none; }
+    body.test-mode #sidebar .editor-row { display: none; }
     #ui-testmode { display: none; }
     body.test-mode #ui-testmode {
       display: block; top: 12px; left: 50%; transform: translateX(-50%);
@@ -74,7 +163,7 @@
     #ui-action.show { opacity: 1; }
 
     #ui-hint {
-      inset: 0; display: flex; align-items: center; justify-content: center;
+      inset: 0; z-index: 14; display: flex; align-items: center; justify-content: center;
       background: rgba(0,0,0,0.55); pointer-events: auto; text-align: center;
       cursor: pointer;
     }
@@ -89,14 +178,6 @@
       border: 1px solid #555; border-bottom-width: 2px; border-radius: 4px;
       background: #1a1c20; font-family: inherit; font-size: 13px; text-align: center;
     }
-
-    #ui-buttons { top: 12px; right: 12px; display: flex; gap: 8px; pointer-events: auto; }
-    #ui-buttons button {
-      padding: 6px 12px; border: 1px solid #3a3f47; border-radius: 6px;
-      background: rgba(20,24,30,0.85); color: #e8e8e8; cursor: pointer; font-size: 13px;
-    }
-    #ui-buttons button:hover { background: rgba(40,46,56,0.95); }
-    #ui-buttons button.danger:hover { background: rgba(90,30,30,0.9); border-color: #a44; }
 
     /* --- tool ring (hold Tab) --- */
     #tool-ring { left: 50%; top: 50%; width: 0; height: 0; }
@@ -123,6 +204,8 @@
       display: flex; gap: 8px; padding: 8px 10px; border-radius: 10px;
       background: rgba(0,0,0,0.5); pointer-events: auto;
     }
+    /* Keep the hotbar centred in the space the sidebar leaves free. */
+    body:not(.sb-collapsed) #toolbar { transform: translateX(calc(-50% + 118px)); }
     .slot {
       position: relative;
       width: 52px; height: 52px; padding: 4px; border: 2px solid rgba(255,255,255,0.15);
@@ -187,7 +270,7 @@
     .npcq-overlay.open { display: flex; }
     .npcq-panel {
       background: rgba(14,17,22,0.97); border: 1px solid #333; border-radius: 12px;
-      width: min(94vw, 760px); max-height: 86vh; display: flex; flex-direction: column;
+      width: min(96vw, 1080px); max-height: 92vh; display: flex; flex-direction: column;
       font-size: 13px;
     }
     .npcq-head {
@@ -206,8 +289,8 @@
     .npcq-buttons button.danger:hover { background: rgba(90,30,30,0.9); border-color: #a44; }
     .npcq-body { display: flex; gap: 16px; padding: 14px 18px; overflow: hidden; flex: 1; }
     .npcq-list {
-      width: 190px; flex-shrink: 0; display: flex; flex-direction: column; gap: 5px;
-      overflow-y: auto;
+      width: 210px; flex-shrink: 0; display: flex; flex-direction: column; gap: 4px;
+      overflow-y: auto; padding-right: 2px;
     }
     .npcq-entry {
       padding: 7px 10px; text-align: left; border: 1px solid #3a3f47; border-radius: 6px;
@@ -226,14 +309,94 @@
     .npcq-label { opacity: 0.7; flex-shrink: 0; }
     .npcq-form input, .npcq-form select {
       width: 240px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
-      color: #eee; padding: 4px 7px;
+      color: #eee; padding: 6px 9px; font-size: 13px;
     }
+    /* dialogue lines can be lengthy — text inputs stretch to the row */
+    .npcq-form input[type="text"] { flex: 1 1 auto; width: auto; min-width: 220px; }
+    .npcq-form input[type="number"] { width: 110px; }
     .npcq-form input.invalid { border-color: #a44; }
     .npcq-form textarea {
       width: 100%; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
-      color: #eee; padding: 5px 7px; font-family: inherit; font-size: 12px; resize: vertical;
+      color: #eee; padding: 8px 10px; font-family: inherit; font-size: 13px;
+      line-height: 1.5; resize: vertical;
     }
     .npcq-hint { font-size: 11px; color: #9ab; margin-top: 4px; }
+    /* multi-goal objective blocks (F4 quests tab) */
+    .npcq-objectives { display: flex; flex-direction: column; gap: 8px; }
+    .npcq-objective {
+      border: 1px solid #2c3442; border-radius: 6px; padding: 6px 8px;
+      background: rgba(0,0,0,0.22); display: flex; flex-direction: column; gap: 4px;
+    }
+    .npcq-obj-head { display: flex; align-items: center; gap: 8px; }
+    .npcq-obj-n { font-size: 11px; color: #8a93a4; }
+    .npcq-obj-head select { flex: 0 0 auto; width: auto; }
+    .npcq-obj-remove {
+      margin-left: auto; padding: 1px 7px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #d99; cursor: pointer; font-size: 11px;
+    }
+    .npcq-obj-remove:hover { background: rgba(70,30,30,0.9); }
+    /* quest chain sidebar (F4 quests tab) */
+    .npcq-link { font-size: 10px; color: #67718a; text-align: center; line-height: 1.3; flex-shrink: 0; }
+    .npcq-link.auto { color: #e8b45c; }
+    .npcq-tier {
+      border: 1px solid #3a3f47; border-radius: 8px; padding: 6px 9px;
+      background: rgba(20,24,30,0.9); cursor: pointer;
+      display: flex; flex-direction: column; gap: 3px; flex-shrink: 0;
+    }
+    .npcq-tier:hover { background: rgba(40,46,56,0.95); }
+    .npcq-tier.active { border-color: #55dd99; background: rgba(85,221,153,0.12); }
+    .npcq-tier-title {
+      font-size: 12px; color: #ddd; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .npcq-tier.active .npcq-tier-title { color: #fff; }
+    .npcq-tier-meta {
+      font-size: 10px; color: #8a93a4; display: flex; gap: 6px;
+      justify-content: space-between; align-items: center;
+    }
+    .npcq-tier-flag { color: #e8b45c; white-space: nowrap; }
+    .npcq-tier-actions { display: flex; gap: 4px; }
+    .npcq-mini {
+      padding: 0 7px; border: 1px solid #3a3f47; border-radius: 5px; font-size: 11px;
+      background: rgba(20,24,30,0.9); color: #cdd3dd; cursor: pointer;
+    }
+    .npcq-mini:hover:not(:disabled) { background: rgba(40,46,56,0.95); }
+    .npcq-mini:disabled { opacity: 0.35; cursor: default; }
+    /* grouped tier form sections */
+    .npcq-section {
+      border: 1px solid #2c3442; border-radius: 8px; padding: 9px 11px;
+      background: rgba(255,255,255,0.02); display: flex; flex-direction: column; gap: 7px;
+    }
+    .npcq-section-title {
+      font-size: 10px; font-weight: 600; letter-spacing: 1.2px; text-transform: uppercase;
+      color: #8a93a4;
+    }
+    .npcq-seg { display: inline-flex; border: 1px solid #3a3f47; border-radius: 6px; overflow: hidden; }
+    .npcq-seg button {
+      padding: 4px 10px; border: none; background: rgba(20,24,30,0.9); color: #9aa3b2;
+      cursor: pointer; font-size: 12px;
+    }
+    .npcq-seg button + button { border-left: 1px solid #3a3f47; }
+    .npcq-seg button:hover { background: rgba(40,46,56,0.95); }
+    .npcq-seg button.active { background: rgba(85,221,153,0.18); color: #fff; }
+    .npcq-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; padding-top: 2px; }
+    .npcq-chip {
+      padding: 2px 8px; border-radius: 10px; border: 1px solid #3a3f47;
+      background: rgba(20,24,30,0.9); color: #cdd3dd; white-space: nowrap;
+    }
+    .npcq-chip.auto { border-color: rgba(232,180,92,0.55); color: #e8b45c; }
+    .npcq-flow-arrow { color: #556070; }
+    /* dialogue subgroups dim when the chosen flow skips them */
+    .npcq-subgroup {
+      border-left: 2px solid #2c3442; padding-left: 10px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    .npcq-subtitle { font-size: 12px; font-weight: 600; color: #cdd3dd; }
+    .npcq-skipnote { display: none; font-size: 11px; color: #e8b45c; }
+    .npcq-dim .npcq-skipnote { display: block; }
+    .npcq-dim > :not(.npcq-subtitle):not(.npcq-skipnote) { opacity: 0.4; }
+    .npcq-reward-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
+    .npcq-reward-grid input, .npcq-reward-grid select { width: 110px; }
+    .npcq-buttons button.primary.dirty { border-color: #e8b45c; background: rgba(150,110,45,0.35); }
     .npcq-spawn { display: flex; align-items: center; gap: 6px; }
     .npcq-spawn-label { font-size: 12px; color: #9c9; white-space: nowrap; }
     .npcq-spawn button {
@@ -262,13 +425,34 @@
       max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .npcq-buttons { display: flex; gap: 8px; margin-top: 10px; padding-bottom: 4px; }
+    /* dialogue tree editor (About-the-quest / NPC small talk) */
+    .npcq-graph { display: flex; flex-direction: column; gap: 6px; }
+    .npcq-graph-bar { display: flex; align-items: center; gap: 10px; }
+    .npcq-graph-bar .npcq-hint { margin-top: 0; }
+    .npcq-graph-canvas {
+      display: block; width: 100%; height: 300px; box-sizing: border-box;
+      border: 1px solid #2c3442; border-radius: 6px; background: #0b0e13;
+      cursor: grab;
+    }
+    .npcq-graph-canvas:active { cursor: grabbing; }
+    .npcq-graph-node {
+      border: 1px solid #2c3442; border-radius: 6px; padding: 8px 10px;
+      background: rgba(0,0,0,0.22); display: flex; flex-direction: column; gap: 5px;
+    }
+    .npcq-graph-nodehead { display: flex; align-items: center; gap: 8px; }
+    .npcq-graph-nodeid { font-size: 12px; font-weight: 600; color: #cdd3dd; }
+    .npcq-graph-nodehead .npcq-obj-remove { margin-left: auto; }
+    .npcq-choice { display: flex; align-items: center; gap: 6px; }
+    .npcq-choice input[type="text"] { flex: 1 1 auto; min-width: 0; }
+    .npcq-choice select { width: 230px; flex-shrink: 0; }
+    .npcq-choice .npcq-obj-remove { margin-left: 0; }
 
     /* --- item editor (F2) --- */
     #item-editor { position: fixed; inset: 0; z-index: 15; pointer-events: none; display: none; }
     body.item-mode #item-editor { display: block; }
-    body.item-mode #ui-buttons,
+    body.item-mode #sidebar,
+    body.item-mode #sb-show,
     body.item-mode #toolbar,
-    body.item-mode #ui-hud .editor-row,
     body.item-mode #ui-crosshair { display: none; }
     #ie-badge {
       position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
@@ -400,9 +584,9 @@
     /* --- items editor (F3) --- */
     #equip-editor { position: fixed; inset: 0; z-index: 15; pointer-events: none; display: none; }
     body.equip-mode #equip-editor { display: block; }
-    body.equip-mode #ui-buttons,
+    body.equip-mode #sidebar,
+    body.equip-mode #sb-show,
     body.equip-mode #toolbar,
-    body.equip-mode #ui-hud .editor-row,
     body.equip-mode #ui-crosshair { display: none; }
     #ep-badge {
       position: absolute; top: 12px; left: 50%; transform: translateX(-50%);
@@ -417,23 +601,132 @@
     }
 
     /* --- item / equipment catalogue --- */
-    #item-catalogue, #equip-catalogue, #world-browser, #splash-motion {
+    #item-catalogue, #equip-catalogue, #world-browser, #splash-motion, #door-settings, #light-settings, #switch-settings, #prefab-browser {
       position: fixed; z-index: 25; inset: 0; display: none;
       align-items: center; justify-content: center; background: rgba(0,0,0,0.6);
     }
-    #item-catalogue.open, #equip-catalogue.open, #world-browser.open, #splash-motion.open { display: flex; }
-    #item-catalogue .panel, #equip-catalogue .panel, #world-browser .panel, #splash-motion .panel {
+    #item-catalogue.open, #equip-catalogue.open, #world-browser.open, #splash-motion.open, #door-settings.open, #light-settings.open, #switch-settings.open, #prefab-browser.open { display: flex; }
+    #item-catalogue .panel, #equip-catalogue .panel, #world-browser .panel, #splash-motion .panel, #door-settings .panel, #light-settings .panel, #switch-settings .panel, #prefab-browser .panel {
       background: rgba(14,17,22,0.97); border: 1px solid #333; border-radius: 12px;
       padding: 20px 24px; width: min(92vw, 760px); max-height: 84vh;
       cursor: default; display: flex; flex-direction: column;
     }
-    #item-catalogue .panel.drop-target, #equip-catalogue .panel.drop-target {
+    #item-catalogue .panel.drop-target, #equip-catalogue .panel.drop-target, #prefab-browser .panel.drop-target {
       border-color: #6c9; box-shadow: 0 0 0 2px rgba(102,204,153,0.35) inset;
     }
-    #item-catalogue h2, #equip-catalogue h2, #world-browser h2, #splash-motion h2 {
+    #item-catalogue h2, #equip-catalogue h2, #world-browser h2, #splash-motion h2, #door-settings h2, #light-settings h2, #switch-settings h2, #prefab-browser h2 {
       margin-bottom: 12px; font-size: 17px;
       display: flex; align-items: baseline; gap: 8px;
     }
+
+    /* --- prefab library + editor --- */
+    .cat-btn.primary { border-color: #6c9; background: rgba(60,110,80,0.5); }
+    .cat-btn.primary:hover { background: rgba(70,130,95,0.6); }
+    .prefab-thumb {
+      width: 132px; height: 88px; display: flex; align-items: center; justify-content: center;
+      background: #12151b; border-radius: 6px; overflow: hidden;
+      font-size: 30px; color: #3c4656;
+    }
+    .prefab-thumb img { width: 100%; height: 100%; object-fit: cover; }
+    #prefab-panel {
+      position: fixed; z-index: 15; top: 56px; right: 12px; width: 292px;
+      display: none; flex-direction: column; gap: 8px;
+      padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(0,229,255,0.35);
+      background: rgba(10,14,18,0.92); font-size: 13px; pointer-events: auto;
+    }
+    #prefab-panel.open { display: flex; }
+    #prefab-panel .pf-title { font-size: 14px; font-weight: 600; color: #8ff; letter-spacing: 1px; }
+    #prefab-panel .pf-row { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+    #prefab-panel .pf-label { opacity: 0.7; flex-shrink: 0; }
+    #prefab-panel input[type="text"] {
+      flex: 1; min-width: 0; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
+      color: #eee; padding: 4px 7px; font-size: 13px;
+    }
+    /* Six side buttons plus three steppers need the row's full width. */
+    #prefab-panel .pf-size { flex-direction: column; align-items: flex-start; gap: 4px; }
+    #prefab-panel .pf-dims { display: flex; align-items: center; gap: 3px; }
+    #prefab-panel .pf-dims input {
+      width: 40px; background: #0e1116; border: 1px solid #3a3f47; border-radius: 5px;
+      color: #eee; padding: 4px 2px; font-size: 13px; text-align: center;
+    }
+    #prefab-panel .pf-axis { display: flex; align-items: center; gap: 1px; }
+    /* Which wall the number moves — the typed twin of grabbing that side. */
+    #prefab-panel .pf-side {
+      padding: 3px 2px; font-size: 11px; line-height: 1; border-radius: 4px;
+      border-color: transparent; background: transparent; color: #566;
+    }
+    #prefab-panel .pf-side:hover { background: rgba(40,46,56,0.95); color: #9cf; }
+    #prefab-panel .pf-side.active { color: #00e5ff; background: rgba(0,229,255,0.12); border-color: rgba(0,229,255,0.45); }
+    #prefab-panel .pf-x { color: #667; }
+    #prefab-panel .pf-meters { color: #9cf; font-variant-numeric: tabular-nums; }
+    #prefab-panel .pf-actions, #prefab-panel .pf-confirm { display: flex; gap: 6px; flex-wrap: wrap; }
+    #prefab-panel .pf-actions[hidden], #prefab-panel .pf-confirm[hidden] { display: none; }
+    #prefab-panel button {
+      padding: 6px 12px; border: 1px solid #3a3f47; border-radius: 6px;
+      background: rgba(20,24,30,0.9); color: #e8e8e8; cursor: pointer; font-size: 12px;
+    }
+    #prefab-panel button:hover { background: rgba(40,46,56,0.95); }
+    #prefab-panel button.primary { border-color: #6c9; background: rgba(60,110,80,0.5); }
+    #prefab-panel button.primary.attention { border-color: #fc6; box-shadow: 0 0 6px rgba(255,204,102,0.4); }
+    #prefab-panel button.danger:hover { background: rgba(90,30,30,0.9); border-color: #a44; }
+    #prefab-panel .pf-confirm-msg { width: 100%; color: #fc6; font-size: 12px; }
+    #prefab-panel .pf-hint { font-size: 11px; color: #789; line-height: 1.5; }
+    #prefab-panel .pf-hint kbd {
+      display: inline-block; padding: 0 4px; border: 1px solid #445; border-bottom-width: 2px;
+      border-radius: 3px; background: #1a1c20; font-family: inherit; font-size: 10px;
+    }
+    /* --- NPC palette (NPC tool) --- */
+    #npc-palette {
+      position: fixed; z-index: 15; top: 56px; right: 12px; width: 226px;
+      display: none; flex-direction: column; gap: 8px;
+      max-height: calc(100vh - 80px);
+      padding: 12px 14px; border-radius: 10px; border: 1px solid rgba(85,221,153,0.4);
+      background: rgba(10,14,18,0.92); font-size: 13px; pointer-events: auto;
+    }
+    #npc-palette.open { display: flex; }
+    /* The palette belongs to the world editor only. */
+    body.test-mode #npc-palette,
+    body.item-mode #npc-palette,
+    body.equip-mode #npc-palette,
+    body.prefab-mode #npc-palette { display: none; }
+    #npc-palette .np-title { font-size: 14px; font-weight: 600; color: #9fb; letter-spacing: 1px; }
+    #npc-palette .np-cards {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+      overflow-y: auto; min-height: 0;
+    }
+    #npc-palette .np-card {
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      padding: 8px 6px 6px; border: 2px solid rgba(255,255,255,0.12); border-radius: 8px;
+      background: rgba(30,34,40,0.9); cursor: pointer; color: #cfd6de; font-size: 12px;
+    }
+    #npc-palette .np-card:hover { border-color: rgba(85,221,153,0.5); background: rgba(38,44,52,0.95); }
+    #npc-palette .np-card.active { border-color: #55dd99; background: rgba(85,221,153,0.14); color: #dff5e9; }
+    #npc-palette .np-thumb { image-rendering: pixelated; width: 100%; height: auto; }
+    #npc-palette .np-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #npc-palette .np-empty { color: #789; font-size: 12px; line-height: 1.5; }
+    #npc-palette .np-hint { font-size: 11px; color: #789; line-height: 1.5; }
+    #npc-palette .np-hint kbd {
+      display: inline-block; padding: 0 4px; border: 1px solid #445; border-bottom-width: 2px;
+      border-radius: 3px; background: #1a1c20; font-family: inherit; font-size: 10px;
+    }
+
+    #ui-prefabmode { display: none; }
+    body.prefab-mode #ui-prefabmode {
+      display: block; top: 12px; left: 50%; transform: translateX(-50%);
+      padding: 5px 16px; border-radius: 20px; border: 1px solid rgba(0,229,255,0.55);
+      background: rgba(0,0,0,0.55); color: #8ff; font-size: 13px; letter-spacing: 1px;
+      white-space: nowrap; pointer-events: none;
+    }
+    #ui-prefabmode kbd {
+      display: inline-block; padding: 0 5px; border: 1px solid rgba(0,229,255,0.5);
+      border-bottom-width: 2px; border-radius: 4px; background: rgba(0,0,0,0.4);
+      font-family: inherit; font-size: 12px;
+    }
+    /* While editing a prefab the world file actions disappear — the prefab
+       panel owns save/exit; Undo/Redo/Items stay. */
+    body.prefab-mode #sb-world-group,
+    body.prefab-mode #btn-prefabs { display: none; }
+    body.item-mode #prefab-panel, body.equip-mode #prefab-panel { display: none; }
 
     /* splash camera motion picker */
     #splash-motion .panel { width: min(92vw, 340px); }
@@ -443,6 +736,35 @@
     }
     .sm-option span { font-size: 11px; color: #9aa; }
     .sm-option.active { border-color: #6c9; background: rgba(30,60,45,0.5); }
+
+    /* door settings (click a door in the editor) */
+    #door-settings .panel, #light-settings .panel, #switch-settings .panel { width: min(92vw, 380px); }
+    #door-settings h3 { margin: 14px 0 8px; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #9aa; }
+    .door-row { display: flex; gap: 8px; }
+    .door-row .door-lock { flex: 1; padding: 9px 12px; }
+    .door-lock.active { border-color: #6c9; background: rgba(30,60,45,0.5); }
+    .door-lock.danger.active { border-color: #c66; background: rgba(70,30,30,0.55); }
+    .door-hint { margin: 8px 0 0; font-size: 11px; color: #9aa; line-height: 1.45; }
+    .door-flag { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: #9aa; }
+    .door-flag input {
+      flex: 1; min-width: 0; padding: 7px 9px; font: inherit; color: #dde;
+      background: rgba(10,16,14,0.6); border: 1px solid #3a4a44; border-radius: 6px;
+    }
+    .door-flag input:focus { outline: none; border-color: #6c9; }
+    .door-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
+    .door-opt {
+      display: flex; flex-direction: column; align-items: center; gap: 6px;
+      padding: 10px 6px;
+    }
+    .door-opt span { font-size: 11px; color: #9aa; text-transform: capitalize; }
+    .door-opt.active { border-color: #6c9; background: rgba(30,60,45,0.5); }
+    .door-opt.active span { color: #cde; }
+    .door-plan { display: block; }
+    .door-plan .dp-wall { stroke: #667; stroke-width: 5; stroke-linecap: butt; }
+    .door-plan .dp-arc { fill: none; stroke: #7a8; stroke-width: 1.5; stroke-dasharray: 3 3; }
+    .door-plan .dp-leaf-closed { stroke: #cde; stroke-width: 3; stroke-linecap: round; }
+    .door-plan .dp-leaf-open { stroke: #8fd3ff; stroke-width: 3; stroke-linecap: round; }
+    .door-plan .dp-hinge { fill: #8fd3ff; }
 
     /* world library tree */
     #world-browser .panel { width: min(92vw, 560px); }
@@ -511,16 +833,78 @@
   <div id="ui-crosshair" class="overlay"></div>
   <div id="ui-action" class="overlay"></div>
   <div id="ui-testmode" class="overlay">TEST MODE — <kbd>E</kbd> interact · <kbd>F5</kbd> to exit</div>
+  <div id="ui-prefabmode" class="overlay">PREFAB EDITOR — build inside the cyan box · <kbd>Shift</kbd>+<kbd>F6</kbd> paste a prefab · <kbd>F6</kbd> back to world</div>
   <div id="ui-prompt" class="overlay hidden"></div>
 
-  <div id="ui-hud" class="overlay">
-    <div class="row editor-row"><span class="label">Block</span><span class="value" id="hud-type">-</span></div>
-    <div class="row editor-row"><span class="label">Size</span><span class="value" id="hud-size">-</span></div>
-    <div class="row editor-row"><span class="label">Tool</span><span class="value" id="hud-tool">-</span></div>
-    <div class="row"><span class="label">Pos</span><span class="value" id="hud-pos">-</span></div>
-    <div class="row editor-row"><span class="label">Speed</span><span class="value" id="hud-speed">-</span></div>
-    <div class="row"><span class="label">FPS</span><span class="value" id="hud-fps">-</span></div>
-  </div>
+  <aside id="sidebar">
+    <div class="sb-head">
+      <span class="sb-title">VOXEL EDITOR</span>
+      <button id="btn-help" class="sb-icon" title="Keyboard reference (F1)">?</button>
+      <button id="sb-collapse" class="sb-icon" title="Hide the sidebar (`)">&laquo;</button>
+    </div>
+    <div class="sb-scroll">
+      <div id="sb-world-group">
+        <div class="sb-group-title">World</div>
+        <div class="sb-world">
+          <span id="sb-world-name">unsaved world</span>
+          <span id="sb-dirty" title="Unsaved changes"></span>
+        </div>
+        <div class="sb-btns sb-actions">
+          <button id="btn-new" title="Start an empty world — click twice to confirm">New<span class="sb-key">Ctrl+Alt+N</span></button>
+          <button id="btn-worlds" title="World catalogue — browse, save, load and organize worlds">Worlds&hellip;<span class="sb-key">F7</span></button>
+          <button id="btn-save" class="primary" title="Write the world + objects to map/voxelbundle.json">Save<span class="sb-key">Ctrl+S</span></button>
+          <button id="btn-load" title="Load a .json map or bundle from disk">Load file&hellip;<span class="sb-key">Ctrl+O</span></button>
+          <button id="btn-export" title="Download the map as .json">Export<span class="sb-key">Ctrl+E</span></button>
+        </div>
+      </div>
+
+      <div class="sb-actions">
+        <div class="sb-group-title">Edit</div>
+        <div class="sb-btns">
+          <button id="btn-undo" title="Undo the last edit">Undo<span class="sb-key">Ctrl+Z</span></button>
+          <button id="btn-redo" title="Redo the last undone edit">Redo<span class="sb-key">Ctrl+&#8679;+Z</span></button>
+        </div>
+      </div>
+
+      <div class="sb-actions">
+        <div class="sb-group-title">Libraries</div>
+        <div class="sb-btns">
+          <button id="btn-items" title="Browse the item catalogue">Items&hellip;<span class="sb-key">I</span></button>
+          <button id="btn-prefabs" title="Prefab library — build once, stamp anywhere">Prefabs&hellip;<span class="sb-key">F6</span></button>
+          <button id="btn-objects" title="Build a placeable object from micro voxels">Object editor<span class="sb-key">F2</span></button>
+          <button id="btn-equip" title="Build an equippable item (weapon, ammo, armor)">Equipment<span class="sb-key">F3</span></button>
+          <button id="btn-npcs" title="Define characters and their questlines">NPCs &amp; quests<span class="sb-key">F4</span></button>
+        </div>
+      </div>
+
+      <div class="sb-actions">
+        <div class="sb-group-title">Play</div>
+        <div class="sb-btns">
+          <button id="btn-test" title="Walk the world from the spawn point">Test run<span class="sb-key">F5</span></button>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="sb-inspector">
+      <div class="sb-group-title">Inspector</div>
+      <div class="sb-rows">
+        <div class="sb-row editor-row"><span class="label">Block</span><span class="value" id="hud-type">-</span></div>
+        <div class="sb-row editor-row"><span class="label">Size</span><span class="value" id="hud-size">-</span></div>
+        <div class="sb-row editor-row"><span class="label">Tool</span><span class="value" id="hud-tool">-</span></div>
+        <div class="sb-row"><span class="label">Pos</span><span class="value" id="hud-pos">-</span></div>
+        <div class="sb-row editor-row"><span class="label">Speed</span><span class="value" id="hud-speed">-</span></div>
+        <div class="sb-row"><span class="label">FPS</span><span class="value" id="hud-fps">-</span></div>
+      </div>
+      <div class="sb-counts">
+        <span><b id="hud-voxels">-</b> voxels</span>
+        <span class="editor-row"><b id="hud-objects">-</b> objects</span>
+        <span class="editor-row"><b id="hud-mobs">-</b> mobs</span>
+        <span class="editor-row"><b id="hud-npcs">-</b> NPCs</span>
+      </div>
+    </div>
+  </aside>
+  <button id="sb-show" title="Show the sidebar (`)">&raquo;</button>
 
   <div id="ui-hint" class="overlay hidden">
     <div class="box">
@@ -533,6 +917,11 @@
       <kbd>Middle click</kbd> pick the block you're looking at &nbsp;·&nbsp;
       <kbd>Shift</kbd>+<kbd>LMB</kbd> draw a line from the last placed voxel<br />
       <kbd>Tab</kbd> hold for the radial tool selector &nbsp;·&nbsp; tap to cycle<br />
+      Cube Delete tool: <kbd>LMB</kbd> a voxel for the first corner, <kbd>LMB</kbd> the opposite
+      corner &mdash; every block and object in that cube goes in one undo step &nbsp;·&nbsp;
+      <kbd>RMB</kbd> cancels the pending corner<br />
+      Paint tool: hold <kbd>LMB</kbd> and sweep to repaint block faces with the selected
+      block's texture &nbsp;·&nbsp; hold <kbd>RMB</kbd> to strip them back &mdash; one undo step per stroke<br />
       Spawn tool: <kbd>LMB</kbd> place / move the spawn &nbsp;·&nbsp; <kbd>RMB</kbd> clear it &nbsp;·&nbsp;
       <kbd>R</kbd> rotate the facing arrow (the arrow shows where the player looks)<br />
       <kbd>1</kbd>-<kbd>9</kbd>,<kbd>0</kbd> hotbar slots &nbsp;·&nbsp; <kbd>B</kbd> 0.5m/1m &nbsp;·&nbsp;
@@ -547,31 +936,35 @@
       <kbd>R</kbd> aim the direction arrow, set damage/reach/cooldown<br />
       <kbd>F4</kbd> NPC &amp; quest editor — define characters and their questlines,<br />
       then drop them with the NPCs tool (<kbd>Tab</kbd> ring, <kbd>G</kbd> cycles the type)<br />
+      <kbd>LMB</kbd> on a door opens its settings — lock it, or pick which way it swings
+      (the plan arc drawn at each door shows the hinge and the swing) &nbsp;·&nbsp;
+      <kbd>Shift</kbd>+<kbd>LMB</kbd> builds there instead<br />
       <kbd>F5</kbd> test run — walk at the spawn (<kbd>C</kbd> crouch, <kbd>E</kbd> open doors) &nbsp;·&nbsp;
-      <kbd>F1</kbd> help &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>S</kbd> save to browser &nbsp;·&nbsp;
+      <kbd>F1</kbd> help &nbsp;·&nbsp;
       <kbd>Esc</kbd> release pointer &nbsp;·&nbsp; <kbd>P</kbd> polaroid filter (bloom + film grade)<br />
       <kbd>F8</kbd> capture this view as a menu splash screen (save the world via
       <strong>Worlds</strong> first) &nbsp;·&nbsp; <kbd>Shift</kbd>+<kbd>F8</kbd> delete the nearest splash camera
       &nbsp;·&nbsp; <kbd>LMB</kbd> on a camera gizmo picks its motion (orbit / static / zoom)<br />
-      <strong>Worlds</strong> opens the world library — save, load and organize worlds for
-      campaigns and splash screens<br />
-      <strong>Save File</strong> writes the map + objects straight to
+      <br />
+      The <strong>sidebar</strong> on the left holds every action and the live inspector —
+      <kbd>`</kbd> hides / shows it<br />
+      <kbd>Ctrl</kbd>+<kbd>S</kbd> save &nbsp;·&nbsp;
+      <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>N</kbd> new world (press twice to confirm) &nbsp;·&nbsp;
+      <kbd>Ctrl</kbd>+<kbd>O</kbd> load a file &nbsp;·&nbsp; <kbd>Ctrl</kbd>+<kbd>E</kbd> export<br />
+      <kbd>F7</kbd> world catalogue — save, load and organize worlds for campaigns and
+      splash screens &nbsp;·&nbsp; <kbd>I</kbd> item catalogue &nbsp;·&nbsp;
+      <kbd>F6</kbd> prefab library &mdash; a card puts the building in hand:
+      <kbd>LMB</kbd> stamps it &nbsp;·&nbsp; <kbd>R</kbd> turns it 90° &nbsp;·&nbsp;
+      <kbd>F</kbd> / <kbd>Shift</kbd>+<kbd>F</kbd> mirrors it across X / Z (for the flipped
+      twin next door) &nbsp;·&nbsp; <kbd>RMB</kbd> puts it away<br />
+      Inside the prefab editor <kbd>Shift</kbd>+<kbd>F6</kbd> (or <strong>Paste prefab…</strong>)
+      opens the same library to stamp a finished prefab into the one being built<br />
+      <strong>Save</strong> writes the map + objects straight to
       <code>map/voxelbundle.json</code> (no download) — run <code>npm run server</code>
       and open <code>http://localhost:4173</code> so your world ships with the build
     </div>
   </div>
 
-  <div id="ui-buttons" class="overlay">
-    <button id="btn-undo" title="Undo (Ctrl+Z)">Undo</button>
-    <button id="btn-redo" title="Redo (Ctrl+Shift+Z)">Redo</button>
-    <button id="btn-items" title="Browse the item catalogue">Items</button>
-    <button id="btn-worlds" title="World library — save, load and organize worlds">Worlds</button>
-    <button id="btn-save" title="Save to browser (Ctrl+S)">Save</button>
-    <button id="btn-load" title="Load a .json map or bundle">Load</button>
-    <button id="btn-save-file" title="Download map + objects as voxelbundle.json">Save File</button>
-    <button id="btn-export" title="Download map as .json">Export</button>
-    <button id="btn-clear" class="danger" title="Remove all blocks">Clear</button>
-  </div>
   <input id="file-load" type="file" accept=".json,application/json" style="display:none" />
 
   <div id="tool-ring" class="overlay hidden">
@@ -592,7 +985,27 @@
     <div class="panel"></div>
   </div>
 
+  <div id="prefab-browser">
+    <div class="panel"></div>
+  </div>
+
+  <div id="prefab-panel"></div>
+
+  <div id="npc-palette"></div>
+
   <div id="splash-motion">
+    <div class="panel"></div>
+  </div>
+
+  <div id="door-settings">
+    <div class="panel"></div>
+  </div>
+
+  <div id="light-settings">
+    <div class="panel"></div>
+  </div>
+
+  <div id="switch-settings">
     <div class="panel"></div>
   </div>
 
@@ -666,6 +1079,7 @@
         <div class="ie-row"><span class="label">Damage</span><input id="ep-damage" type="number" min="1" max="100" step="1" value="10" /></div>
         <div class="ie-row"><span class="label">Reach</span><input id="ep-reach" type="number" min="0.5" max="1000" step="0.5" value="2" /></div>
         <div class="ie-row"><span class="label">Cooldown</span><input id="ep-cooldown" type="number" min="0.1" max="3" step="0.05" value="0.35" /></div>
+        <div class="ie-row" id="ep-durability-row"><span class="label" title="Landed melee hits before the weapon breaks (0 = unbreakable)">Durability</span><input id="ep-durability" type="number" min="0" max="999" step="1" value="40" /></div>
         <div class="ie-row">
           <span class="label">Type</span>
           <span id="ep-kind">

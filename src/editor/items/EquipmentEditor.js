@@ -34,6 +34,7 @@ import {
   DEFAULT_WEAPON,
   DEFAULT_AMMO,
   DEFAULT_ARMOR_PACK,
+  DEFAULT_EQUIP_STATS,
   DEFAULT_EQUIP_GRID,
   EQUIP_GRID_PRESETS,
   MIN_EQUIP_GRID,
@@ -440,7 +441,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
     Notice.info(orientation === 'vertical' ? 'Held upright, like a sword' : 'Held pointing forward, like a spear', 900);
   }
 
-  /** Read damage/reach/cooldown from the panel into item.stats. */
+  /** Read damage/reach/cooldown/durability from the panel into item.stats. */
   _syncStatsFromUI() {
     const n = (el, fallback) => {
       const v = Number(el.value);
@@ -450,6 +451,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
       damage: Math.max(1, Math.min(100, n(this._ui.damage, 10))),
       reach: Math.max(0.5, Math.min(1000, n(this._ui.reach, 2))),
       cooldown: Math.max(0.1, Math.min(3, n(this._ui.cooldown, 0.35))),
+      durability: Math.round(Math.max(0, Math.min(999, n(this._ui.durability, DEFAULT_EQUIP_STATS.durability)))),
     };
   }
 
@@ -493,7 +495,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
   loadEquipItem(item) {
     this.item = JSON.parse(JSON.stringify(item));
     this.item.grid = normalizeGrid(this.item.grid);
-    if (!this.item.stats) this.item.stats = { damage: 10, reach: 2, cooldown: 0.35 };
+    if (!this.item.stats) this.item.stats = { ...DEFAULT_EQUIP_STATS };
     if (!this.item.weapon) this.item.weapon = { ...DEFAULT_WEAPON };
     if (!this.item.kind) this.item.kind = 'weapon';
     if (!this.item.armor) this.item.armor = { ...DEFAULT_ARMOR_PACK };
@@ -533,6 +535,8 @@ export class EquipmentEditor extends MicroVoxelEditor {
       damage: $('#ep-damage'),
       reach: $('#ep-reach'),
       cooldown: $('#ep-cooldown'),
+      durability: $('#ep-durability'),
+      durabilityRow: $('#ep-durability-row'),
       rotateBtn: $('#ep-rotate'),
       shapeRow: $('#ep-shape'),
       gridX: $('#ep-grid-x'),
@@ -572,7 +576,7 @@ export class EquipmentEditor extends MicroVoxelEditor {
       this._syncArmorFromUI();
       this._renderUI();
     });
-    for (const key of ['damage', 'reach', 'cooldown']) {
+    for (const key of ['damage', 'reach', 'cooldown', 'durability']) {
       ui[key].addEventListener('change', () => {
         this._pushSnapshot();
         this._syncStatsFromUI();
@@ -700,6 +704,9 @@ export class EquipmentEditor extends MicroVoxelEditor {
     ui.damage.value = String(this.item.stats.damage);
     ui.reach.value = String(this.item.stats.reach);
     ui.cooldown.value = String(this.item.stats.cooldown);
+    if (ui.durability) ui.durability.value = String(this.item.stats.durability ?? DEFAULT_EQUIP_STATS.durability);
+    // Only melee weapons wear out — guns keep working forever.
+    ui.durabilityRow?.classList.toggle('hidden-row', w.kind !== 'melee');
     ui.kindMelee.classList.toggle('active', w.kind === 'melee');
     ui.kindRanged.classList.toggle('active', w.kind === 'ranged');
     ui.handsOne.classList.toggle('active', w.hands !== 'two');

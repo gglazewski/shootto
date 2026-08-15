@@ -9,6 +9,7 @@
 import { Tool } from '../Tool.js';
 import { placeDecalCommand, removeDecalCommand } from '../commands.js';
 import { shapeFor, getDecal, acceptsDecal } from '../../engine/VoxelTypes.js';
+import { isSwitchDecal } from '../../engine/Switches.js';
 import { Notice } from '../Notice.js';
 
 /** Face name for a raycast entry normal. */
@@ -97,6 +98,10 @@ export class DecalTool extends Tool {
     if (cmd.do()) {
       this.ctx.history.push(cmd);
       this.lastAction = `Placed ${getDecal(this.decalId)?.name ?? this.decalId}`;
+      // A fresh wall switch opens its wiring immediately — unwired it would
+      // click without driving anything.
+      const placed = this.ctx.world.decalAt(t.cell[0], t.cell[1], t.cell[2], t.face);
+      if (isSwitchDecal(placed)) this.ctx.onSwitchPlaced?.(placed);
     }
   }
 

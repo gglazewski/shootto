@@ -1,25 +1,40 @@
 // NpcRegistry.js — registry of NPC character definitions.
 //
 // Mirrors ItemRegistry/EquipmentRegistry: the editor's F4 panel authors NPC
-// types, they persist to localStorage and ship inside the world bundle, and
-// the playable game reads them to spawn talkable characters. A built-in
+// types, they persist in the world bundle file, and the playable game reads
+// them to spawn talkable characters. A built-in
 // starter (the granny) is always present so a fresh install has someone to
 // meet; she can be edited or overridden like any other definition, and a
 // registry reset brings her defaults back.
 //
 // An NPC def:
 //   { id, name, skin, height, dialog: [line, ...],
-//     greeting, topics: [{ label, lines: [line, ...] }, ...] }
+//     greeting, topics: [{ label, lines: [line, ...] }, ...],
+//     chat?: DialogueGraph,
+//     services?: [{ type, label, flag? }, ...] }
 // `skin` names a drawn character sheet (mobSprites.MOB_SKINS); `dialog` is
 // the chit-chat played on first meeting; `greeting` opens every later talk;
 // `topics` are optional lore questions the player can ask in the dialogue
 // (label = the player's question, lines = the NPC's answer) — see
-// game/Dialogue.js for how a conversation walks these.
+// game/Dialogue.js for how a conversation walks these. `chat` is an optional
+// branching small-talk tree (engine/DialogueGraph.js): its `prompt` becomes a
+// reply on the conversation hub that opens the tree. `services` are things the
+// NPC can do for the player (today: 'repair' — fixing worn melee weapons):
+// each becomes an extra hub reply (`label`), optionally gated by a game flag
+// signal (`flag`, '!' inverts) the same way lights bind their power signal —
+// raised e.g. by finishing a quest (see game/Reactions.js).
 //
 // Pure module (no three.js/DOM) so it unit tests in Node.
 
+import { normalizeDialogueGraph } from './DialogueGraph.js';
+
 export const NPC_HEIGHT_MIN = 1.2;
 export const NPC_HEIGHT_MAX = 2.2;
+
+/** Service types an NPC can offer, with the default hub reply for each. */
+export const NPC_SERVICE_TYPES = Object.freeze({
+  repair: Object.freeze({ label: 'Could you fix up my gear?' }),
+});
 
 export const BUILTIN_NPCS = Object.freeze({
   bolek: Object.freeze({
@@ -118,6 +133,16 @@ export function normalizeNpc(def) {
       return label && lines.length ? { label, lines } : null;
     })
     .filter(Boolean);
+  const chat = normalizeDialogueGraph(def.chat);
+  const services = (Array.isArray(def.services) ? def.services : [])
+    .map((s) => {
+      const known = NPC_SERVICE_TYPES[s?.type];
+      if (!known) return null;
+      const label = typeof s.label === 'string' && s.label.trim() ? s.label.trim() : known.label;
+      const flag = typeof s.flag === 'string' ? s.flag.trim() : '';
+      return { type: s.type, label, ...(flag ? { flag } : {}) };
+    })
+    .filter(Boolean);
   return {
     id: def.id,
     name: typeof def.name === 'string' && def.name.trim() ? def.name.trim() : def.id,
@@ -126,6 +151,8 @@ export function normalizeNpc(def) {
     dialog: dialog.length ? dialog : ['...'],
     greeting: typeof def.greeting === 'string' && def.greeting.trim() ? def.greeting.trim() : 'Hello again.',
     topics,
+    ...(chat ? { chat } : {}),
+    ...(services.length ? { services } : {}),
   };
 }
 

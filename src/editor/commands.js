@@ -4,6 +4,9 @@
 // command onto History and runs do() itself, so a failed placement is never
 // recorded.
 
+import { stampPrefab, unstampPrefab } from '../engine/PrefabStamp.js';
+import { translatePrefabContent } from './prefabResize.js';
+
 /**
  * @param {object} world
  * @param {{type:string, size:string, anchor:[number,number,number], rotation?:number, variant?:string|null}} spec
@@ -69,6 +72,38 @@ export function removeDecalCommand(world, decal) {
 }
 
 /**
+ * Repaint (or strip) many cell faces as ONE history entry — a whole paint
+ * stroke undoes in a single step. Each entry carries the face's PREVIOUS
+ * paint, so undo restores exactly what was there, whether that was another
+ * paint or the block's own texture.
+ *
+ * Strokes apply eagerly while the button is held, so the command is pushed
+ * without re-running do(); redo replays it verbatim.
+ * @param {object} world
+ * @param {{cell:[number,number,number], face:string, type:string|null, prev:string|null}[]} entries
+ *   `type` null = strip the face back to its block's own texture
+ */
+export function paintFacesCommand(world, entries) {
+  const stripping = entries.every((e) => e.type == null);
+  const apply = (cell, face, type) => (type == null
+    ? world.unpaintFace(cell[0], cell[1], cell[2], face)
+    : world.paintFace(cell[0], cell[1], cell[2], face, type));
+  return {
+    description: entries.length === 1
+      ? `${stripping ? 'Strip' : 'Paint'} face ${entries[0].face}`
+      : `${stripping ? 'Strip' : 'Paint'} ${entries.length} faces`,
+    do() {
+      let n = 0;
+      for (const e of entries) if (apply(e.cell, e.face, e.type)) n++;
+      return n;
+    },
+    undo() {
+      for (const e of entries) apply(e.cell, e.face, e.prev);
+    },
+  };
+}
+
+/**
  * Place many voxels (line/square). do() records which anchors actually took
  * so undo() removes exactly those.
  * @param {object} world
@@ -127,6 +162,47 @@ export function multiRemoveCommand(world, voxels, { applied = false } = {}) {
 }
 
 /**
+ * Delete a whole region (cube delete): voxels and placed items together as
+ * ONE history entry. do() records what actually came out so undo() restores
+ * exactly that — decals ride their voxel's faces and are not restored, same
+ * as every other removal command.
+ * @param {object} world
+ * @param {{voxels: object[], items: object[]}} content  everything in the region
+ * @param {() => void} [onChange]  items feed the light field; called when any moved
+ * @returns {object} command; do() returns how many objects were removed
+ */
+export function cubeDeleteCommand(world, { voxels, items }, onChange) {
+  let removedVoxels = [];
+  let removedItems = [];
+  return {
+    description: `Delete ${voxels.length + items.length} in a cube`,
+    do() {
+      removedVoxels = [];
+      removedItems = [];
+      for (const v of voxels) {
+        if (world.remove(v.anchor[0], v.anchor[1], v.anchor[2])) removedVoxels.push(v);
+      }
+      for (const it of items) {
+        if (world.removeItemAt(it.anchor[0], it.anchor[1], it.anchor[2])) removedItems.push(it);
+      }
+      if (removedItems.length) onChange?.();
+      return removedVoxels.length + removedItems.length;
+    },
+    undo() {
+      for (const v of removedVoxels) {
+        world.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0, v.variant ?? null);
+      }
+      for (const it of removedItems) {
+        world.placeItem(it.itemId, it.cells, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0);
+      }
+      if (removedItems.length) onChange?.();
+      removedVoxels = [];
+      removedItems = [];
+    },
+  };
+}
+
+/**
  * @param {object} world
  * @param {{itemId:string, cells:[number,number,number], anchor:[number,number,number], rotation?:number}} spec
  * @param {() => void} [onChange]  items feed the light field; called after every apply
@@ -142,6 +218,73 @@ export function placeItemCommand(world, { itemId, cells, anchor, rotation = 0 },
     undo() {
       world.removeItemAt(anchor[0], anchor[1], anchor[2]);
       onChange?.();
+    },
+  };
+}
+
+/**
+ * Stamp a whole prefab (blocks + items + decals) as ONE history entry.
+ * Blocked cells skip their entry; the receipt from the first do() pins
+ * exactly what redo re-places and undo removes.
+ * @param {object} world
+ * @param {object} prefab   parsed voxelprefab (PrefabSerializer)
+ * @param {[number,number,number]} offset  world cell of the prefab's min corner
+ * @param {number} turns    quarter turns CCW around +Y
+ * @param {() => void} [onChange]  called after any apply that moved items
+ * @param {boolean} [mirror]  stamp the mirror image (flipped before turning)
+ */
+export function pastePrefabCommand(world, prefab, offset, turns, onChange, mirror = false) {
+  let receipt = null;
+  return {
+    description: `Paste ${prefab.name}`,
+    get skipped() { return receipt?.skipped ?? 0; },
+    get placed() { return receipt ? receipt.blocks.length + receipt.items.length + receipt.decals.length + receipt.paint.length : 0; },
+    do() {
+      if (!receipt) {
+        receipt = stampPrefab(world, prefab, offset, turns, mirror);
+      } else {
+        // Redo: re-place the receipt verbatim, never re-evaluating collisions.
+        for (const b of receipt.blocks) world.place(b.type, b.size, b.x, b.y, b.z, b.rotation, b.variant);
+        for (const it of receipt.items) world.placeItem(it.itemId, it.cells, it.x, it.y, it.z, it.rotation);
+        for (const d of receipt.decals) world.placeDecal(d.id, d.x, d.y, d.z, d.face, d.rotation);
+        for (const p of receipt.paint) world.paintFace(p.x, p.y, p.z, p.face, p.type);
+      }
+      if (receipt.items.length) onChange?.();
+      return receipt.blocks.length + receipt.items.length + receipt.decals.length > 0;
+    },
+    undo() {
+      if (!receipt) return;
+      unstampPrefab(world, receipt);
+      if (receipt.items.length) onChange?.();
+    },
+  };
+}
+
+/**
+ * Resize the prefab build volume as ONE history entry. Pulling a min side
+ * also slides the content (`shift`) so the box keeps its corner at the origin;
+ * `apply` re-seeds the baseplate, panel, gizmo and camera for the new frame.
+ *
+ * Undo/redo stay sound next to ordinary edits because History is strictly
+ * linear: by the time an older placement is undone, this command has already
+ * put the content back in the frame those anchors were recorded in.
+ *
+ * @param {object} world
+ * @param {{dims:number[], prevDims:number[], shift:[number,number,number],
+ *          apply:(dims:number[], shift:number[]) => void}} spec
+ */
+export function prefabResizeCommand(world, { dims, prevDims, shift, apply }) {
+  return {
+    description: `Resize volume to ${dims.join('×')}`,
+    do() {
+      translatePrefabContent(world, shift);
+      apply(dims, shift);
+      return true;
+    },
+    undo() {
+      const back = shift.map((n) => (n === 0 ? 0 : -n)); // no -0 leaking into the camera math
+      translatePrefabContent(world, back);
+      apply(prevDims, back);
     },
   };
 }

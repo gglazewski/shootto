@@ -435,6 +435,64 @@ const decalFood = (x, y, s, rng) => {
   return [0, 0, 0, 0];
 };
 
+// Cigarette butts: a scatter of short ground-out stubs — white paper bodies,
+// orange filter tips, a smudge of grey ash at the burnt end.
+const decalCigs = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 14;
+  const stubs = [[2, 4, 4, 1], [9, 6, 4, 0], [4, 11, 4, 1], [11, 12, 3, 1]]; // [x0,y0,len,horizontal]
+  for (const [x0, y0, len, horiz] of stubs) {
+    const u = horiz ? x : y;
+    const v = horiz ? y : x;
+    const u0 = horiz ? x0 : y0;
+    const v0 = horiz ? y0 : x0;
+    if (v === v0 && u >= u0 && u < u0 + len) {
+      if (u >= u0 + len - 2) return [200 + n, 128 + n, 54, 255]; // filter
+      return [216 + n, 212 + n, 202 + n, 255];                   // paper
+    }
+    if (Math.hypot(u - (u0 - 1), v - v0) < 1.3 && hash2(x, y) < 0.5) {
+      return [122 + n, 118 + n, 112 + n, 255];                   // ash smudge
+    }
+  }
+  return [0, 0, 0, 0];
+};
+
+// Dog poop: a coiled pile of three stacked brown blobs shrinking upward,
+// darker in the creases, with a dull highlight on the top coil.
+const decalPoop = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 12;
+  const coils = [[8, 11, 4.4, 2.2], [8, 8.5, 3.4, 1.9], [8.5, 6.5, 2.2, 1.5]]; // bottom→top
+  for (let i = coils.length - 1; i >= 0; i--) {
+    const [cx, cy, rx, ry] = coils[i];
+    const d = Math.hypot((x - cx) / rx, (y - cy) / ry);
+    if (d < 1 + hash2(x + i * 7, y) * 0.12) {
+      const crease = Math.abs(d - 0.85) < 0.12 ? -20 : 0;
+      const hi = i === 2 && d < 0.45 ? 16 : 0;
+      return [92 + crease + hi + n, 62 + crease * 0.7 + hi + n, 30 + n, 255];
+    }
+  }
+  return [0, 0, 0, 0];
+};
+
+// Sunflower seed husks: the bench-side scatter — each shell two pixels, a
+// pale striped fat end and a dark tip, strewn at mixed orientations.
+const decalSeeds = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 18;
+  const seeds = [
+    [3, 3, 1], [7, 2, 0], [12, 4, 1], [5, 6, 0], [10, 7, 1], [14, 10, 0],
+    [2, 9, 0], [8, 11, 1], [12, 13, 0], [4, 13, 1], [9, 14, 1],
+  ]; // [x, y, horizontal]
+  for (const [cx, cy, horiz] of seeds) {
+    const du = horiz ? x - cx : y - cy;
+    const dv = horiz ? y - cy : x - cx;
+    if (dv === 0 && (du === 0 || du === 1)) {
+      return du === 0
+        ? [186 + n, 176 + n, 158 + n, 255] // striped fat end
+        : [58 + n, 52 + n, 48 + n, 255];   // dark tip
+    }
+  }
+  return [0, 0, 0, 0];
+};
+
 // 16x16 domofon: the brushed-steel entryphone panel at every blok entrance —
 // speaker grille up top, a column of call buttons with worn name strips.
 const decalDomofon = (x, y, s, rng) => {
@@ -453,6 +511,26 @@ const decalDomofon = (x, y, s, rng) => {
   const scuff = hash2(x * 3, y * 3) < 0.06 ? -18 : 0;
   return [150 + scuff + n, 152 + scuff + n, 158 + scuff + n, 255]; // brushed face
 };
+
+// 16x16 flip switch (wyłącznik): the square cream-plastic plate on every
+// 90s Polish wall, one big rocker in the middle. Two tiles — rocker tipped
+// out at the top (off) or at the bottom (on) — swapped at runtime by
+// engine/Switches.js as its flag flips.
+const switchFace = (x, y, s, rng, on) => {
+  if (x < 5 || x > 10 || y < 5 || y > 10) return [0, 0, 0, 0];
+  const n = (rng() - 0.5) * 6;
+  if (x === 5 || x === 10 || y === 5 || y === 10) return [150 + n, 144 + n, 127 + n, 255]; // beveled rim
+  if (x >= 7 && x <= 8 && y >= 6 && y <= 9) {
+    const topOut = !on; // which half of the rocker sticks out of the plate
+    if (y === (topOut ? 9 : 6)) return [96 + n, 92 + n, 80, 255]; // far edge of the pressed half, in shadow
+    if (y === (topOut ? 7 : 8)) return [255, 252, 240, 255]; // protruding lip catching the light
+    const outHalf = (y <= 7) === topOut;
+    return outHalf ? [242 + n, 237 + n, 220 + n, 255] : [193 + n, 187 + n, 168 + n, 255];
+  }
+  return [225 + n, 219 + n, 200 + n, 255]; // cream plate
+};
+const decalSwitch = (x, y, s, rng) => switchFace(x, y, s, rng, false);
+const decalSwitchOn = (x, y, s, rng) => switchFace(x, y, s, rng, true);
 
 // --- multi-cell decal art (span > 1x1; `s` is the art WIDTH in pixels) ---
 
@@ -650,11 +728,6 @@ const doorShop = (x, y, s, rng) => {
   if (x < 3 || x >= s - 3 || y < 3 || y >= h - 3) return alu(134);
   if (y >= h - 11) return alu(y === h - 11 ? 100 : 122 + ((x + y) % 2) * 5); // kick plate
   if (y >= 30 && y <= 32) return alu(y === 31 ? 150 : 118); // push bar
-  if (x >= 6 && x <= 13 && y >= 10 && y <= 16) { // opening-hours card
-    if (y === 10 || y === 16 || x === 6 || x === 13) return [198, 62, 52, 255];
-    if ((y === 12 || y === 14) && x >= 8 && x <= 11) return [120, 118, 108, 255];
-    return [226 + n, 222 + n, 208 + n, 255];
-  }
   const d = Math.floor(x + y * 0.5);
   const streak = d % 17 === 4 || d % 17 === 5 ? 24 : 0; // window reflections
   return [42 + streak + n, 60 + streak + n, 64 + streak + n, 100]; // glazing — translucent
@@ -1020,6 +1093,65 @@ const decalClub = (x, y, s, rng) => {
   return [0, 0, 0, 0];
 };
 
+// 64x32 "HWDP" tag: the four-letter anti-police acronym sprayed in black
+// block letters on every 90s osiedle wall, drips included.
+const HWDP_LETTERS = [
+  (x, y) => inRect(x, y, 0, 0, 2, 17) || inRect(x, y, 6, 0, 8, 17) || inRect(x, y, 0, 7, 8, 10),                              // H
+  (x, y) => inRect(x, y, 0, 0, 2, 17) || inRect(x, y, 6, 0, 8, 17) || inRect(x, y, 0, 15, 8, 17) || inRect(x, y, 3, 7, 5, 17), // W
+  (x, y) => inRect(x, y, 0, 0, 2, 17) || inRect(x, y, 0, 0, 6, 2) || inRect(x, y, 0, 15, 6, 17) || inRect(x, y, 6, 2, 8, 15),  // D
+  (x, y) => inRect(x, y, 0, 0, 2, 17) || inRect(x, y, 0, 0, 6, 2) || inRect(x, y, 6, 2, 8, 8) || inRect(x, y, 0, 7, 6, 9),     // P
+];
+
+const decalHwdp = (x, y, s, rng) => {
+  const wx = x + Math.sin(y * 0.45 + x * 0.06) * 0.9; // shaky spray hand
+  const li = Math.floor((wx - 3) / 15);
+  const lx = (wx - 3) - li * 15;
+  const ly = y - 7;
+  if (li >= 0 && li < 4 && lx >= 0 && lx <= 8 && ly >= 0 && ly <= 17 && HWDP_LETTERS[li](lx, ly)) {
+    if (hash2(x, y) < 0.1) return [0, 0, 0, 0]; // patchy spray
+    const n = (rng() - 0.5) * 16;
+    return [34 + n, 30 + n, 36 + n, 255];
+  }
+  // drips running off the letter bottoms
+  for (const dx of [5, 20, 36, 52]) {
+    if (x === dx && y > 23 && y < 26 + hash2(dx, 9) * 6) return [34, 30, 36, 255];
+  }
+  return [0, 0, 0, 0];
+};
+
+// 32x32 kotwica: the Polska Walcząca anchor stencil in worn white — the
+// wartime symbol still resprayed on 90s walls.
+const decalKotwica = (x, y, s, rng) => {
+  const cx = 15.5;
+  const shaft = Math.abs(x - cx) < 1.7 && y >= 3 && y <= 24;
+  const loop = x >= cx && y <= 14 && Math.abs(Math.hypot(x - cx, y - 8.5) - 5.5) < 1.5;
+  const arms = y >= 16 && Math.abs(Math.hypot(x - cx, y - 16) - 9) < 1.6;
+  const tips = y >= 11 && y <= 16 &&
+    (Math.abs(x - (cx - 9)) < (y - 10) * 0.65 || Math.abs(x - (cx + 9)) < (y - 10) * 0.65);
+  if (shaft || loop || arms || tips) {
+    if (hash2(x, y) < 0.12) return [0, 0, 0, 0]; // worn stencil paint
+    const n = (rng() - 0.5) * 22;
+    return [212 + n, 210 + n, 206 + n, 255];
+  }
+  return [0, 0, 0, 0];
+};
+
+// 32x32 circle-A: red spray anarchy sign, legs and crossbar overshooting the
+// ring the way every osiedle punk drew it.
+const decalAnarchy = (x, y, s, rng) => {
+  const ring = Math.abs(Math.hypot(x - 15.5, y - 15.5) - 11) < 1.5;
+  const legL = y >= 5 && y <= 27 && Math.abs(x - (15.5 - (y - 5) * 0.38)) < 1.3;
+  const legR = y >= 5 && y <= 27 && Math.abs(x - (15.5 + (y - 5) * 0.38)) < 1.3;
+  const bar = x >= 5 && x <= 27 && Math.abs(y - (18 + (x - 15.5) * 0.1)) < 1.2;
+  if (ring || legL || legR || bar) {
+    if (hash2(x, y) < 0.14) return [0, 0, 0, 0]; // patchy spray
+    const n = (rng() - 0.5) * 22;
+    return [188 + (ring ? -10 : 0) + n, 42, 38, 255];
+  }
+  if (x === 24 && y > 21 && y < 24 + hash2(7, 3) * 5) return [176, 38, 34, 255]; // drip
+  return [0, 0, 0, 0];
+};
+
 // 32x32 damp and mold: dark blotch densest at the bottom (rising damp), a
 // dithered fringe and green mold specks.
 const decalDamp = (x, y, s, rng) => {
@@ -1137,6 +1269,27 @@ const decalHopscotch = (x, y, s, rng) => {
   return [0, 0, 0, 0];
 };
 
+// 16x64 steel ladder: two weathered side rails with a rung every half metre
+// and rust blooming around the welds. Climbable in the game (WalkControls
+// reads the decal's `climbable` flag), so the art reads as hardware, not
+// graffiti: solid rails, cutout gaps between the rungs.
+const decalLadder = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 14;
+  const rail = x === 2 || x === 3 ? 2 : x === 12 || x === 13 ? 12 : 0;
+  const rung = (y + 4) % 8 < 2 && x > 3 && x < 12;
+  if (!rail && !rung) return [0, 0, 0, 0];
+  const rust = hash2(x * 3, y * 3) < 0.14;
+  if (rust) return [122 + n, 68 + n * 0.5, 40, 255];
+  if (rail) {
+    const lit = x === rail; // left texel of each rail catches the light
+    const g = (lit ? 148 : 108) + n;
+    return [g, g + 4, g + 10, 255];
+  }
+  const top = (y + 4) % 8 < 1; // upper texel row of the rung, in the light
+  const g = (top ? 158 : 96) + n;
+  return [g, g + 4, g + 10, 255];
+};
+
 // --- registry (adding a tile name here makes it available to block defs) ---
 
 const GENERATORS = Object.freeze({
@@ -1218,12 +1371,18 @@ const GENERATORS = Object.freeze({
   decal_cans: decalCans,
   decal_stain: decalStain,
   decal_food: decalFood,
+  decal_cigs: decalCigs,
+  decal_poop: decalPoop,
+  decal_seeds: decalSeeds,
   decal_graffiti: decalGraffiti,
   decal_stop: decalStop,
   decal_arrow: decalArrow,
   decal_poster: decalPoster,
   decal_sklep: decalSklep,
   decal_club: decalClub,
+  decal_hwdp: decalHwdp,
+  decal_kotwica: decalKotwica,
+  decal_anarchy: decalAnarchy,
   decal_damp: decalDamp,
   decal_ads: decalAds,
   decal_zebra: decalZebra,
@@ -1231,7 +1390,10 @@ const GENERATORS = Object.freeze({
   decal_bottles: decalBottles,
   decal_curtain: decalCurtain,
   decal_hopscotch: decalHopscotch,
+  decal_ladder: decalLadder,
   decal_domofon: decalDomofon,
+  decal_switch: decalSwitch,
+  decal_switch_on: decalSwitchOn,
 });
 
 // Runtime tiles (text signs): registered after module load, rendered by the

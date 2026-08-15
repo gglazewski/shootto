@@ -136,6 +136,13 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
     return halo[lx + ly * hs + lz * hs * hs];
   };
 
+  // Face paint (per-cell texture overrides) is looked up per VOXEL, not per
+  // face, and only when the world has any paint at all — an unpainted world
+  // pays a single boolean check for the whole chunk. Painted faces emit no
+  // extra geometry: the override only swaps which atlas tile the existing
+  // quad samples, so the render cost is exactly zero.
+  const paintFor = world.paintCount > 0 ? world.paintFor.bind(world) : null;
+
   const pushCorner = (buf, x, y, z, nx, ny, nz, u, v, r, g, b, ls, lb, e) => {
     buf.positions.push(x * CELL_SIZE, y * CELL_SIZE, z * CELL_SIZE);
     buf.normals.push(nx, ny, nz);
@@ -167,6 +174,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
     const y0f = Math.max(0, vy0 - fy);
     const y1f = Math.min(1, vy1 - fy);
     if (y1f <= y0f) return;
+    const paint = paintFor ? paintFor(fx, fy, fz) : null;
     for (const name of Object.keys(FACE_TABLE)) {
       const f = FACE_TABLE[name];
       const nx = fx + f.n[0], ny = fy + f.n[1], nz = fz + f.n[2];
@@ -179,7 +187,13 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
       const inset = (name === 'py' && y1f < 1) || (name === 'ny' && y0f > 0);
       if (!inset && neighbor && (coversFace(neighbor, name, ny, fy + y0f, fy + y1f) || selfTransparent || (mixed && neighbor.type === voxel.type))) continue;
 
-      const tile = tileIndexFor(voxel.type, rot ? rotatedFace(name, rot) : name);
+      // A painted face shows the source block's tile for THIS world face:
+      // the painter picked what they saw, so the voxel's own yaw (which
+      // permutes its side tiles) must not permute the paint as well.
+      const painted = paint ? paint[name] : null;
+      const tile = painted
+        ? tileIndexFor(painted, name)
+        : tileIndexFor(voxel.type, rot ? rotatedFace(name, rot) : name);
       const tileW = 1 / AW;
       const tileH = 1 / AH;
       const baseU = (tile % AW) * tileW;
@@ -320,25 +334,86 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
     const cc = (p, a) => Math.max(a, Math.min(a + span - 1, Math.floor(p)));
     const half = span / 2;
     const alongX = ((voxel.rotation ?? 0) & 1) === 0;
-    const corners = alongX
-      ? [[ax, ay, az + half], [ax + span, ay, az + half], [ax + span, ay + span, az + half], [ax, ay + span, az + half]]
-      : [[ax + half, ay, az], [ax + half, ay, az + span], [ax + half, ay + span, az + span], [ax + half, ay + span, az]];
     const n = alongX ? [0, 0, 1] : [1, 0, 0];
-    const uv = [[0, 0], [1, 0], [1, 1], [0, 1]]; // uv-v follows world +y
-    for (const flip of paneTransparent ? [1] : [1, -1]) {
-      const order = flip === 1 ? [0, 1, 2, 3] : [0, 3, 2, 1];
-      const first = paneBuf.positions.length / 3;
-      for (const i of order) {
-        const c = corners[i];
-        const lx = cc(c[0], ax), ly = cc(c[1], ay), lz = cc(c[2], az);
-        const ls = sky(lx, ly, lz) / 15;
-        const lb = block(lx, ly, lz) / 15;
-         const u = baseU + htU + uv[i][0] * (tileW - 2 * htU);
-          const v = baseV + htV + uv[i][1] * (tileH - 2 * htV);
-          pushCorner(paneBuf, c[0], c[1], c[2], n[0] * flip, n[1] * flip, n[2] * flip, u, v, 1, 1, 1, ls, lb, pem);
-      }
-      paneBuf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
+
+    // Corner mitering. In run coordinates: the pane runs along r ∈ [ar,
+    // ar+span] on its run axis (x when alongX, else z) and sits on the fixed
+    // plane q on the other axis. A perpendicular neighbor's plane is a run
+    // coordinate of ours and vice versa, so the two mesh naturally:
+    //  - extend: a perpendicular pane just past one of our ends whose run
+    //    covers our plane — stretch that end to its plane so the edges meet.
+    //  - trim: a perpendicular pane beside us whose plane cuts our run
+    //    interior extends to our plane (its own extend rule); if our run
+    //    continues past exactly one end, cut the stub on the dead side at
+    //    that plane, closing the L into a mitered corner.
+    // All coordinates are multiples of 0.5, so float compares are exact.
+    const ar = alongX ? ax : az;
+    const aq = alongX ? az : ax;
+    const q = aq + half;
+    // The pane voxel covering a cell, described in ITS run/plane terms.
+    const paneAt = (r, row) => {
+      const v = alongX ? hget(r, ay, row) : hget(row, ay, r);
+      if (!v || shapeFor(v.type) !== 'pane') return null;
+      const [nax, , naz] = v.anchor ?? (alongX ? [r, ay, row] : [row, ay, r]);
+      const nspan = v.size === 'big' ? 2 : 1;
+      const nAlongX = ((v.rotation ?? 0) & 1) === 0;
+      const nr = nAlongX ? nax : naz;
+      const nq = (nAlongX ? naz : nax) + nspan / 2;
+      return { perp: nAlongX !== alongX, r0: nr, r1: nr + nspan, plane: nq };
+    };
+    let m0 = ar, m1 = ar + span; // final run interval of the main quad
+    let ext0 = 0, ext1 = 0;      // mirrored extension quads past each end
+    let contLo = false, contHi = false;
+    for (let i = 0; i < span; i++) {
+      const row = aq + i;
+      const nLo = paneAt(ar - 1, row);
+      if (nLo && nLo.perp && nLo.r0 <= q && q <= nLo.r1 && nLo.plane < m0)
+        ext0 = Math.max(ext0, m0 - nLo.plane);
+      contLo = contLo || (nLo && !nLo.perp && nLo.plane === q);
+      const nHi = paneAt(ar + span, row);
+      if (nHi && nHi.perp && nHi.r0 <= q && q <= nHi.r1 && nHi.plane > m1)
+        ext1 = Math.max(ext1, nHi.plane - m1);
+      contHi = contHi || (nHi && !nHi.perp && nHi.plane === q);
     }
+    if (contLo !== contHi) {
+      for (const side of [aq - 1, aq + span]) {
+        for (let i = 0; i < span; i++) {
+          const s = paneAt(ar + i, side);
+          if (!s || !s.perp || s.plane <= m0 || s.plane >= m1) continue;
+          if (contLo) { m1 = Math.min(m1, s.plane); ext1 = 0; }
+          else { m0 = Math.max(m0, s.plane); ext0 = 0; }
+        }
+      }
+    }
+
+    const emitRun = (rA, rB, uA, uB) => {
+      const corners = alongX
+        ? [[rA, ay, q], [rB, ay, q], [rB, ay + span, q], [rA, ay + span, q]]
+        : [[q, ay, rA], [q, ay, rB], [q, ay + span, rB], [q, ay + span, rA]];
+      const us = [uA, uB, uB, uA];
+      const vs = [0, 0, 1, 1]; // uv-v follows world +y
+      for (const flip of paneTransparent ? [1] : [1, -1]) {
+        const order = flip === 1 ? [0, 1, 2, 3] : [0, 3, 2, 1];
+        const first = paneBuf.positions.length / 3;
+        for (const i of order) {
+          const c = corners[i];
+          const lx = cc(c[0], ax), ly = cc(c[1], ay), lz = cc(c[2], az);
+          const ls = sky(lx, ly, lz) / 15;
+          const lb = block(lx, ly, lz) / 15;
+          const u = baseU + htU + us[i] * (tileW - 2 * htU);
+          const v = baseV + htV + vs[i] * (tileH - 2 * htV);
+          pushCorner(paneBuf, c[0], c[1], c[2], n[0] * flip, n[1] * flip, n[2] * flip, u, v, 1, 1, 1, ls, lb, pem);
+        }
+        paneBuf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
+      }
+    };
+    // The main quad samples its own sub-range of the tile (trims keep texel
+    // density); extensions mirror the tile past its edge so the pattern stays
+    // continuous into the corner instead of stretching.
+    const u0 = (m0 - ar) / span, u1 = (m1 - ar) / span;
+    emitRun(m0, m1, u0, u1);
+    if (ext0 > 0) emitRun(m0 - ext0, m0, u0 + ext0 / span, u0);
+    if (ext1 > 0) emitRun(m1, m1 + ext1, u1, u1 - ext1 / span);
 
     // Decals on a pane ride the pane's own plane (a hair off it), not the
     // cell boundary — a lace curtain hangs on the glass. Only the two faces
@@ -409,6 +484,11 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
   // light in the voxel's own footprint cells, closed (light-opaque) leaves
   // sample the cell beyond each face so each side shows its room's light.
   const DOOR_THICK = 0.24; // leaf thickness in cells (12 cm)
+  // An open leaf folds back flat against the wall beside the doorway, and its
+  // hinge-side face would land exactly on that wall's face plane — two coplanar
+  // quads z-fighting. Float the open leaf this far (in cells: 1 cm) off the
+  // jamb so it wins the depth test cleanly; the gap is invisible.
+  const DOOR_WALL_GAP = 0.02;
   const door = (voxel, ax, ay, az) => {
     const rot = voxel.rotation ?? 0;
     const open = !!getBlock(voxel.type)?.doorClosed;
@@ -418,6 +498,10 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
     const H = sy;
     const T = DOOR_THICK;
     const alongX = (rot & 1) === 0;
+    // Hinge side: 'left' pivots on the anchor-side jamb (the default), so the
+    // open leaf hugs the low end of the closed leaf's width; 'right' pivots
+    // on the far jamb and hugs the high end.
+    const hingeMax = voxel.hinge === 'right';
     let min, max, wAxis;
     if (!open) {
       min = alongX ? [ax, ay, az + 0.5 - T / 2] : [ax + 0.5 - T / 2, ay, az];
@@ -425,18 +509,23 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
       wAxis = alongX ? 0 : 2;
     } else if (alongX) {
       const z0 = rot === 0 ? az + 0.5 - T / 2 : az + 0.5 + T / 2 - W;
-      min = [ax, ay, z0];
-      max = [ax + T, ay + H, z0 + W];
+      const x0 = hingeMax ? ax + W - T - DOOR_WALL_GAP : ax + DOOR_WALL_GAP;
+      min = [x0, ay, z0];
+      max = [x0 + T, ay + H, z0 + W];
       wAxis = 2;
     } else {
       const x0 = rot === 1 ? ax + 0.5 - T / 2 : ax + 0.5 + T / 2 - W;
-      min = [x0, ay, az];
-      max = [x0 + W, ay + H, az + T];
+      const z0 = hingeMax ? az + W - T - DOOR_WALL_GAP : az + DOOR_WALL_GAP;
+      min = [x0, ay, z0];
+      max = [x0 + W, ay + H, z0 + T];
       wAxis = 0;
     }
-    // Swinging toward -z/-x puts the hinge at the leaf's max end, so the art
-    // runs backwards along the leaf there (handle stays at the free edge).
-    const flipU = open && (rot === 2 || rot === 3);
+    // The art always runs from the hinge edge toward the handle. Closed, the
+    // hinge edge is the leaf's low end unless the door is right-hung (a
+    // right-hung door shows the mirrored face, handle on the other side).
+    // Open, the hinge edge is the one at the wall, so a leaf swinging toward
+    // -z/-x runs backwards along its new width axis.
+    const flipU = open ? rot === 2 || rot === 3 : hingeMax;
 
     const [cw, ch] = getBlock(voxel.type)?.tileSpan ?? [1, 1];
     const tile = tileIndexFor(voxel.type, 'px');

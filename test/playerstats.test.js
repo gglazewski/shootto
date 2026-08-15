@@ -10,6 +10,7 @@ import {
 } from '../src/game/PlayerStats.js';
 import { weaponFor, FISTS } from '../src/game/weapons.js';
 import { clearItems, registerItem } from '../src/engine/ItemRegistry.js';
+import { registerEquipItem, clearEquipItems } from '../src/engine/EquipmentRegistry.js';
 
 test('player starts with full health and zero armor', () => {
   const s = new PlayerStats();
@@ -75,12 +76,51 @@ test('serialize/deserialize round-trips the whole model', () => {
     ammo: { pistol: 40, rifle: 8 },
   });
   s.setActiveSlot(1);
+  s.addWear('primary');
+  s.addWear('primary');
   const copy = PlayerStats.deserialize(s.serialize());
   assert.equal(copy.health, 73);
   assert.equal(copy.armor, 41);
   assert.deepEqual(copy.equipment, s.equipment);
   assert.equal(copy.activeSlot, 1);
   assert.deepEqual(copy.ammo, { pistol: 40, rifle: 8, shotgun: 0 }, 'ammo must round-trip');
+  assert.deepEqual(copy.wear, { primary: 2, secondary: 0, extra: 0, injection: 0 }, 'weapon wear must round-trip');
+});
+
+test('weapon wear counts landed hits and resets when the item changes', () => {
+  const s = new PlayerStats({ equipment: { primary: 'bat' } });
+  assert.equal(s.wear.primary, 0, 'a fresh weapon has no wear');
+  assert.equal(s.addWear('primary'), 1);
+  assert.equal(s.addWear('primary'), 2);
+  assert.equal(s.addWear('nope'), 0, 'unknown slots take no wear');
+
+  s.equip('primary', 'bat');
+  assert.equal(s.wear.primary, 2, 're-equipping the same item keeps its wear');
+
+  s.equip('primary', 'knife');
+  assert.equal(s.wear.primary, 0, 'a different item arrives fresh');
+
+  s.addWear('primary');
+  s.unequip('primary');
+  assert.equal(s.wear.primary, 0, 'clearing the slot discards the wear');
+});
+
+test('repairWear zeroes a slot (the NPC repair service) and keeps the item', () => {
+  const s = new PlayerStats({ equipment: { primary: 'bat' } });
+  s.addWear('primary');
+  s.addWear('primary');
+  assert.equal(s.repairWear('primary'), true);
+  assert.equal(s.wear.primary, 0, 'good as new');
+  assert.equal(s.equipment.primary, 'bat', 'the weapon stays equipped');
+  assert.equal(s.repairWear('nope'), false, 'unknown slots refuse');
+});
+
+test('deserialize drops wear for empty slots and invalid values', () => {
+  const s = PlayerStats.deserialize({
+    equipment: { primary: 'bat' },
+    wear: { primary: 3, secondary: 5, extra: 'x', injection: -2 },
+  });
+  assert.deepEqual(s.wear, { primary: 3, secondary: 0, extra: 0, injection: 0 });
 });
 
 test('ammo inventory starts empty and clamps to the type max stack', () => {
@@ -122,4 +162,28 @@ test('weaponFor returns fists for an empty hand and a profile otherwise', () => 
   assert.ok(w.range > 0);
   assert.ok(w.cooldown > 0);
   clearItems();
+});
+
+test('weaponFor exposes durability for melee weapons only', () => {
+  clearEquipItems();
+  assert.equal(FISTS.durability, 0, 'fists never break');
+  registerEquipItem({
+    id: 'bat',
+    name: 'Bat',
+    kind: 'weapon',
+    microVoxels: [],
+    stats: { damage: 18, reach: 2.6, cooldown: 0.8, durability: 6 },
+    weapon: { kind: 'melee' },
+  });
+  registerEquipItem({
+    id: 'gun',
+    name: 'Gun',
+    kind: 'weapon',
+    microVoxels: [],
+    stats: { damage: 10, reach: 100, cooldown: 0.5, durability: 6 },
+    weapon: { kind: 'ranged' },
+  });
+  assert.equal(weaponFor('bat').durability, 6, 'melee weapons carry their durability');
+  assert.equal(weaponFor('gun').durability, 0, 'guns never wear');
+  clearEquipItems();
 });

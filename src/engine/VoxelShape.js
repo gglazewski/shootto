@@ -69,6 +69,24 @@ export function solidYRange(voxel, fallbackY = 0) {
   return [ay, ay + sy];
 }
 
+/**
+ * How much of one cell a placed voxel's solid box actually fills, vertically.
+ * Cells are the granularity of occupancy, but a slab only fills half of one
+ * (and a BIG slab leaves a whole cell layer empty), so anything reasoning
+ * about a single cell — light, sealing — needs this instead of "occupied".
+ * @param {object} voxel  placed voxel (anchor, size, rotation, variant)
+ * @param {number} y      the cell's y
+ * @returns {'none'|'full'|'lower'|'upper'} which part of the cell is solid
+ */
+export function cellFillFor(voxel, y) {
+  const [vy0, vy1] = solidYRange(voxel, y);
+  const lo = Math.max(vy0, y);
+  const hi = Math.min(vy1, y + 1);
+  if (hi <= lo) return 'none';
+  if (lo <= y && hi >= y + 1) return 'full';
+  return lo <= y ? 'lower' : 'upper';
+}
+
 /** Cells covered by a voxel of `size` anchored at [ax, ay, az]. Rotation
  *  only matters for sizes with a non-square footprint (doors). */
 export function cellsFor(ax, ay, az, size, rotation = 0) {

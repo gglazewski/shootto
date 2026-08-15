@@ -14,7 +14,9 @@
 //            item; grip2 is the left-hand cell for two-handed weapons,
 //   - yaw:   the item's forward/direction angle (degrees about the vertical
 //            axis; the F3 editor shows this as an arrow, default +Z).
-//   - stats: damage / reach (m) / cooldown (s) used when attacking (weapons).
+//   - stats: damage / reach (m) / cooldown (s) / durability (landed melee
+//            hits before the weapon breaks; 0 = unbreakable) used when
+//            attacking (weapons).
 //   - weapon: a composable attack profile (kind / hands / muzzle / anim /
 //            recoil / spread / pellets / orientation) — see normalizeWeapon.
 //   - ammo:  the ammo type a pack grants + the amount per pickup (ammo kind).
@@ -27,8 +29,10 @@ export const EQUIP_VERSION = 1;
 
 import { isAmmoId } from './AmmoTypes.js';
 
-/** Default attack profile for a new equippable item. */
-export const DEFAULT_EQUIP_STATS = Object.freeze({ damage: 10, reach: 2, cooldown: 0.35 });
+/** Default attack profile for a new equippable item. Durability is the number
+ *  of landed melee hits before the weapon breaks (0 = never breaks; ranged
+ *  weapons and fists ignore it). */
+export const DEFAULT_EQUIP_STATS = Object.freeze({ damage: 10, reach: 2, cooldown: 0.35, durability: 40 });
 
 /** Default ammo-pack fields for an ammo-kind item. */
 export const DEFAULT_AMMO = Object.freeze({ type: '', amount: 6 });
@@ -145,13 +149,15 @@ export function normalizeAmmo(a = {}) {
   };
 }
 
-/** Normalize a stats object to the canonical {damage, reach, cooldown}.
- *  Reach is in meters and ranges from a fist's length up to sniper range. */
+/** Normalize a stats object to the canonical {damage, reach, cooldown,
+ *  durability}. Reach is in meters and ranges from a fist's length up to
+ *  sniper range. Durability is whole landed hits (0 = unbreakable). */
 export function normalizeStats(stats = {}) {
   return {
     damage: clampNum(stats.damage, 1, 100, DEFAULT_EQUIP_STATS.damage),
     reach: clampNum(stats.reach, 0.5, 1000, DEFAULT_EQUIP_STATS.reach),
     cooldown: clampNum(stats.cooldown, 0.1, 3, DEFAULT_EQUIP_STATS.cooldown),
+    durability: Math.round(clampNum(stats.durability, 0, 999, DEFAULT_EQUIP_STATS.durability)),
   };
 }
 
@@ -219,7 +225,7 @@ export function clearEquipItems() {
   REGISTRY.clear();
 }
 
-/** Persist the whole registry as JSON text (localStorage / files). Built-in
+/** Persist the whole registry as JSON text (ships inside the world bundle). Built-in
  *  defs (the quest items code always registers) are code, not authored
  *  content — they are skipped, so saving one authored item persists exactly
  *  that item. */

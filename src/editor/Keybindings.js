@@ -18,17 +18,33 @@ export const KEYBINDINGS = Object.freeze({
   'size.toggle': 'KeyB',
   'variant.cycle': 'KeyV',
   'item.rotate': 'KeyR',
-  'inventory.toggle': 'KeyE',
+  // Prefab in hand: F mirrors it across the world x plane, Shift+F across z.
+  'prefab.flip.z': { key: 'KeyF', mods: ['Shift'], not: ['Mod'] },
+  'prefab.flip.x': { key: 'KeyF', not: ['Shift', 'Mod'] },
+  // Bare E must not swallow Ctrl+E — the export binding lives below it.
+  'inventory.toggle': { key: 'KeyE', not: ['Mod'] },
+  'items.catalogue': { key: 'KeyI', not: ['Mod'] },
+  'sidebar.toggle': 'Backquote',
   'help.toggle': { key: 'F1', preventDefault: true },
   'item.toggle': { key: 'F2', preventDefault: true },
   'equip.toggle': { key: 'F3', preventDefault: true },
   'npc.toggle': { key: 'F4', preventDefault: true },
   'test.toggle': { key: 'F5', preventDefault: true },
+  // F6 opens the prefab library (and steps back out of it); Shift+F6 opens it
+  // from inside a prefab session, to paste a finished prefab into the build.
+  'prefab.toggle': { key: 'F6', not: ['Shift'], preventDefault: true },
+  'prefab.paste': { key: 'F6', mods: ['Shift'], preventDefault: true },
+  'worlds.toggle': { key: 'F7', preventDefault: true },
   'splash.capture': { key: 'F8', not: ['Shift'], preventDefault: true },
   'splash.delete': { key: 'F8', mods: ['Shift'], preventDefault: true },
   'mob.cycle': 'KeyG',
   'postfx.toggle': 'KeyP',
   'save': { key: 'KeyS', mods: ['Mod'], not: ['Shift'], preventDefault: true },
+  // Ctrl+N / Ctrl+Shift+N are reserved by the browser (new window/incognito)
+  // and cannot be intercepted, hence Alt.
+  'world.new': { key: 'KeyN', mods: ['Mod', 'Alt'], preventDefault: true },
+  'world.load': { key: 'KeyO', mods: ['Mod'], preventDefault: true },
+  'world.export': { key: 'KeyE', mods: ['Mod'], not: ['Shift'], preventDefault: true },
   'undo': { key: 'KeyZ', mods: ['Mod'], not: ['Shift'], preventDefault: true },
   'redo': { key: 'KeyZ', mods: ['Mod', 'Shift'], preventDefault: true },
 });

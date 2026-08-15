@@ -11,8 +11,10 @@
 import { anchorFor, cellsFor } from './VoxelShape.js';
 import { footprintCells, quarterTurns } from './ItemTypes.js';
 import { DEFAULT_CHUNK_SIZE } from './Space.js';
-import { getDecal, acceptsDecal, shapeFor } from './VoxelTypes.js';
+import { getDecal, acceptsDecal, shapeFor, isBlockId, FACES } from './VoxelTypes.js';
 import { FACE_TABLE, decalFootprint } from './ChunkMeshBuilder.js';
+import { applyDoorSettings } from './Doors.js';
+import { applyLightSettings } from './Lights.js';
 
 export { DEFAULT_CHUNK_SIZE, anchorFor, cellsFor };
 
@@ -77,6 +79,17 @@ export class World {
      *  rotation }. A decal rides the face it is attached to (meshed into the
      *  chunk); removing the voxel removes its decals. */
     this.decals = new Map();
+    /** @type {Map<string, Object<string,string>>} Face paint: cellKey ->
+     *  { face -> blockId }. A painted face renders the source block's tile
+     *  instead of its own; nothing else changes (opacity, light, collision
+     *  and shape all still come from the voxel's own type). Stored per CELL
+     *  and per face — one record per cell, so meshing costs a single map
+     *  lookup per voxel instead of one per face. */
+    this.paint = new Map();
+    /** Painted faces in total. The mesher reads this to skip the paint path
+     *  entirely on unpainted worlds (the common case), so the feature costs
+     *  nothing until it is used. */
+    this.paintCount = 0;
     /** Splash cameras: authored camera shots the main menu can show. Each is
      *  { id, pos: [x,y,z] (meters), yaw, pitch (radians), fov, motion }. */
     this.splashCams = [];
@@ -159,6 +172,8 @@ export class World {
       for (const face of ['px', 'nx', 'py', 'ny', 'pz', 'nz']) {
         if (this.decals.has(`${key(cx, cy, cz)},${face}`)) this.removeDecal(cx, cy, cz, face);
       }
+      // paint rides the faces too — no block, no painted face
+      if (this.paintCount) this._clearPaintAt(cx, cy, cz);
     }
     this.voxels.delete(key(ax, ay, az));
     this._occupancyChanged = true;
@@ -249,6 +264,80 @@ export class World {
     for (const decal of new Set(this.decals.values())) fn(decal);
   }
 
+  // --- face paint (per-cell, per-face texture override) ---
+  //
+  // Paint swaps the TILE a face draws, nothing else: the voxel keeps its own
+  // opacity, light, shape and collision. Only cube-shaped voxels take paint —
+  // panes and doors mesh their art as a whole slab, so a per-face override
+  // there would store data that never renders.
+
+  /**
+   * Override the texture of one cell face with another block's tile.
+   * @param {string} blockId  the block whose tile the face should show
+   * @returns {boolean} true when the paint changed
+   */
+  paintFace(x, y, z, face, blockId) {
+    if (!FACES.includes(face) || !isBlockId(blockId)) return false;
+    const voxel = this.get(x, y, z);
+    if (!voxel || shapeFor(voxel.type) !== 'cube') return false;
+    const k = key(x, y, z);
+    let rec = this.paint.get(k);
+    if (rec?.[face] === blockId) return false;
+    if (!rec) {
+      rec = {};
+      this.paint.set(k, rec);
+    }
+    if (rec[face] == null) this.paintCount++;
+    rec[face] = blockId;
+    this.markDirty(x, y, z);
+    return true;
+  }
+
+  /** Strip a face back to its block's own texture.
+   *  @returns {string|null} the block id it was painted with, or null */
+  unpaintFace(x, y, z, face) {
+    const k = key(x, y, z);
+    const rec = this.paint.get(k);
+    const prev = rec?.[face] ?? null;
+    if (prev == null) return null;
+    delete rec[face];
+    this.paintCount--;
+    if (Object.keys(rec).length === 0) this.paint.delete(k);
+    this.markDirty(x, y, z);
+    return prev;
+  }
+
+  /** Block id painted on a cell face, or null. */
+  paintAt(x, y, z, face) {
+    return this.paint.get(key(x, y, z))?.[face] ?? null;
+  }
+
+  /** Every painted face of a cell as { face -> blockId }, or null. The
+   *  mesher's fast path: one lookup covers all six faces of a voxel. */
+  paintFor(x, y, z) {
+    return this.paint.get(key(x, y, z)) ?? null;
+  }
+
+  /** Drop every painted face of a cell (its voxel is going away).
+   *  @returns {number} faces stripped */
+  _clearPaintAt(x, y, z) {
+    const k = key(x, y, z);
+    const rec = this.paint.get(k);
+    if (!rec) return 0;
+    const n = Object.keys(rec).length;
+    this.paint.delete(k);
+    this.paintCount -= n;
+    return n;
+  }
+
+  /** Iterate every painted face as { x, y, z, face, type }. */
+  forEachPaint(fn) {
+    for (const [k, rec] of this.paint) {
+      const [x, y, z] = k.split(',').map(Number);
+      for (const face of Object.keys(rec)) fn({ x, y, z, face, type: rec[face] });
+    }
+  }
+
   /**
    * Replace this world's contents with a copy of another world's — voxels
    * (including rotation), decals, items, mob spawns and the player spawn.
@@ -259,8 +348,25 @@ export class World {
    */
   copyFrom(other) {
     this.clear();
-    other.forEachVoxel((v) => this.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0, v.variant ?? null));
-    other.forEachDecal((d) => this.placeDecal(d.decalId, d.cell[0], d.cell[1], d.cell[2], d.face, d.rotation ?? 0));
+    other.forEachVoxel((v) => {
+      this.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0, v.variant ?? null);
+      // authored door/light settings (locked/hinge/flags/mode) ride on the
+      // voxel itself, not on place()'s arguments — without this a locked
+      // door loads unlocked and a flag-wired light loses its signal name
+      const placed = this.get(v.anchor[0], v.anchor[1], v.anchor[2]);
+      applyDoorSettings(placed, v);
+      applyLightSettings(placed, v);
+    });
+    other.forEachDecal((d) => {
+      this.placeDecal(d.decalId, d.cell[0], d.cell[1], d.cell[2], d.face, d.rotation ?? 0);
+      // switch wiring rides the decal entry the same way
+      const entry = this.decalAt(d.cell[0], d.cell[1], d.cell[2], d.face);
+      if (entry) {
+        if (d.flag) entry.flag = d.flag;
+        if (d.startOn) entry.startOn = true;
+      }
+    });
+    other.forEachPaint?.((p) => this.paintFace(p.x, p.y, p.z, p.face, p.type));
     other.forEachItem((it) => this.placeItem(it.itemId, it.cells ?? it.size, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0));
     other.forEachMobSpawn((s) => this.addMobSpawn(s.type, s.x, s.y, s.z));
     other.forEachNpcSpawn((s) => this.addNpcSpawn(s.type, s.x, s.y, s.z));
@@ -287,6 +393,8 @@ export class World {
     this.mobSpawns.clear();
     this.npcSpawns.clear();
     this.decals.clear();
+    this.paint.clear();
+    this.paintCount = 0;
     this.splashCams.length = 0;
   }
 

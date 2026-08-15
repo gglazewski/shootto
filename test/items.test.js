@@ -230,6 +230,27 @@ test('interior faces between adjacent micro voxels are culled', () => {
   assert.equal(d.positions.length / 3, 40); // 10 exposed faces
 });
 
+test('coplanar same-color faces merge into one quad', () => {
+  const d = buildItemGeometry([
+    { x: 0, y: 0, z: 0, color: [100, 100, 100] },
+    { x: 1, y: 0, z: 0, color: [100, 100, 100] },
+  ]);
+  // 6 merged quads: the two +y/-y/+z/-z faces become 2x1 rects
+  assert.equal(d.positions.length / 3, 6 * 4);
+  assert.equal(d.indices.length, 6 * 6);
+  // the merged top spans both cells: y stays 1, x reaches 2
+  let maxX = 0, sawTop = false;
+  for (let i = 0; i < d.normals.length / 3; i++) {
+    if (d.normals[i * 3 + 1] > 0.9) {
+      sawTop = true;
+      maxX = Math.max(maxX, d.positions[i * 3]);
+      assert.equal(d.positions[i * 3 + 1], 1);
+    }
+  }
+  assert.ok(sawTop);
+  assert.equal(maxX, 2);
+});
+
 test('item geometry bakes per-face brightness into colors', () => {
   const d = buildItemGeometry([{ x: 0, y: 0, z: 0, color: [255, 255, 255] }]);
   // top face (normal +y) is brightest = 1.0

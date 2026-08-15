@@ -24,21 +24,18 @@ import { serializeQuestRegistry, deserializeQuestRegistry } from '../engine/Ques
 export const BUNDLE_FORMAT = 'voxelbundle';
 export const BUNDLE_VERSION = 1;
 
-/** @returns {string} JSON text of the world + its full item + equipment registries. */
+/** @returns {string} JSON text of the world + its full item + equipment registries.
+ *  Compact on purpose: bundles can be many megabytes and are PUT on every autosave. */
 export function serializeBundle(world) {
-  return JSON.stringify(
-    {
-      format: BUNDLE_FORMAT,
-      version: BUNDLE_VERSION,
-      map: JSON.parse(serialize(world)),
-      items: JSON.parse(serializeRegistry()),
-      equip: JSON.parse(serializeEquipRegistry()),
-      npcs: JSON.parse(serializeNpcRegistry()),
-      quests: JSON.parse(serializeQuestRegistry()),
-    },
-    null,
-    2,
-  );
+  return JSON.stringify({
+    format: BUNDLE_FORMAT,
+    version: BUNDLE_VERSION,
+    map: JSON.parse(serialize(world)),
+    items: JSON.parse(serializeRegistry()),
+    equip: JSON.parse(serializeEquipRegistry()),
+    npcs: JSON.parse(serializeNpcRegistry()),
+    quests: JSON.parse(serializeQuestRegistry()),
+  });
 }
 
 /** @returns {{world: World, errors: string[], itemCount: number, fatal: boolean}}

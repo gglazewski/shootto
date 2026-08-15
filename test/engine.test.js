@@ -10,6 +10,7 @@ import { raycastVoxel, worldToCell, CELL_SIZE } from '../src/engine/VoxelRaycast
 import { serialize, deserialize } from '../src/persistence/WorldSerializer.js';
 import { bulletWorld } from '../src/editor/itemPick.js';
 import { Blinkers } from '../src/engine/Blinkers.js';
+import { setLightMode } from '../src/engine/Lights.js';
 import { LightField } from '../src/engine/LightField.js';
 import { buildCloudNoiseData, CLOUD_TEX_SIZE } from '../src/engine/Sky.js';
 
@@ -253,6 +254,38 @@ test('opaque faces adjacent to glass are still emitted', () => {
   assert.equal(m.transparent.indices.length, 6);
 });
 
+test('perpendicular panes miter: end extends to the neighbor pane plane', () => {
+  const w = new World();
+  w.place('fence', SIZE.SMALL, 0, 0, 0, 0); // along x, plane z=0.5, run x 0..1
+  w.place('fence', SIZE.SMALL, 1, 0, 0, 1); // along z, plane x=1.5, run z 0..1
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
+  // Pane A grows an extension quad to reach x=1.5; each cutout quad is
+  // double-winded: (main+ext)*2 for A + main*2 for B = 6 quads.
+  assert.equal(m.indices.length, 6 * 6);
+  let maxX = -Infinity;
+  for (let i = 0; i < m.positions.length; i += 3) maxX = Math.max(maxX, m.positions[i]);
+  assert.equal(maxX, 1.5 * CELL_SIZE, 'the along-x pane reaches the along-z pane plane');
+});
+
+test('perpendicular panes miter: corner voxel trims its dead-side stub', () => {
+  const w = new World();
+  w.place('fence', SIZE.SMALL, 0, 0, 0, 0); // row along x, plane z=0.5
+  w.place('fence', SIZE.SMALL, 1, 0, 0, 0); // corner cell, run continues -x only
+  w.place('fence', SIZE.SMALL, 1, 0, 1, 1); // column along z, plane x=1.5
+  const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
+  // Row vertices sit on the z=0.5 plane: the corner voxel must stop at the
+  // column's plane x=1.5 instead of running through to x=2.
+  let rowMaxX = -Infinity, colMinZ = Infinity;
+  for (let i = 0; i < m.positions.length; i += 3) {
+    const x = m.positions[i], z = m.positions[i + 2];
+    if (z === 0.5 * CELL_SIZE) rowMaxX = Math.max(rowMaxX, x);
+    if (x === 1.5 * CELL_SIZE) colMinZ = Math.min(colMinZ, z);
+  }
+  assert.equal(rowMaxX, 1.5 * CELL_SIZE, 'corner pane is trimmed at the column plane');
+  // ...and the column extends down to meet the row plane at z=0.5.
+  assert.equal(colMinZ, 0.5 * CELL_SIZE, 'column pane extends to the row plane');
+});
+
 test('mixed-alpha blocks (framed window) mesh into both passes', () => {
   const w = new World();
   w.place('window_white', SIZE.SMALL, 0, 0, 0);
@@ -381,9 +414,10 @@ test('dark corners produce a dimmer light value', () => {
   assert.ok(m.lights.every((v) => v >= 0 && v <= 1));
 });
 
-test('blinkers toggle lights over time and saves normalize the dark phase', () => {
+test('blinkers strobe a flickering light and saves normalize the dark phase', () => {
   const w = new World();
-  w.place('lamp_blink', SIZE.SMALL, 0, 5, 0);
+  w.place('lamp', SIZE.SMALL, 0, 5, 0);
+  setLightMode(w, w.get(0, 5, 0), 'flicker');
   const blk = new Blinkers(w);
   blk.rescan();
   assert.equal(blk.list.length, 1);
@@ -392,25 +426,71 @@ test('blinkers toggle lights over time and saves normalize the dark phase', () =
     blk.update(0.05);
     seen.add(w.get(0, 5, 0).type);
   }
-  assert.ok(seen.has('lamp_blink') && seen.has('lamp_blink_off'), 'light toggles between phases');
+  assert.ok(seen.has('lamp') && seen.has('lamp_off'), 'light toggles between phases');
   assert.ok(w.edits.length > 1, 'each toggle pushes a light-edit record');
-  // a save taken mid-blink stores the canonical lit id, never the hidden phase
-  w.get(0, 5, 0).type = 'lamp_blink_off';
+  // a save taken mid-blink stores the canonical lit id + the authored mode
   const raw = JSON.parse(serialize(w));
-  assert.equal(raw.blocks[0].type, 'lamp_blink');
+  assert.equal(raw.blocks[0].type, 'lamp');
+  assert.equal(raw.blocks[0].lightMode, 'flicker');
 });
 
-test('blinking light blocks pair with hidden off states', () => {
-  for (const [on, off] of [['lamp_blink', 'lamp_blink_off'], ['neon_blink', 'neon_blink_off']]) {
+test('light blocks pair with hidden off states and hold three modes', () => {
+  for (const [on, off] of [['lamp', 'lamp_off'], ['neon', 'neon_off'], ['neon_white', 'neon_white_off']]) {
     const lit = getBlock(on);
     const dark = getBlock(off);
-    assert.equal(lit.blinkOff, off);
-    assert.equal(dark.blinkOn, on);
+    assert.equal(lit.lightOff, off);
+    assert.equal(dark.lightOn, on);
     assert.ok(lit.light > 0, `${on} emits light`);
     assert.ok(!dark.light, `${off} emits none`);
     assert.ok(dark.hidden, `${off} stays out of the palette`);
     assert.ok(!lit.hidden);
   }
+});
+
+test('setLightMode swaps phases in place and steady modes hold under update', () => {
+  const w = new World();
+  w.place('neon', SIZE.SMALL, 1, 2, 3);
+  const v = w.get(1, 2, 3);
+  assert.ok(setLightMode(w, v, 'off'));
+  assert.equal(v.type, 'neon_off');
+  const blk = new Blinkers(w);
+  blk.rescan();
+  for (let i = 0; i < 100; i++) blk.update(0.05);
+  assert.equal(v.type, 'neon_off', 'an off light stays dark');
+  assert.ok(setLightMode(w, v, 'on'));
+  assert.equal(v.type, 'neon');
+  for (let i = 0; i < 100; i++) blk.update(0.05);
+  assert.equal(v.type, 'neon', 'an on light stays lit');
+  assert.equal(setLightMode(w, v, 'on'), false, 'same mode is a no-op');
+});
+
+test('light mode and flag round-trip through the serializer', () => {
+  const w = new World();
+  w.place('lamp', SIZE.SMALL, 0, 5, 0);
+  setLightMode(w, w.get(0, 5, 0), 'off');
+  w.get(0, 5, 0).lightFlag = 'power';
+  const { world: w2, errors } = deserialize(serialize(w));
+  assert.equal(errors.length, 0);
+  const v = w2.get(0, 5, 0);
+  assert.equal(v.type, 'lamp_off', 'an authored-off light loads dark');
+  assert.equal(v.lightMode, 'off');
+  assert.equal(v.lightFlag, 'power');
+});
+
+test('legacy *_blink blocks load as unified lights authored to flicker', () => {
+  const text = JSON.stringify({
+    format: 'voxelmap', version: 1, cellSize: 0.5,
+    blocks: [
+      { x: 0, y: 0, z: 0, size: 'small', type: 'lamp_blink' },
+      { x: 1, y: 0, z: 0, size: 'small', type: 'neon_blink_off' },
+    ],
+  });
+  const { world: w, errors } = deserialize(text);
+  assert.equal(errors.length, 0);
+  assert.equal(w.get(0, 0, 0).type, 'lamp');
+  assert.equal(w.get(0, 0, 0).lightMode, 'flicker');
+  assert.equal(w.get(1, 0, 0).type, 'neon');
+  assert.equal(w.get(1, 0, 0).lightMode, 'flicker');
 });
 
 // --- decals ---

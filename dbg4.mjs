@@ -1,27 +1,41 @@
 import { chromium } from 'playwright-core';
 import { homedir } from 'node:os';
-import { readdirSync, existsSync } from 'node:fs';
+import { readdirSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { startServer } from './server.mjs';
+
 const cache = join(homedir(), '.cache', 'ms-playwright');
 let exe = null;
 for (const d of readdirSync(cache).filter((d) => d.startsWith('chromium-'))) {
   const p = join(cache, d, 'chrome-linux', 'chrome');
   if (existsSync(p)) { exe = p; break; }
 }
-const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
-const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
-await page.addInitScript(() => {
-  localStorage.setItem('voxelmap.save', JSON.stringify({ format: 'voxelmap', version: 1, cellSize: 0.5, spawn: [2, 4, 2], blocks: [], items: [] }));
-  localStorage.setItem('voxelequip.items', JSON.stringify([
+
+// The game is file driven now: serve it with server.mjs and put the world
+// (map + pistol) into the world file instead of seeding localStorage.
+const tmp = join(tmpdir(), `voxelgame-dbg4-${Date.now().toString(36)}`);
+mkdirSync(join(tmp, 'worlds'), { recursive: true });
+const worldFile = join(tmp, 'voxelbundle.json');
+writeFileSync(worldFile, JSON.stringify({
+  format: 'voxelbundle', version: 1,
+  map: { format: 'voxelmap', version: 1, cellSize: 0.5, spawn: [2, 4, 2], spawnYaw: 0, blocks: [], items: [], mobs: [], decals: [] },
+  items: [],
+  equip: [
     { id: 'pistol', name: 'Pistol', microVoxels: [{ x: 3, y: 3, z: 4, color: [70, 70, 75] }], grip: { x: 3, y: 3, z: 4 }, yaw: 90,
       stats: { damage: 20, reach: 3, cooldown: 0.2 }, weapon: { kind: 'ranged', hands: 'one', muzzle: { x: 3, y: 3, z: 5 }, anim: 'gun', recoil: 0.08 } },
-  ]));
-});
-await page.goto('file:///home/greg/Projects/voxelgame/game.html');
+  ],
+  npcs: [], quests: {},
+}));
+const { port } = await startServer({ port: 0, worldFile, root: process.cwd(), worldsDir: join(tmp, 'worlds'), splashFile: join(tmp, 'splash.json'), editorStateFile: join(tmp, 'editor.json') });
+
+const browser = await chromium.launch({ executablePath: exe, args: ['--no-sandbox', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+const page = await browser.newPage({ viewport: { width: 800, height: 600 } });
+await page.goto(`http://localhost:${port}/game.html`);
 await page.waitForFunction(() => !!window.__voxelgame, { timeout: 15000 });
-await page.evaluate(() => {
+await page.evaluate(async () => {
   const g = window.__voxelgame;
-  g.newGame();
+  await g.newGame();
   // Sealed dark room with a wall ahead of the player.
   g.world.clear(); g.renderer.clearChunks();
   for (let x = 0; x < 8; x += 2) for (let z = 0; z < 8; z += 2) { g.world.place('grass', 'big', x, 0, z); g.world.place('grass', 'big', x, 12, z); }
