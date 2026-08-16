@@ -4,6 +4,8 @@
 // offers the four motions the menu can play for that shot. One click picks
 // and closes; Escape or the backdrop cancels. DOM-only.
 
+import { closeX } from './closeX.js';
+
 export const SPLASH_MOTIONS = Object.freeze([
   { id: 'orbit', label: 'Orbit', hint: 'slow circle around the framed spot' },
   { id: 'static', label: 'Static', hint: 'holds the shot with a subtle sway' },
@@ -46,6 +48,7 @@ export class SplashMotionModal {
     const head = doc.createElement('h2');
     head.textContent = 'Splash camera motion';
     this.panel.appendChild(head);
+    this.panel.appendChild(closeX(doc, () => this.hide()));
 
     // The old 'dolly' motion is today's zoom in.
     const current = cam.motion === 'dolly' ? 'zoomin' : (cam.motion ?? 'orbit');

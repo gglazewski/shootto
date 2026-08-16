@@ -9,6 +9,7 @@
 // puts the sign in hand.
 
 import { renderSignPixels, normalizeSpec, MAX_TEXT_LENGTH, MAX_WIDTH_CELLS } from '../engine/TextDecals.js';
+import { closeX } from './closeX.js';
 
 export class SignModal {
   /** @param {{doc?: Document}} [deps] */
@@ -27,6 +28,7 @@ export class SignModal {
     const h2 = doc.createElement('h2');
     h2.textContent = 'Text Sign';
     box.appendChild(h2);
+    box.appendChild(closeX(doc, () => this.hide()));
 
     const row = (label, control) => {
       const r = doc.createElement('div');

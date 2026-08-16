@@ -16,6 +16,8 @@
 //
 // DOM-only; the caller applies the choice to the voxel and re-meshes.
 
+import { closeX } from './closeX.js';
+
 const NS = 'http://www.w3.org/2000/svg';
 
 /** Compass name of a world direction, for the option captions. */
@@ -170,6 +172,7 @@ export class DoorModal {
     // own name is the clearest title; unnamed blocks fall back to "Door".
     head.textContent = s.name || 'Door';
     this.panel.appendChild(head);
+    this.panel.appendChild(closeX(doc, () => this.hide()));
 
     // --- lock ---
     const lockRow = doc.createElement('div');

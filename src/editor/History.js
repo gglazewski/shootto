@@ -59,4 +59,17 @@ export class History {
     this._undo.length = 0;
     this._redo.length = 0;
   }
+
+  /**
+   * Snapshot for the sidebar timeline: applied edits oldest-first, then the
+   * undone (redoable) branch. `index` counts the applied edits.
+   * @returns {{past: string[], future: string[]}}
+   */
+  timeline() {
+    const label = (cmd, i) => cmd.description || `Edit ${i + 1}`;
+    return {
+      past: this._undo.map(label),
+      future: [...this._redo].reverse().map(label),
+    };
+  }
 }

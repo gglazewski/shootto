@@ -29,7 +29,7 @@
 //    giving smooth interpolated lighting across faces.
 
 import { CELL_SIZE } from './Space.js';
-import { opacityFor, isTransparent, isMixedAlpha, shapeFor, getDecal, getBlock, lightFor } from './VoxelTypes.js';
+import { opacityFor, isTransparent, isMixedAlpha, shapeFor, getDecal, getBlock, lightFor, coverFor } from './VoxelTypes.js';
 import { spanVecFor, solidYRange } from './VoxelShape.js';
 
 // Face table: for each face, the outward normal n, the in-plane basis u/v
@@ -81,6 +81,13 @@ function rotatedFace(name, rot) {
 }
 
 const DEFAULT_LIGHT = 15;
+
+// Deterministic per-cell hash in [0,1): drives the ground-cover scatter so a
+// grass cell grows the same tuft on every rebuild, on every machine.
+function hash3(x, y, z) {
+  const h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return h - Math.floor(h);
+}
 
 /** A block is opaque for rendering/culling when it is a fully solid cube.
  *  Non-cube shapes (panes, door slabs) never cover a neighbor's face even
@@ -303,6 +310,65 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
           );
         }
         buf.indices.push(dFirst, dFirst + 1, dFirst + 2, dFirst, dFirst + 2, dFirst + 3);
+      }
+    }
+  };
+
+  // Ground cover: blocks with a `cover` config (the grass family) sprout a
+  // cutout X — two crossed diagonal quads — in the empty cell above their
+  // exposed top. Nothing is stored in the world: a per-cell hash decides
+  // tuft / flower / bare, so the scatter is stable across rebuilds. Like the
+  // cutout panes the quads are double-winded into the OPAQUE buffer (depth-
+  // written, alpha-discarded); no AO, light sampled in the cell the cover
+  // stands in.
+  const cover = (fx, fy, fz, voxel) => {
+    const cfg = coverFor(voxel.type);
+    if (!cfg) return;
+    if (hget(fx, fy + 1, fz)) return;                 // needs air above
+    const [, vy1] = solidYRange(voxel, fy);
+    if (vy1 < fy + 1) return;                         // carved slab tops stay bare
+    const r = hash3(fx, fy, fz);
+    const tc = cfg.tuftChance ?? 0.6;
+    const fc = cfg.flowerChance ?? 0.2;
+    let pool = null;
+    if (r < tc) pool = cfg.tufts;
+    else if (r < tc + fc) pool = cfg.flowers;
+    if (!pool || !pool.length) return;
+    const tile = tileIndexFor(pool[(hash3(fx, fy, fz + 101) * pool.length) | 0], 'py');
+    if (tile == null) return;
+    const tileW = 1 / AW;
+    const tileH = 1 / AH;
+    const baseU = (tile % AW) * tileW;
+    const baseV = 1 - (Math.floor(tile / AW) + 1) * tileH;
+    const htU = 0.5 / (AW * tileSize);
+    const htV = 0.5 / (AH * tileSize);
+    const ls = sky(fx, fy + 1, fz) / 15;
+    const lb = block(fx, fy + 1, fz) / 15;
+    const y0 = fy + 1, y1 = fy + 2;
+    // Two diagonals, inset from the cell corners so cover in adjacent cells
+    // never shares an edge. 0.7071 ≈ the diagonals' unit normals.
+    const i0 = 0.15, i1 = 0.85;
+    const diags = [
+      { a: [fx + i0, fz + i0], b: [fx + i1, fz + i1], n: [-0.7071, 0, 0.7071] },
+      { a: [fx + i1, fz + i0], b: [fx + i0, fz + i1], n: [0.7071, 0, 0.7071] },
+    ];
+    for (const dq of diags) {
+      const corners = [
+        [dq.a[0], y0, dq.a[1]], [dq.b[0], y0, dq.b[1]],
+        [dq.b[0], y1, dq.b[1]], [dq.a[0], y1, dq.a[1]],
+      ];
+      const us = [0, 1, 1, 0];
+      const vs = [0, 0, 1, 1]; // uv-v follows world +y (art roots at the ground)
+      for (const flip of [1, -1]) {
+        const order = flip === 1 ? [0, 1, 2, 3] : [0, 3, 2, 1];
+        const first = opaqueBuf.positions.length / 3;
+        for (const i of order) {
+          const c = corners[i];
+          const u = baseU + htU + us[i] * (tileW - 2 * htU);
+          const v = baseV + htV + vs[i] * (tileH - 2 * htV);
+          pushCorner(opaqueBuf, c[0], c[1], c[2], dq.n[0] * flip, dq.n[1] * flip, dq.n[2] * flip, u, v, 1, 1, 1, ls, lb, 0);
+        }
+        opaqueBuf.indices.push(first, first + 1, first + 2, first, first + 2, first + 3);
       }
     }
   };
@@ -595,6 +661,7 @@ export function buildChunkMesh(world, lightField, origin, size, tileIndexFor, at
           continue;
         }
         face(x, y, z, voxel);
+        cover(x, y, z, voxel);
       }
     }
   }

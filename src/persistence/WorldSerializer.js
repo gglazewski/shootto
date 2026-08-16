@@ -17,7 +17,8 @@ import { World } from '../engine/World.js';
 import { assertValidBlockId, getBlock, SIZE, isDecalId, isBlockId, FACES } from '../engine/VoxelTypes.js';
 import { createTextDecal, textSpecOf } from '../engine/TextDecals.js';
 import { isItemId } from '../engine/ItemRegistry.js';
-import { isEquipId } from '../engine/EquipmentRegistry.js';
+import { isEquipId, getEquipItem } from '../engine/EquipmentRegistry.js';
+import { layFlatCells } from '../engine/LayFlat.js';
 import { isMobId } from '../engine/mobTypes.js';
 import { isNpcId } from '../engine/NpcRegistry.js';
 import { applyDoorSettings } from '../engine/Doors.js';
@@ -64,7 +65,13 @@ export function serialize(world) {
   });
   const spawn = world.spawn ? [...world.spawn] : null;
   const mobs = [];
-  world.forEachMobSpawn((s) => mobs.push({ type: s.type, x: s.x, y: s.y, z: s.z }));
+  // Per-spawner settings (`loot` pool + respawn `delay` range) are additive —
+  // omitted when unset so untouched maps stay byte-identical.
+  world.forEachMobSpawn((s) => mobs.push({
+    type: s.type, x: s.x, y: s.y, z: s.z,
+    ...(s.loot ? { loot: [...s.loot] } : {}),
+    ...(s.delay ? { delay: [...s.delay] } : {}),
+  }));
   // `npcs` is additive like `mobs`, and omitted when empty so untouched maps
   // stay byte-identical.
   const npcs = [];
@@ -183,7 +190,17 @@ export function deserialize(text) {
         continue;
       }
       const rotation = typeof it.rotation === 'number' ? it.rotation : 0;
-      if (!world.placeItem(it.itemId, cells, it.x, it.y, it.z, rotation)) {
+      // Equipment renders in its resting pose (cropped + laid flat, see
+      // LayFlat.js), so its footprint follows that pose, not whatever an
+      // older save stored (pre-flat placements claimed a single cell). If the
+      // corrected footprint no longer fits (something now overlaps the extra
+      // cells), fall back to the stored one rather than drop the item.
+      const equip = !isItemId(it.itemId) && isEquipId(it.itemId) ? getEquipItem(it.itemId) : null;
+      const flatCells = equip ? layFlatCells(equip) : null;
+      const placed =
+        (flatCells && world.placeItem(it.itemId, flatCells, it.x, it.y, it.z, rotation)) ||
+        world.placeItem(it.itemId, cells, it.x, it.y, it.z, rotation);
+      if (!placed) {
         errors.push(`Skipped overlapping item ${it.itemId} at ${it.x},${it.y},${it.z}`);
       }
     }
@@ -258,7 +275,13 @@ export function deserialize(text) {
         errors.push(`Skipped mob spawn ${m.type} (not registered)`);
         continue;
       }
-      if (!world.addMobSpawn(m.type, m.x, m.y, m.z)) {
+      const settings = {
+        loot: Array.isArray(m.loot) ? m.loot.filter((id) => typeof id === 'string') : null,
+        delay: Array.isArray(m.delay) && m.delay.length === 2
+          && Number.isFinite(m.delay[0]) && Number.isFinite(m.delay[1])
+          ? m.delay : null,
+      };
+      if (!world.addMobSpawn(m.type, m.x, m.y, m.z, settings)) {
         errors.push(`Skipped duplicate mob spawn at ${m.x},${m.y},${m.z}`);
       }
     }

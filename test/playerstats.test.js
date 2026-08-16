@@ -87,6 +87,73 @@ test('serialize/deserialize round-trips the whole model', () => {
   assert.deepEqual(copy.wear, { primary: 2, secondary: 0, extra: 0, injection: 0 }, 'weapon wear must round-trip');
 });
 
+test('backpack stores overflow items and hands them back with their condition', () => {
+  const s = new PlayerStats();
+  assert.deepEqual(s.backpack, [], 'starts empty');
+  assert.equal(s.stow(''), false, 'empty ids are rejected');
+  assert.ok(s.stow('bat', 3, 2), 'a stowed weapon keeps its wear and decay');
+  assert.ok(s.stow('medkit'));
+  assert.ok(s.stow('pipe'));
+
+  // Filtered unstow takes the FIRST match and leaves the rest.
+  assert.deepEqual(s.unstow((id) => id !== 'medkit'), { id: 'bat', wear: 3, decay: 2 });
+  assert.deepEqual(s.backpack.map((e) => e.id), ['medkit', 'pipe']);
+  // Unfiltered unstow takes the oldest item.
+  assert.equal(s.unstow().id, 'medkit');
+  assert.equal(s.unstow((id) => id === 'nope'), null, 'no match, nothing removed');
+  assert.deepEqual(s.backpack, [{ id: 'pipe', wear: 0, decay: 0 }]);
+});
+
+test('backpack round-trips through serialize/deserialize', () => {
+  const s = new PlayerStats();
+  s.stow('bat', 2, 1);
+  s.stow('pipe');
+  const copy = PlayerStats.deserialize(s.serialize());
+  assert.deepEqual(copy.backpack, [
+    { id: 'bat', wear: 2, decay: 1 },
+    { id: 'pipe', wear: 0, decay: 0 },
+  ]);
+
+  const legacy = PlayerStats.deserialize({ health: 50 });
+  assert.deepEqual(legacy.backpack, [], 'old saves without a backpack load fine');
+  const mixed = PlayerStats.deserialize({ backpack: ['ok', 7, null, ''] });
+  assert.deepEqual(mixed.backpack, [{ id: 'ok', wear: 0, decay: 0 }],
+    'legacy id strings upgrade, junk entries are dropped');
+});
+
+test('materials stack, spend down to zero and round-trip', () => {
+  const s = new PlayerStats();
+  assert.equal(s.materialCount('duck-tape'), 0);
+  assert.equal(s.addMaterial('duck-tape'), 1);
+  assert.equal(s.addMaterial('duck-tape', 2), 3);
+  assert.equal(s.addMaterial('scrap-metal', 1), 1);
+
+  assert.equal(s.takeMaterial('duck-tape', 2), 2);
+  assert.equal(s.materialCount('duck-tape'), 1);
+  assert.equal(s.takeMaterial('duck-tape', 5), 1, 'never takes more than carried');
+  assert.equal('duck-tape' in s.materials, false, 'emptied materials drop their key');
+
+  const copy = PlayerStats.deserialize(s.serialize());
+  assert.deepEqual(copy.materials, { 'scrap-metal': 1 });
+  const junk = PlayerStats.deserialize({ materials: { glue: -3, wood: 'x', ok: 2 } });
+  assert.deepEqual(junk.materials, { ok: 2 }, 'invalid counts are dropped');
+});
+
+test('repair decay rides the slot and resets when the item changes', () => {
+  const s = new PlayerStats({ equipment: { primary: 'bat' } });
+  s.addWear('primary');
+  s.decay.primary = 2;
+  const copy = PlayerStats.deserialize(s.serialize());
+  assert.equal(copy.decay.primary, 2, 'decay must round-trip');
+
+  s.equip('primary', 'pipe');
+  assert.equal(s.decay.primary, 0, 'a different weapon arrives undamaged');
+  assert.equal(s.wear.primary, 0);
+
+  const orphan = PlayerStats.deserialize({ decay: { primary: 3 } });
+  assert.equal(orphan.decay.primary, 0, 'decay for an empty slot is dropped');
+});
+
 test('weapon wear counts landed hits and resets when the item changes', () => {
   const s = new PlayerStats({ equipment: { primary: 'bat' } });
   assert.equal(s.wear.primary, 0, 'a fresh weapon has no wear');

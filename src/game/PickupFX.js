@@ -12,7 +12,8 @@
 // like the world it flies through (dark in caves, warm near torches).
 
 import { createItemGeometry } from '../editor/ItemGeometry.three.js';
-import { MICRO_SIZE, gridOf } from '../engine/ItemTypes.js';
+import { MICRO_SIZE } from '../engine/ItemTypes.js';
+import { layFlat } from '../engine/LayFlat.js';
 import { CELL_SIZE } from '../engine/Space.js';
 
 const FLIGHT_TIME = 0.5;    // seconds from resting spot to the player
@@ -58,7 +59,9 @@ export class PickupFX {
     this.clear();
     const T = this.THREE;
     const c = MICRO_SIZE;
-    const geo = createItemGeometry(T, def.microVoxels ?? [], { lightField: this.lightField });
+    // The copy flies in the resting pose it was lying in (cropped + flat).
+    const model = layFlat(def);
+    const geo = createItemGeometry(T, model.microVoxels, { lightField: this.lightField });
     this._lightAttr = geo.getAttribute('light');
     if (!this._lightAttr) {
       const count = geo.attributes.position.count;
@@ -69,7 +72,7 @@ export class PickupFX {
     this._group = new T.Group();
     const mesh = new T.Mesh(geo, this.material ?? new T.MeshBasicMaterial({ vertexColors: true }));
     // Centre the item's micro grid on the group origin, then scale to meters.
-    const [hx, hy, hz] = gridOf(def).map((g) => (g * c) / 2);
+    const [hx, hy, hz] = model.grid.map((g) => (g * c) / 2);
     mesh.scale.setScalar(c);
     mesh.position.set(-hx, -hy, -hz);
     this._group.add(mesh);

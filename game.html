@@ -61,6 +61,9 @@
     .eq-slot canvas { image-rendering: pixelated; width: 100%; height: 100%; }
     .eq-slot-name { font-size: 11px; color: #eee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; padding: 0 2px; }
     .eq-slot-label { position: absolute; top: 2px; right: 5px; font-size: 10px; opacity: 0.55; }
+    /* backpack badge: overflow item count, not a selectable slot */
+    .eq-backpack { cursor: default; border-style: dashed; }
+    .eq-backpack .eq-slot-name { font-size: 14px; }
     #hand { font-size: 12px; opacity: 0.85; }
 
     /* ammo readout: big, next to the hotbar, outside the dark stats pill */
@@ -259,6 +262,51 @@
     .repair-row .r-cond { font-size: 12px; color: var(--ui-muted); }
     .repair-row .r-cond.worn { color: var(--ui-amber); }
     .repair-row .r-cond.broken { color: var(--ui-red-hot); }
+    /* repair cost strip: material chips the next fix consumes */
+    #repair-cost {
+      display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
+      gap: 8px; margin-top: 12px; padding-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.12);
+    }
+    #repair-cost .rc-label { font-size: 12px; color: var(--ui-muted); text-transform: uppercase; letter-spacing: 0.06em; }
+    .rc-chip {
+      display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px;
+      border: 1px solid rgba(255,255,255,0.18); border-radius: 6px;
+      background: rgba(30,34,40,0.9); font-size: 13px;
+    }
+    .rc-chip canvas { image-rendering: pixelated; }
+    .rc-chip.rc-missing { border-color: var(--ui-red-hot); color: var(--ui-red-hot); }
+    .rc-note { margin-top: 8px; font-size: 12px; color: var(--ui-amber); }
+
+    /* backpack grid (B): Minecraft-style slots over the running game */
+    #backpack .box { min-width: 420px; }
+    #backpack-equip {
+      display: flex; justify-content: center; gap: 6px;
+      margin: 12px 0 4px; padding-bottom: 10px;
+      border-bottom: 1px solid rgba(255,255,255,0.12);
+    }
+    #backpack-grid {
+      display: grid; grid-template-columns: repeat(6, 52px);
+      gap: 6px; justify-content: center; margin: 12px 0 16px;
+    }
+    .bp-slot {
+      position: relative; width: 52px; height: 52px;
+      border: 2px solid rgba(255,255,255,0.15); border-radius: 6px;
+      background: rgba(24,27,32,0.9);
+      display: flex; align-items: center; justify-content: center;
+    }
+    .bp-slot.empty { border-style: dashed; opacity: 0.45; }
+    .bp-slot.takeable { cursor: pointer; }
+    .bp-slot.takeable:hover { border-color: #6cf; box-shadow: 0 0 8px rgba(102,204,255,0.4); }
+    .bp-slot.bp-equip { background: rgba(38,42,50,0.95); cursor: pointer; }
+    .bp-slot.bp-equip:hover { border-color: rgba(255,255,255,0.4); }
+    .bp-slot.bp-equip.active { border-color: #6cf; box-shadow: 0 0 8px rgba(102,204,255,0.5); }
+    .bp-slot canvas { image-rendering: pixelated; }
+    .bp-count {
+      position: absolute; right: 3px; bottom: 1px; font-size: 12px; font-weight: 700;
+      color: #fff; text-shadow: 1px 1px 0 #000, -1px 1px 0 #000, 1px -1px 0 #000, -1px -1px 0 #000;
+    }
+    .bp-key { position: absolute; top: 1px; left: 4px; font-size: 10px; opacity: 0.55; }
 
     /* main menu: transparent over the flyover — title splash, slim panel,
        faint CRT scanlines for the 90s TV feel */
@@ -452,6 +500,19 @@
       <h2>Save / Load</h2>
       <div id="slots-pause"></div>
       <button id="btn-quit">Quit to Menu</button>
+    </div>
+  </div>
+
+  <!-- Backpack (B): Minecraft-style grid over the running game. Top row
+       mirrors the four equipment slots; the grid below holds material stacks
+       and stowed weapons — click one to equip it. -->
+  <div id="backpack" class="screen hidden">
+    <div class="box">
+      <h1>Backpack</h1>
+      <div class="sub">Click an item to equip it — the game keeps running!</div>
+      <div id="backpack-equip"></div>
+      <div id="backpack-grid"></div>
+      <button id="btn-backpack-close">Done <kbd>B</kbd></button>
     </div>
   </div>
 

@@ -60,15 +60,37 @@ export const SIZE = Object.freeze({
  *   (see game/Reactions.js).
  * @property {string} [lightOn]   back-reference from the dark phase; also
  *   the id a light is normalized to when a map is saved.
+ * @property {{tufts:string[], tuftChance:number, flowers:string[],
+ *   flowerChance:number}} [cover]  ground cover sprouting from this block's
+ *   exposed top: the mesher rolls a deterministic per-cell hash and grows a
+ *   tuft (tuftChance), a flower (flowerChance) or nothing in the empty cell
+ *   above — pure meshing, nothing stored in the world or save files.
  */
+
+// Shared ground-cover config for the grass family: 60% of exposed tops grow
+// a tuft (tinted to match the block), 20% a random flower, 20% stay bare.
+const GRASS_COVER = (tuft) => ({
+  tufts: [tuft],
+  tuftChance: 0.6,
+  flowers: ['flower_dandelion', 'flower_poppy', 'flower_cornflower', 'flower_daisy'],
+  flowerChance: 0.2,
+});
 
 /** @type {BlockDef[]} */
 const BLOCKS = [
-  { id: 'grass', name: 'Grass', tiles: 'grass_top' },
+  { id: 'grass', name: 'Grass', tiles: 'grass_top', cover: GRASS_COVER('tuft_grass') },
+  { id: 'grass_dry', name: 'Dry Grass', tiles: 'grass_dry', cover: GRASS_COVER('tuft_grass_dry') },
+  { id: 'grass_lush', name: 'Lush Grass', tiles: 'grass_lush', cover: GRASS_COVER('tuft_grass_lush') },
   { id: 'dirt', name: 'Dirt', tiles: 'dirt' },
+  { id: 'dirt_dry', name: 'Dry Ground', tiles: 'dirt_dry' },
+  { id: 'dirt_dark', name: 'Dark Soil', tiles: 'dirt_dark' },
   { id: 'stone', name: 'Stone', tiles: 'stone' },
+  { id: 'stone_dark', name: 'Dark Rock', tiles: 'stone_dark' },
+  { id: 'stone_light', name: 'Light Rock', tiles: 'stone_light' },
   { id: 'gravel', name: 'Gravel', tiles: 'gravel' },
   { id: 'sand', name: 'Sand', tiles: 'sand' },
+  { id: 'sand_red', name: 'Red Sand', tiles: 'sand_red' },
+  { id: 'sand_dark', name: 'Wet Sand', tiles: 'sand_dark' },
   { id: 'concrete', name: 'Concrete', tiles: 'concrete' },
   { id: 'asphalt', name: 'Asphalt', tiles: 'asphalt' },
   { id: 'asphalt_line', name: 'Road Marking', tiles: { py: 'asphalt_line', ny: 'asphalt', px: 'asphalt', nx: 'asphalt', pz: 'asphalt', nz: 'asphalt' } },
@@ -220,6 +242,12 @@ export function isMixedAlpha(id) {
  *  hit bursts glass shards instead of a smoke puff. */
 export function isGlass(id) {
   return REGISTRY.get(id)?.glass === true;
+}
+
+/** Ground-cover config of a block id (tufts/flowers sprouting from its
+ *  exposed top), or null for bare blocks. */
+export function coverFor(id) {
+  return REGISTRY.get(id)?.cover ?? null;
 }
 
 /** Mesh shape of a block id: 'cube' (default), 'pane' (centered quad) or

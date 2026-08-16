@@ -34,9 +34,10 @@ export function createAtlasTexture(THREE) {
   texture.minFilter = THREE.NearestFilter;
   texture.generateMipmaps = false;
   texture.flipY = true;
-  // Resolves block ids (per-face tiles) AND decal ids (single tile), so the
-  // mesher can look up decal quads through the same callback.
-  const tileIndexFor = (typeId, face) => map.get(getDecal(typeId)?.tile ?? tileFor(typeId, face));
+  // Resolves block ids (per-face tiles), decal ids (single tile) AND raw
+  // tile names (ground-cover tufts/flowers, which belong to no block face),
+  // so the mesher can look everything up through the same callback.
+  const tileIndexFor = (typeId, face) => map.get(getDecal(typeId)?.tile ?? tileFor(typeId, face) ?? typeId);
   const rebuild = () => {
     paint();
     texture.needsUpdate = true;

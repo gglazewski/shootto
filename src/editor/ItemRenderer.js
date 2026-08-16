@@ -16,10 +16,11 @@
 // preview scene (ItemEditor._buildExtraSceneObjects), never here — it must
 // not appear in the world editor or in actual gameplay.
 
-import { createItemGeometry } from './ItemGeometry.three.js';
+import { createItemGeometry, createOutlineGeometry } from './ItemGeometry.three.js';
 import { getItem } from '../engine/ItemRegistry.js';
 import { getEquipItem } from '../engine/EquipmentRegistry.js';
 import { MICRO_SIZE, gridOf, rotateMicroPoint } from '../engine/ItemTypes.js';
+import { layFlat } from '../engine/LayFlat.js';
 import { CELL_SIZE } from '../engine/Space.js';
 
 const rgbToHex = (c) => ((Math.round(c[0]) << 16) | (Math.round(c[1]) << 8) | Math.round(c[2])) >>> 0;
@@ -33,6 +34,17 @@ const RELIGHT_INTERVAL_MS = 100;
 /** Resolve a placed item id from either registry (equipment items can be
  *  placed on the map from the E menu's Equippable Items section). */
 const resolveItem = (id) => getItem(id) ?? getEquipItem(id);
+
+/** Micro-voxels + grid a placement renders with. Placeable objects use their
+ *  authored volume; equipment (pickables) uses the resting pose — cropped to
+ *  its painted voxels and laid flat on the surface (see LayFlat.js). */
+const modelFor = (id) => {
+  const placeable = getItem(id);
+  if (placeable) return { microVoxels: placeable.microVoxels, grid: gridOf(placeable) };
+  const equip = getEquipItem(id);
+  if (equip) return layFlat(equip);
+  return { microVoxels: [], grid: [8, 8, 8] };
+};
 
 export class ItemRenderer {
   /**
@@ -108,8 +120,7 @@ export class ItemRenderer {
   /** True when an item's cell footprint overlaps the light edit box. The
    *  span uses the largest grid axis so any yaw rotation (and height) fits. */
   _touchesBox(entry, [bx0, by0, bz0, bx1, by1, bz1]) {
-    const item = resolveItem(entry.placement.itemId);
-    const g = item ? gridOf(item) : [8, 8, 8];
+    const g = entry.grid;
     const span = Math.ceil(Math.max(g[0], g[1], g[2]) * (MICRO_SIZE / CELL_SIZE));
     const [ax, ay, az] = entry.placement.anchor;
     return ax + span >= bx0 && ax <= bx1 + span &&
@@ -132,16 +143,18 @@ export class ItemRenderer {
     this.update();
   }
 
-  /** Edge outline of a placed item's own silhouette (its micro-voxel shape,
-   *  not the cell footprint it occupies), ready to hang on a LineSegments:
-   *  `{ geometry, scale, position }` in world space. Null until the item's
-   *  mesh exists (the first update() after it was placed). The caller owns
-   *  the returned geometry and must dispose it. */
+  /** Silhouette hull of a placed item's own shape (not the cell footprint it
+   *  occupies), ready to hang on the pickup-highlight mesh: `{ geometry,
+   *  scale, position }` in world space. The geometry carries an `outlineDir`
+   *  attribute the highlight shader inflates along (see
+   *  createOutlineGeometry). Null until the item's mesh exists (the first
+   *  update() after it was placed). The caller owns the returned geometry and
+   *  must dispose it. */
   outlineFor(placement) {
     const entry = this._groups.get(this._keyOf(placement));
     if (!entry) return null;
     return {
-      geometry: new this.THREE.EdgesGeometry(entry.geo),
+      geometry: createOutlineGeometry(this.THREE, entry.geo),
       scale: MICRO_SIZE,
       position: entry.offset,
     };
@@ -151,7 +164,7 @@ export class ItemRenderer {
     const T = this.THREE;
     const item = resolveItem(placement.itemId);
     const c = MICRO_SIZE;
-    const grid = gridOf(item);
+    const { microVoxels, grid } = modelFor(placement.itemId);
     const offset = [
       placement.anchor[0] * CELL_SIZE,
       placement.anchor[1] * CELL_SIZE,
@@ -159,7 +172,7 @@ export class ItemRenderer {
     ];
     const yaw = placement.rotation ?? 0;
     const group = new T.Group();
-    const geo = createItemGeometry(T, item ? item.microVoxels : [], {
+    const geo = createItemGeometry(T, microVoxels, {
       lightField: this.lightField,
       scale: c,
       offset,
@@ -184,7 +197,7 @@ export class ItemRenderer {
     }
 
     this.scene.add(group);
-    const entry = { group, mesh, geo, placement, offset, lightCells: null };
+    const entry = { group, mesh, geo, grid, placement, offset, lightCells: null };
     this._cacheLightCells(entry);
     return entry;
   }

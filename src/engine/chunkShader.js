@@ -125,14 +125,24 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
         // Transparent pass: drop fully clear texels so they neither tint nor
         // haze what's behind; glass (alpha ~0.35) stays above the threshold.
         ${hasMap && transparent ? 'if (tex.a < 0.05) discard;' : ''}
-        float sky = vLight.x * uSkyIntensity;
-        float block = vLight.y;
+        // MSAA shades edge fragments at the pixel centre, which can fall
+        // OUTSIDE a sliver triangle (faces seen at grazing angles). Varyings
+        // are then EXTRAPOLATED and can land far past their vertex range;
+        // unclamped they explode into blinding white glints on object edges
+        // once bloom picks them up, so every interpolated attribute is pulled
+        // back to its valid range first.
+        vec2 lightIn = clamp(vLight, 0.0, 1.0);
+        vec3 vertCol = clamp(vColor, 0.0, 1.0);
+        float sunIn = clamp(vSun, 0.0, 1.0);
+        float emissiveIn = clamp(vEmissive, 0.0, 1.0);
+        float sky = lightIn.x * uSkyIntensity;
+        float block = lightIn.y;
         float base = max(sky, block);
         // Cool sky bounce in daylight, warm glow near artificial light.
         vec3 tint = mix(uSkyTint, uBlockTint, block / max(base, 0.0001));
-        vec3 lit = tex.rgb * vColor * (uAmbientMin + tint * base * uLightScale);
+        vec3 lit = tex.rgb * vertCol * (uAmbientMin + tint * base * uLightScale);
         // Directional sun shading only where the surface is sky-exposed.
-        lit += uSunColor * tex.rgb * vColor * vSun * sky * uSunStrength;
+        lit += uSunColor * tex.rgb * vertCol * sunIn * sky * uSunStrength;
         // Dynamic flicker lamps: each lit flickering lamp adds its guttering
         // remainder on top of its dimmed baked base — smooth per-frame
         // flicker with zero chunk rebuilds. The baked block channel gates the
@@ -152,14 +162,14 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
           lampAdd += uLampI[i] * att * att * lampOcc;
           bulb = min(bulb, mix(mix(0.3, 1.0, uLampI[i]), 1.0, smoothstep(0.9, 1.4, ld)));
         }
-        lit += uBlockTint * tex.rgb * vColor * lampAdd * uLampGain * uLightScale;
+        lit += uBlockTint * tex.rgb * vertCol * lampAdd * uLampGain * uLightScale;
         // Self-emission: lamps/torches stay bright regardless of baked light
         // and push past 1.0 so the bloom pass picks them up.
-        lit += tex.rgb * vColor * vEmissive * uEmissiveBoost * bulb;
+        lit += tex.rgb * vertCol * emissiveIn * uEmissiveBoost * bulb;
         // Dynamic muzzle flash: soft warm point light fading with distance.
         float dist = length(vWorldPos - uFlashPos);
         float flash = uFlashIntensity * pow(max(0.0, 1.0 - dist / uFlashRange), 2.0);
-        lit += uFlashColor * tex.rgb * vColor * flash;
+        lit += uFlashColor * tex.rgb * vertCol * flash;
         // Distance fog blends the world into the sky at the render edge
         // (measured from the camera, not the flash).
         float camDist = length(vWorldPos - uCamPos);

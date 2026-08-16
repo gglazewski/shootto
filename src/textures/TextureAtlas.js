@@ -125,6 +125,14 @@ const woodTopDark = shade(woodTop, 0.6);
 const planksLight = shade(planks, 1.25);
 const planksDark = shade(planks, 0.6);
 
+// Wrap a generator to scale each color channel separately (keeps alpha
+// intact). Used to derive the biome shade variants — dry/lush grass, red
+// sand, dark soil — from the base ground generators.
+const tint = (gen, tr, tg, tb) => (x, y, s, rng) => {
+  const [r, g, b, a] = gen(x, y, s, rng);
+  return [r * tr, g * tg, b * tb, a];
+};
+
 // Position hash in [0,1): stable pseudo-random value per (x,y) pixel (or per
 // coarse cell when the coords are pre-divided), independent of scan order.
 const hash2 = (x, y) => {
@@ -149,6 +157,79 @@ const gravel = (x, y, s, rng) => {
   const n = (rng() - 0.5) * 10;
   return [base[0] + n, base[1] + n, base[2] + n];
 };
+
+// --- biome shades: tinted variants of the ground blocks. One family per
+// base tile, so a map can blend climate zones (steppe, marsh, desert)
+// without any new artwork.
+const grassDry = tint(grassTop, 1.32, 1.02, 0.55);   // sun-scorched steppe
+const grassLush = tint(grassTop, 0.62, 0.96, 0.66);  // deep wet meadow
+const stoneDark = shade(stone, 0.62);                // wet basalt
+const stoneLight = shade(stone, 1.32);               // pale limestone
+const dirtDry = tint(dirt, 1.22, 1.14, 0.98);        // dusty cracked ground
+const dirtDark = tint(dirt, 0.6, 0.56, 0.54);        // rich damp soil
+const sandRed = tint(sand, 1.04, 0.7, 0.48);         // red desert sand
+const sandDark = tint(sand, 0.66, 0.64, 0.62);       // wet shoreline sand
+
+// --- ground cover: cutout art for the crossed quads the mesher sprouts on
+// grass-family tops (see ChunkMeshBuilder's cover()). Alpha 0 = air; the
+// opaque pass discards it like the fence/bars cutouts.
+
+// A tuft of grass: blades rooted along the tile bottom, each column keeping
+// a stable height and lean via hash2, tapering brighter toward the tip.
+const tuftGen = (tr, tg, tb) => (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 22;
+  for (let dx = -2; dx <= 2; dx++) {
+    const rx = x + dx;
+    if (rx < 1 || rx >= s - 1) continue;
+    if (hash2(rx, 5) < 0.38) continue;                  // no blade rooted here
+    const h = 4 + hash2(rx, 11) * 9;                    // blade height, px
+    if (y <= s - 1 - h || y > s - 1) continue;
+    const t = (s - 1 - y) / h;                          // 0 at root, 1 at tip
+    if (x !== rx + Math.round((hash2(rx, 23) - 0.5) * 5 * t * t)) continue;
+    const v = 100 + hash2(rx, 31) * 52 + t * 28 + n;
+    return [v * 0.6 * tr, v * tg, v * 0.38 * tb, 255];
+  }
+  return [0, 0, 0, 0];
+};
+const tuftGrass = tuftGen(1, 1, 1);
+const tuftGrassDry = tuftGen(1.32, 1.02, 0.55);       // matches grassDry
+const tuftGrassLush = tuftGen(0.62, 0.96, 0.66);      // matches grassLush
+
+// A flower: bent green stem with a leaf, topped by a small head. `style`
+// shapes the head — 'round' = solid puff (dandelion), 'petal' = ring of
+// petals around a contrasting center (poppy, daisy), 'spiky' = ragged
+// speckled cluster (cornflower).
+const flowerGen = (petal, center, style) => (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 16;
+  const cx = s / 2 - 0.5;
+  const cy = s * 0.26;
+  const d = Math.hypot(x - cx, y - cy);
+  if (style === 'round') {
+    if (d <= 2.6) return [petal[0] + n, petal[1] + n, petal[2] + n, 255];
+  } else if (style === 'petal') {
+    if (d <= 1.3) return [center[0] + n, center[1] + n, center[2] + n, 255];
+    const a = Math.atan2(y - cy, x - cx);
+    // six petal lobes around the center, gaps between them
+    if (d <= 3.4 && (Math.cos(a * 3) ** 2 > 0.3 || d <= 2.0))
+      return [petal[0] + n, petal[1] + n, petal[2] + n, 255];
+  } else { // spiky
+    if (d <= 1.4) return [center[0] + n, center[1] + n, center[2] + n, 255];
+    if (d <= 3.2 && hash2(x, y) > 0.35)
+      return [petal[0] + n, petal[1] + n, petal[2] + n, 255];
+  }
+  // stem: gentle S-bend from below the head down to the tile bottom
+  const stemX = Math.round(cx + Math.sin(y * 0.7) * 0.9);
+  if (y > cy + 2 && x === stemX) return [56 + n, 118 + n, 42, 255];
+  // one leaf off the stem, partway down
+  const ly = Math.round(s * 0.62);
+  if (y === ly && x < stemX && x >= stemX - 3) return [66 + n, 132 + n, 48, 255];
+  if (y === ly - 1 && x === stemX - 3) return [66 + n, 132 + n, 48, 255];
+  return [0, 0, 0, 0];
+};
+const flowerDandelion = flowerGen([246, 210, 52], [222, 168, 30], 'round');
+const flowerPoppy = flowerGen([206, 44, 38], [30, 24, 26], 'petal');
+const flowerCornflower = flowerGen([78, 104, 212], [46, 58, 128], 'spiky');
+const flowerDaisy = flowerGen([238, 240, 242], [230, 196, 62], 'petal');
 
 const asphalt = (x, y, s, rng) => {
   const n = (rng() - 0.5) * 12;
@@ -1295,10 +1376,25 @@ const decalLadder = (x, y, s, rng) => {
 const GENERATORS = Object.freeze({
   grass_top: grassTop,
   grass_side: grassSide,
+  grass_dry: grassDry,
+  grass_lush: grassLush,
   dirt,
+  dirt_dry: dirtDry,
+  dirt_dark: dirtDark,
   stone,
+  stone_dark: stoneDark,
+  stone_light: stoneLight,
   gravel,
   sand,
+  sand_red: sandRed,
+  sand_dark: sandDark,
+  tuft_grass: tuftGrass,
+  tuft_grass_dry: tuftGrassDry,
+  tuft_grass_lush: tuftGrassLush,
+  flower_dandelion: flowerDandelion,
+  flower_poppy: flowerPoppy,
+  flower_cornflower: flowerCornflower,
+  flower_daisy: flowerDaisy,
   concrete,
   asphalt,
   asphalt_line: asphaltLine,
@@ -1537,6 +1633,10 @@ export function tilesForBlocks() {
       const t = tileFor(id, face);
       if (t) names.add(t);
     }
+    // ground-cover tiles (tufts, flowers) are referenced by the cover
+    // config, not by any face — they still need atlas slots
+    const c = getBlock(id)?.cover;
+    if (c) for (const t of [...(c.tufts ?? []), ...(c.flowers ?? [])]) names.add(t);
   }
   for (const id of listDecalIds()) names.add(getDecal(id).tile);
   return [...names];

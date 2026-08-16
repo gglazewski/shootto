@@ -34,8 +34,12 @@ export class PlayerStats {
    * @param {object} [init.ammo]  { pistol?: number, rifle?: number,
    *   shotgun?: number } — carried ammo per type
    * @param {object} [init.wear]  landed melee hits per slot (weapon wear)
+   * @param {object} [init.decay]  durability permanently lost per slot (repairs)
+   * @param {object} [init.materials]  repair materials carried, by id
+   * @param {Array} [init.backpack]  overflow items ({id, wear, decay} or legacy id strings)
    */
-  constructor({ health = MAX_HEALTH, armor = 0, equipment = {}, ammo, wear } = {}) {
+  constructor(init = {}) {
+    const { health = MAX_HEALTH, armor = 0, equipment = {}, ammo, wear, decay, materials } = init;
     this.health = clamp(health);
     // Armor starts at zero — it only comes from armor pickups (vests built
     // in the F3 editor). NaN-safe clamp would default to max, so guard it.
@@ -56,6 +60,25 @@ export class PlayerStats {
         if (Number.isFinite(w) && w > 0 && this.equipment[slot]) this.wear[slot] = w;
       }
     }
+    /** @type {Record<string, number>} durability points permanently lost per
+     *  slot — every repair patches the weapon a little worse (see
+     *  GameApp._repairFix). Resets with wear when the slot's item changes. */
+    this.decay = { primary: 0, secondary: 0, extra: 0, injection: 0 };
+    if (decay && typeof decay === 'object') {
+      for (const slot of EQUIPMENT_SLOTS) {
+        const d = Math.round(Number(decay[slot]));
+        if (Number.isFinite(d) && d > 0 && this.equipment[slot]) this.decay[slot] = d;
+      }
+    }
+    /** @type {Record<string, number>} repair materials carried, by material id
+     *  (see engine/Materials.js) — stackable, no slot needed. */
+    this.materials = {};
+    if (materials && typeof materials === 'object') {
+      for (const [id, count] of Object.entries(materials)) {
+        const n = Math.round(Number(count));
+        if (typeof id === 'string' && id && Number.isFinite(n) && n > 0) this.materials[id] = n;
+      }
+    }
     /** @type {Record<string, number>} carried ammo per type, capped by max stack. */
     this.ammo = startingAmmo();
     if (ammo && typeof ammo === 'object') {
@@ -63,6 +86,20 @@ export class PlayerStats {
         if (isAmmoId(id)) this.ammo[id] = clampAmmo(id, count);
       }
     }
+    /** @type {{id:string, wear:number, decay:number}[]} items stored beyond
+     *  the four slots — overflow pickups and stowed weapons. Entries carry
+     *  the weapon's wear/decay so swapping through the backpack can't reset
+     *  its condition. (Legacy saves stored bare id strings.) */
+    this.backpack = Array.isArray(init?.backpack)
+      ? init.backpack
+        .map((e) => (typeof e === 'string' ? { id: e, wear: 0, decay: 0 } : e))
+        .filter((e) => e && typeof e === 'object' && typeof e.id === 'string' && e.id)
+        .map((e) => ({
+          id: e.id,
+          wear: Number.isFinite(Number(e.wear)) ? Math.max(0, Math.round(Number(e.wear))) : 0,
+          decay: Number.isFinite(Number(e.decay)) ? Math.max(0, Math.round(Number(e.decay))) : 0,
+        }))
+      : [];
     /** Index into EQUIPMENT_SLOTS for the "in hand" slot (default primary). */
     this.activeSlot = EQUIPMENT_SLOTS.indexOf('primary');
   }
@@ -101,10 +138,13 @@ export class PlayerStats {
   }
 
   /** Equip an item id into a slot. A different item arrives fresh — its wear
-   *  resets. @param {string} slot @param {string|null} itemId */
+   *  and repair decay reset. @param {string} slot @param {string|null} itemId */
   equip(slot, itemId) {
     if (!EQUIPMENT_SLOTS.includes(slot)) return false;
-    if (this.equipment[slot] !== (itemId ?? null)) this.wear[slot] = 0;
+    if (this.equipment[slot] !== (itemId ?? null)) {
+      this.wear[slot] = 0;
+      this.decay[slot] = 0;
+    }
     this.equipment[slot] = itemId ?? null;
     return true;
   }
@@ -127,6 +167,45 @@ export class PlayerStats {
   /** Clear a slot. */
   unequip(slot) {
     return this.equip(slot, null);
+  }
+
+  /** Store an item in the backpack (overflow, or a stowed weapon keeping its
+   *  condition). @returns {boolean} */
+  stow(itemId, wear = 0, decay = 0) {
+    if (!itemId) return false;
+    this.backpack.push({ id: itemId, wear, decay });
+    return true;
+  }
+
+  /** Take the first backpack entry matching `match` (default: the oldest).
+   *  @param {(id:string)=>boolean} [match]  receives the entry's item id
+   *  @returns {{id:string, wear:number, decay:number}|null} the removed entry */
+  unstow(match = null) {
+    const i = match ? this.backpack.findIndex((e) => match(e.id)) : 0;
+    if (i < 0 || i >= this.backpack.length) return null;
+    return this.backpack.splice(i, 1)[0];
+  }
+
+  /** Add repair materials. @returns {number} the new count */
+  addMaterial(id, amount = 1) {
+    if (!id || !(amount > 0)) return this.materials[id] ?? 0;
+    this.materials[id] = (this.materials[id] ?? 0) + Math.round(amount);
+    return this.materials[id];
+  }
+
+  /** How many of a material the player carries. */
+  materialCount(id) {
+    return this.materials[id] ?? 0;
+  }
+
+  /** Take materials (never below 0; drops the key at 0).
+   *  @returns {number} amount actually taken */
+  takeMaterial(id, amount) {
+    const have = this.materials[id] ?? 0;
+    const taken = Math.min(Math.max(0, Math.round(amount)), have);
+    if (taken >= have) delete this.materials[id];
+    else if (taken > 0) this.materials[id] = have - taken;
+    return taken;
   }
 
   /** Select a slot by index. @returns {boolean} */
@@ -157,6 +236,9 @@ export class PlayerStats {
       activeSlot: this.activeSlot,
       ammo: { ...this.ammo },
       wear: { ...this.wear },
+      decay: { ...this.decay },
+      materials: { ...this.materials },
+      backpack: this.backpack.map((e) => ({ ...e })),
     };
   }
 
@@ -169,6 +251,9 @@ export class PlayerStats {
       equipment: data.equipment,
       ammo: data.ammo,
       wear: data.wear,
+      decay: data.decay,
+      materials: data.materials,
+      backpack: data.backpack,
     });
     if (Number.isInteger(data.activeSlot)) stats.setActiveSlot(data.activeSlot);
     return stats;

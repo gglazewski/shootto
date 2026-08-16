@@ -8,6 +8,8 @@
 // DOM-only (reuses the door modal's styles); the caller stores the flag on
 // the placed decal entry.
 
+import { closeX } from './closeX.js';
+
 export class SwitchModal {
   /**
    * @param {object} deps
@@ -61,6 +63,7 @@ export class SwitchModal {
     const head = doc.createElement('h2');
     head.textContent = 'Light Switch';
     this.panel.appendChild(head);
+    this.panel.appendChild(closeX(doc, () => this.hide()));
 
     const flagRow = doc.createElement('label');
     flagRow.className = 'door-flag';

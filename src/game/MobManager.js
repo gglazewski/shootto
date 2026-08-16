@@ -36,6 +36,22 @@ const OVERLAP_RELAX = 0.08;
 /** Packs smaller than this never flank — everyone charges. */
 const FLANK_MIN_PACK = 3;
 
+/** Respawn delay rolled anew for every cleared wave (seconds, uniform). */
+const RESPAWN_DELAY_MIN = 20;
+const RESPAWN_DELAY_MAX = 50;
+/** Proximity radius rolled once per spawn point (meters): the countdown only
+ *  runs while the player is farther than this — camping a cleared spawn holds
+ *  it empty, walking away starts the clock. */
+const RESPAWN_CLEAR_MIN = 10;
+const RESPAWN_CLEAR_MAX = 18;
+/** A ripe spawn holds while its point sits inside the player's view cone
+ *  (ground-plane cos threshold) — mobs never pop in on screen. */
+const RESPAWN_VIEW_DOT = 0.2;
+/** Waves grow by one mob every other clear, capped here. */
+const RESPAWN_WAVE_MAX = 3;
+/** Seconds before a ripe spawn that found no walkable cell retries. */
+const RESPAWN_RETRY = 5;
+
 /** Ray vs AABB intersection (slab method). @returns distance t or Infinity. */
 function rayAabb(ox, oy, oz, dx, dy, dz, box) {
   const invX = dx === 0 ? Infinity : 1 / dx;
@@ -78,6 +94,7 @@ export class MobManager {
     this.renderer = renderer ?? new MobRenderer({ THREE, scene, lightField, material, camera });
     this.mobs = [];
     this.navs = new Map(); // typeId -> NavMesh
+    this.respawns = []; // one entry per viable spawn point (see rebuild)
     this.kills = 0;
     this._losCache = new Map(); // bucketKey -> { time, visible }
     this._losClock = 0;
@@ -89,6 +106,7 @@ export class MobManager {
     this.mobs = [];
     this.navs.clear();
     this.kills = 0;
+    this.respawns = [];
     this._losCache.clear();
     this._losClock = 0;
 
@@ -122,6 +140,24 @@ export class MobManager {
         onDamagePlayer: this.onDamagePlayer,
       });
       if (!mob.valid) return; // spawn has no walkable surface — skip
+      // Every viable spawn point respawns forever: proximity radius rolled
+      // once per point, delay re-rolled per wave (see _updateRespawns).
+      const entry = {
+        type: s.type,
+        cell: [s.x, s.y, s.z],
+        x: mob.pos.x,
+        z: mob.pos.z,
+        clearRadius: RESPAWN_CLEAR_MIN + Math.random() * (RESPAWN_CLEAR_MAX - RESPAWN_CLEAR_MIN),
+        alive: 1,
+        timer: 0,
+        waves: 0,
+        // authored spawner settings (see World.addMobSpawn): loot pool the
+        // point's mobs may drop, and its respawn-delay range override
+        loot: s.loot ?? null,
+        delay: s.delay ?? null,
+      };
+      mob._respawn = entry;
+      this.respawns.push(entry);
       this.mobs.push(mob);
       this.renderer.addMob(mob);
     });
@@ -150,9 +186,11 @@ export class MobManager {
    * @param {string} typeId  mob type
    * @param {[number,number,number]} cell  feet cell to spawn around
    * @param {number} [count]
+   * @param {object} [origin]  respawn entry the new mobs count against — only
+   *   passed by _updateRespawns; quest packs stay untracked
    * @returns {number} how many actually spawned
    */
-  spawnAt(typeId, cell, count = 1) {
+  spawnAt(typeId, cell, count = 1, origin = null) {
     const def = getMob(typeId);
     const nav = this._navFor(typeId);
     if (!def || !nav) return 0;
@@ -176,6 +214,7 @@ export class MobManager {
         onDamagePlayer: this.onDamagePlayer,
       });
       if (!mob.valid) continue;
+      if (origin) mob._respawn = origin;
       this.mobs.push(mob);
       this.renderer.addMob(mob);
       spawned++;
@@ -224,6 +263,17 @@ export class MobManager {
       const mob = this.mobs[i];
       mob.playerFacing = facing ?? undefined;
       mob.update(dt, player);
+      // A tracked mob's death is what clears its spawn point — the countdown
+      // arms the moment the last one drops, not when the corpse fades.
+      if (mob.dead && mob._respawn && !mob._respawnCounted) {
+        mob._respawnCounted = true;
+        const r = mob._respawn;
+        if (--r.alive <= 0) {
+          r.waves++;
+          const [lo, hi] = r.delay ?? [RESPAWN_DELAY_MIN, RESPAWN_DELAY_MAX];
+          r.timer = lo + Math.random() * Math.max(0, hi - lo);
+        }
+      }
       // Any aggro mob that hasn't sounded its alarm yet shouts, exactly once —
       // whether it aggroed from sight, from damage, or was one-shot before its
       // own update (a kill should still raise the pack).
@@ -240,6 +290,38 @@ export class MobManager {
       }
     }
     this._resolveOverlaps(player);
+    this._updateRespawns(dt, player, facing);
+  }
+
+  /**
+   * Endless-waves respawn (Dying Light style): a cleared spawn point re-arms
+   * itself. Once every mob a point owns is dead, its randomized countdown
+   * runs — but only while the player is beyond the point's clearRadius, so
+   * camping the spot holds it empty and walking away starts the clock. A ripe
+   * point spawns its next wave only while OUTSIDE the player's view cone
+   * (ground-plane dot test), so mobs never pop in on screen; until then it
+   * holds at zero, ready the moment the player turns away. Waves grow by one
+   * mob every other clear (capped at RESPAWN_WAVE_MAX) — the world presses
+   * harder the longer you stay.
+   */
+  _updateRespawns(dt, player, facing) {
+    for (const r of this.respawns) {
+      if (r.alive > 0) continue;
+      const dx = r.x - player.x;
+      const dz = r.z - player.z;
+      const dist = Math.hypot(dx, dz);
+      if (dist < r.clearRadius) continue; // player still on top of it — hold
+      r.timer -= dt;
+      if (r.timer > 0) continue;
+      // Ripe. Spawning while the point is on screen would pop mobs in — hold
+      // until the player faces away (unknown facing spawns; it means the
+      // player is looking straight up or down).
+      if (facing && (dx * facing.x + dz * facing.z) / dist > RESPAWN_VIEW_DOT) continue;
+      const count = Math.min(RESPAWN_WAVE_MAX, 1 + (r.waves >> 1));
+      const spawned = this.spawnAt(r.type, r.cell, count, r);
+      if (spawned > 0) r.alive = spawned;
+      else r.timer = RESPAWN_RETRY; // nothing walkable right now — retry later
+    }
   }
 
   /**

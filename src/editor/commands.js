@@ -312,13 +312,14 @@ export function removeItemCommand(world, item, onChange) {
 
 /**
  * @param {object} world
- * @param {{type:string, cell:[number,number,number]}} spec
+ * @param {{type:string, cell:[number,number,number], settings?:object}} spec
+ *   `settings` = per-spawner loot/delay (see World.addMobSpawn)
  */
-export function addMobSpawnCommand(world, { type, cell }) {
+export function addMobSpawnCommand(world, { type, cell, settings }) {
   return {
     description: `Place mob ${type}`,
     do() {
-      return world.addMobSpawn(type, cell[0], cell[1], cell[2]);
+      return world.addMobSpawn(type, cell[0], cell[1], cell[2], settings);
     },
     undo() {
       world.removeMobSpawnAt(cell[0], cell[1], cell[2]);
@@ -337,7 +338,7 @@ export function removeMobSpawnCommand(world, spawn) {
       return !!world.removeMobSpawnAt(spawn.x, spawn.y, spawn.z);
     },
     undo() {
-      world.addMobSpawn(spawn.type, spawn.x, spawn.y, spawn.z);
+      world.addMobSpawn(spawn.type, spawn.x, spawn.y, spawn.z, spawn);
     },
   };
 }

@@ -160,7 +160,7 @@ test('empty chunk produces no geometry', () => {
 
 test('single small voxel emits 6 faces = 36 vertices', () => {
   const w = new World();
-  w.place('grass', SIZE.SMALL, 0, 0, 0);
+  w.place('dirt', SIZE.SMALL, 0, 0, 0); // bare block: grass would sprout cover quads
   const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
   assert.equal(m.indices.length, 6 * 6); // 6 tris per face * 6 faces
   assert.equal(m.positions.length, 6 * 4 * 3);
@@ -168,8 +168,8 @@ test('single small voxel emits 6 faces = 36 vertices', () => {
 
 test('two adjacent voxels cull their shared faces', () => {
   const w = new World();
-  w.place('grass', SIZE.SMALL, 0, 0, 0);
-  w.place('grass', SIZE.SMALL, 1, 0, 0);
+  w.place('dirt', SIZE.SMALL, 0, 0, 0);
+  w.place('dirt', SIZE.SMALL, 1, 0, 0);
   const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
   assert.equal(m.indices.length, 10 * 6); // 10 exposed faces * 6 indices
 });
@@ -193,7 +193,7 @@ test('two aligned BIG voxels cull the shared plane entirely', () => {
 
 test('face positions live on the cell boundary in world units', () => {
   const w = new World();
-  w.place('grass', SIZE.SMALL, 0, 0, 0);
+  w.place('dirt', SIZE.SMALL, 0, 0, 0); // bare block: grass cover tops out above the cell
   const m = buildChunkMesh(w, lit, [0, 0, 0], 16, tile);
   const maxCoord = Math.max(...m.positions);
   assert.equal(maxCoord, 0.5);

@@ -106,6 +106,17 @@ export function recenterForResize(voxels, oldDims, newDims) {
   return translateVoxels(voxels, resizeShift(oldDims, newDims), newDims);
 }
 
+/** Shift for a side-anchored build-volume resize (the prefab editor's model):
+ *  `sides[i]` names the wall that MOVES on that axis — 'max' leaves content
+ *  where it is (the +wall slides), 'min' slides content with the moving −wall
+ *  so the still wall keeps its distance; anything else recenters. */
+export const anchoredResizeShift = (oldDims, newDims, sides) =>
+  oldDims.map((o, i) => {
+    const d = newDims[i] - o;
+    const side = sides?.[i];
+    return side === 'min' ? d : side === 'max' ? 0 : Math.floor(d / 2);
+  });
+
 /** Rebuild a <select> so its options are None + the given {id, name} choices.
  *  Skips the DOM work when the options already match. */
 export function syncSelect(select, choices, doc) {

@@ -10,8 +10,11 @@
 // Equipment-specific concepts on top of the shared core:
 //   - grid:  the per-item build volume [gx, gy, gz] (cells, fixed 6.25 cm cell
 //            size). Presets cover the common silhouettes (sidearm, long gun,
-//            spear, axe); steppers allow any 4–32 cells per axis. Resizing
-//            keeps the sculpture centred and refuses when it wouldn't fit.
+//            spear, axe); steppers allow any 4–32 cells per axis. Like the
+//            prefab editor, ◧/◨ toggles pick which wall a resize moves per
+//            axis (the content stays anchored to the still wall), and Crop
+//            shrinks the volume to the painted voxels — resizes refuse when
+//            the sculpture wouldn't fit, nothing is silently dropped.
 //   - grip:  a highlighted voxel cell marking where the player's right hand
 //            grips the item — the Grip R tool (G); a cyan "handle" cube shows
 //            it. grip2 is the left-hand cell of a two-handed weapon — the
@@ -46,7 +49,8 @@ import {
 import { listAmmoTypes } from '../../engine/AmmoTypes.js';
 import { Notice } from '../Notice.js';
 import { MicroVoxelEditor } from './MicroVoxelEditor.js';
-import { syncSelect, recenterForResize, resizeShift } from './microOps.js';
+import { syncSelect, anchoredResizeShift, translateVoxels } from './microOps.js';
+import { microBounds } from '../../engine/LayFlat.js';
 
 /** Background of the dedicated items-editor scene (clean, no sky). */
 const BG_COLOR = 0x151921;
@@ -265,27 +269,56 @@ export class EquipmentEditor extends MicroVoxelEditor {
 
   // --- build volume ---
 
-  /** Resize the build volume, keeping content centred. Refused (with the
-   *  reason) when the placed voxels don't fit the new volume — nothing is
-   *  ever silently dropped. */
+  /** Resize the build volume. Which wall moves per axis follows the ◧/◨
+   *  side toggles (like the prefab editor): the content stays anchored to
+   *  the still wall. Refused (with the reason) when the placed voxels don't
+   *  fit the new volume — nothing is ever silently dropped. */
   _setGridDims(dims) {
     const next = normalizeGrid(dims);
     const cur = this._gridDims();
     if (next[0] === cur[0] && next[1] === cur[1] && next[2] === cur[2]) return;
-    const moved = recenterForResize(this.item.microVoxels, cur, next);
+    const shift = anchoredResizeShift(cur, next, this._resizeSides);
+    const moved = translateVoxels(this.item.microVoxels, shift, next);
     if (!moved) {
-      Notice.warn(`Content doesn't fit ${next.join('×')} — erase voxels or pick a bigger volume`);
+      Notice.warn(`Content doesn't fit ${next.join('×')} — erase voxels, pull the other side (◧/◨) or pick a bigger volume`);
       this._renderUI(); // snap the steppers back to the real dims
       return;
     }
     this._pushSnapshot();
-    const shift = resizeShift(cur, next);
     this.item.grid = next;
     this.item.microVoxels = moved;
     this._translateExtras(shift);
     this._boxAnchor = null;
     this._rebuild();
     this._setView('iso'); // reframe the camera for the new volume
+  }
+
+  /** One-click manual crop: shrink the build volume to the painted voxels
+   *  (clamped to the 4-cell minimum) and slide them to the volume's corner —
+   *  the resting pose in the world crops the same way, so what you see here
+   *  is what lies on the ground. */
+  _cropToContent() {
+    const b = microBounds(this.item.microVoxels);
+    if (!b) {
+      Notice.warn('Nothing to crop — paint some voxels first');
+      return;
+    }
+    const next = normalizeGrid(b.size);
+    const cur = this._gridDims();
+    const shift = b.min.map((m) => -m);
+    if (next.every((g, i) => g === cur[i]) && shift.every((s) => s === 0)) {
+      Notice.info('Already cropped to the voxels', 900);
+      return;
+    }
+    const moved = translateVoxels(this.item.microVoxels, shift, next);
+    this._pushSnapshot();
+    this.item.grid = next;
+    this.item.microVoxels = moved;
+    this._translateExtras(shift);
+    this._boxAnchor = null;
+    this._rebuild();
+    this._setView('iso');
+    Notice.info(`Cropped to ${next.join('×')} cells`, 900);
   }
 
   // --- grip + direction + muzzle ---
@@ -543,6 +576,8 @@ export class EquipmentEditor extends MicroVoxelEditor {
       gridY: $('#ep-grid-y'),
       gridZ: $('#ep-grid-z'),
       gridSize: $('#ep-grid-size'),
+      sideBtns: [...this.doc.querySelectorAll('#ep-panel .ie-side')],
+      crop: $('#ep-crop'),
       kindMelee: $('#ep-kind-melee'),
       kindRanged: $('#ep-kind-ranged'),
       handsOne: $('#ep-hands-one'),
@@ -607,6 +642,16 @@ export class EquipmentEditor extends MicroVoxelEditor {
         this._setGridDims(dims);
       });
     }
+    // Which wall a resize moves per axis (◧ = −side, ◨ = +side), like the
+    // prefab panel — shrink toward the art from whichever side is empty.
+    this._resizeSides = ['max', 'max', 'max'];
+    for (const btn of ui.sideBtns) {
+      btn.addEventListener('click', () => {
+        this._resizeSides[Number(btn.dataset.axis)] = btn.dataset.side;
+        this._renderUI();
+      });
+    }
+    ui.crop?.addEventListener('click', () => this._cropToContent());
 
     ui.rotateBtn.addEventListener('click', () => this._rotateDirection());
     ui.kindMelee.addEventListener('click', () => this._setKind('melee'));
@@ -696,6 +741,9 @@ export class EquipmentEditor extends MicroVoxelEditor {
         const btn = this.doc.querySelector(`#ep-shape-${preset.id}`);
         btn?.classList.toggle('active', preset.dims.every((g, i) => g === dims[i]));
       }
+    }
+    for (const btn of ui.sideBtns ?? []) {
+      btn.classList.toggle('active', this._resizeSides?.[Number(btn.dataset.axis)] === btn.dataset.side);
     }
 
     ui.gripLabel.textContent = this.item.grip ? `${this.item.grip.x},${this.item.grip.y},${this.item.grip.z}` : 'unset';

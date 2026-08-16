@@ -11,6 +11,7 @@ import {
   translateVoxels,
   recenterForResize,
   resizeShift,
+  anchoredResizeShift,
 } from '../src/editor/items/microOps.js';
 
 const GRID = 8;
@@ -111,6 +112,16 @@ test('translateVoxels respects per-axis bounds', () => {
 test('resizeShift centres the size difference', () => {
   assert.deepEqual(resizeShift([8, 8, 8], [8, 8, 16]), [0, 0, 4]);
   assert.deepEqual(resizeShift([8, 8, 16], [8, 8, 8]), [0, 0, -4]);
+});
+
+test('anchoredResizeShift slides content only when the min wall moves', () => {
+  // The +wall moves: content stays put.
+  assert.deepEqual(anchoredResizeShift([8, 8, 8], [8, 8, 16], ['max', 'max', 'max']), [0, 0, 0]);
+  // The −wall moves: content rides with it, keeping the +wall distance.
+  assert.deepEqual(anchoredResizeShift([8, 8, 8], [8, 8, 16], ['max', 'max', 'min']), [0, 0, 8]);
+  assert.deepEqual(anchoredResizeShift([8, 8, 16], [8, 8, 8], ['max', 'max', 'min']), [0, 0, -8]);
+  // No side picked: falls back to centring (resizeShift).
+  assert.deepEqual(anchoredResizeShift([8, 8, 8], [8, 8, 16], null), resizeShift([8, 8, 8], [8, 8, 16]));
 });
 
 test('recenterForResize keeps content centred when growing', () => {

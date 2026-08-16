@@ -26,12 +26,17 @@ import { CONFIG } from '../config.js';
 import { deserialize } from '../persistence/WorldSerializer.js';
 import { serializeBundle, deserializeBundle, BUNDLE_FORMAT } from '../persistence/WorldBundle.js';
 import { getItem } from '../engine/ItemRegistry.js';
-import { getEquipItem } from '../engine/EquipmentRegistry.js';
+import { getEquipItem, listEquipItems } from '../engine/EquipmentRegistry.js';
 import { registerBuiltinQuestItems } from '../engine/QuestItems.js';
+import {
+  registerBuiltinMaterials, MATERIAL_IDS, REPAIR_COST, REPAIR_DECAY_FRACTION,
+  ADHESIVE_IDS, SCRAP_IDS, MATERIAL_STACK,
+} from '../engine/Materials.js';
 import { deserializeNpcRegistry } from '../engine/NpcRegistry.js';
 import { deserializeQuestRegistry } from '../engine/QuestRegistry.js';
 import { ammoName } from '../engine/AmmoTypes.js';
 import { MICRO_SIZE, gridOf, lightLevelForMeters, rotateMicroPoint } from '../engine/ItemTypes.js';
+import { layFlat } from '../engine/LayFlat.js';
 import { isPassable, isGlass } from '../engine/VoxelTypes.js';
 import { isDoorVoxel, isOpenDoor, toggleDoor, canToggle, isDoorLocked } from '../engine/Doors.js';
 import { isSwitchDecal, isSwitchOn, flipSwitch, seedSwitchFlags, faceFromNormal } from '../engine/Switches.js';
@@ -84,6 +89,14 @@ const SPREAD_PX_PER_RAD = 300;
 // Stopping power: seconds a gun hit stops a mob (it can't move or attack).
 // The physical shove itself scales with the weapon's knockback (see weapons).
 const STAGGER_TIME = 0.3;
+
+/** Chance a dead mob drops a weapon from its loot pool (see _dropLoot). */
+const LOOT_DROP_CHANCE = 0.05;
+
+/** Chance a dead mob drops a repair material — rolled independently of the
+ *  weapon drop, so scavenging parts is the common case and a weapon the
+ *  jackpot. */
+const MATERIAL_DROP_CHANCE = 0.18;
 
 /** Seconds each menu splash screen plays before the next one is picked. */
 const SPLASH_SECONDS = 3;
@@ -238,6 +251,8 @@ export class GameApp {
     // Open NPC repair screen: { npc, slot } — slot is the picked equipment
     // slot name (null until the player clicks a weapon). See _openRepair.
     this._repair = null;
+    // Backpack grid (B): open state — the game keeps running underneath.
+    this._backpackOpen = false;
     // Quest state: NPCs are the quest givers (see quests.js). Reset on new
     // game, serialized into save slots.
     this.quests = new QuestLog();
@@ -249,16 +264,33 @@ export class GameApp {
     this._unbindReactions = null;
 
     // Highlight shown over a placed equippable item you're aiming at (E picks
-    // it up): an outline traced around the item's own shape, not a box over
-    // the cells it sits in. The geometry is swapped in per aimed item
-    // (_showItemOutline); it draws over the item so it reads as a highlight.
-    this._pickupOutline = new THREE.LineSegments(
+    // it up): a silhouette halo around the item's form, not a wire over every
+    // voxel edge. The item's own geometry is inflated along smoothed normals
+    // (the `outlineDir` attribute, see createOutlineGeometry) and drawn back-
+    // face only — an inverted hull — so a single glowing rim hugs the shape.
+    // The geometry is swapped in per aimed item (_showItemOutline).
+    this._pickupOutline = new THREE.Mesh(
       new THREE.BufferGeometry(),
-      new THREE.LineBasicMaterial({ color: 0x66ccff, depthTest: false, depthWrite: false }),
+      new THREE.ShaderMaterial({
+        uniforms: {
+          color: { value: new THREE.Color(0x66ccff) },
+          // Halo thickness in micro-voxel units (the mesh is scaled by MICRO_SIZE).
+          offset: { value: 0.5 },
+        },
+        vertexShader: `
+          attribute vec3 outlineDir;
+          uniform float offset;
+          void main() {
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position + outlineDir * offset, 1.0);
+          }`,
+        fragmentShader: `
+          uniform vec3 color;
+          void main() { gl_FragColor = vec4(color, 1.0); }`,
+        side: THREE.BackSide,
+      }),
     );
     this._pickupOutline.visible = false;
     this._pickupOutline.frustumCulled = false;
-    this._pickupOutline.renderOrder = 999;
     this.renderer.scene.add(this._pickupOutline);
     this._pickupOutlineKey = null; // placement the outline geometry was built for
     this._pickupTarget = null;
@@ -313,6 +345,10 @@ export class GameApp {
       dialogText: this.doc.querySelector('#dialog-text'),
       dialogChoices: this.doc.querySelector('#dialog-choices'),
       dialogHint: this.doc.querySelector('#dialog-hint'),
+      backpack: this.doc.querySelector('#backpack'),
+      backpackEquip: this.doc.querySelector('#backpack-equip'),
+      backpackGrid: this.doc.querySelector('#backpack-grid'),
+      btnBackpackClose: this.doc.querySelector('#btn-backpack-close'),
       repair: this.doc.querySelector('#repair'),
       repairSub: this.doc.querySelector('#repair-sub'),
       repairList: this.doc.querySelector('#repair-list'),
@@ -543,6 +579,7 @@ export class GameApp {
   async _loadBaseWorld() {
     // Built-in quest items first — an authored def under the same id wins.
     registerBuiltinQuestItems();
+    registerBuiltinMaterials();
     const text = await this._fetchWorldFile();
     this._setLoadProgress(0.4, 'Reading map…');
     let world = null;
@@ -669,6 +706,8 @@ export class GameApp {
     this._updateHeldItem();
     this._renderEquipment();
     this._updateAmmoHud();
+    // Pickups landing while the bag is open show up in it immediately.
+    if (this._backpackOpen) this._renderBackpack();
   }
 
   /** Show magazine ammo for ranged weapons as `in-mag / carried`. Breakable
@@ -681,9 +720,11 @@ export class GameApp {
     const weapon = this.stats.activeItemId ? weaponFor(this.stats.activeItemId) : FISTS;
     const max = weapon.magazine ?? 0;
     if (weapon.kind === 'melee' && weapon.durability > 0 && this.stats.activeItemId) {
-      const left = Math.max(0, weapon.durability - (this.stats.wear[this.stats.activeSlotName] ?? 0));
+      const slot = this.stats.activeSlotName;
+      const max = this._effDurability(slot, weapon);
+      const left = Math.max(0, max - (this.stats.wear[slot] ?? 0));
       el.classList.remove('hidden');
-      el.textContent = `${left}/${weapon.durability}`;
+      el.textContent = `${left}/${max}`;
       return;
     }
     if (weapon.kind !== 'ranged' || max <= 0) {
@@ -751,6 +792,29 @@ export class GameApp {
       div.addEventListener('click', () => this._selectSlot(i));
       el.appendChild(div);
     });
+    // Backpack badge: stored items + material total, contents in the tooltip,
+    // B (or a tap) opens the grid. Hidden while empty so the default HUD
+    // stays untouched.
+    const materialTotal = Object.values(this.stats.materials).reduce((a, b) => a + b, 0);
+    if (this.stats.backpack.length || materialTotal) {
+      const pack = document.createElement('div');
+      pack.className = 'eq-slot eq-backpack';
+      const names = [
+        ...this.stats.backpack.map((e) => (getItem(e.id) ?? getEquipItem(e.id))?.name ?? e.id),
+        ...Object.entries(this.stats.materials).map(([id, n]) => `${getEquipItem(id)?.name ?? id} ×${n}`),
+      ];
+      pack.title = `Backpack (B): ${names.join(', ')}`;
+      const keyHint = document.createElement('span');
+      keyHint.className = 'eq-slot-label';
+      keyHint.textContent = 'B';
+      pack.appendChild(keyHint);
+      const icon = document.createElement('span');
+      icon.className = 'eq-slot-name';
+      icon.textContent = `\u{1F392} ${this.stats.backpack.length + materialTotal}`;
+      pack.appendChild(icon);
+      pack.addEventListener('click', () => this._openBackpack());
+      el.appendChild(pack);
+    }
     if (this.ui.hand) {
       const weapon = this.stats.activeItemId ? weaponFor(this.stats.activeItemId) : FISTS;
       this.ui.hand.textContent = weapon.name;
@@ -880,22 +944,32 @@ export class GameApp {
     this.smoke.puff(impact.pos);
   }
 
+  /** A slot's weapon durability ceiling after repair decay: every repair
+   *  shaves points off the base (see _repairFix), never below 1 — a much-
+   *  patched weapon breaks on its first landed hit. */
+  _effDurability(slot, weapon) {
+    if (!(weapon.durability > 0)) return 0;
+    return Math.max(1, weapon.durability - (this.stats.decay[slot] ?? 0));
+  }
+
   /** Melee weapons wear out on flesh, not on walls: each hit that lands on a
    *  mob costs one point of durability, and at zero the weapon snaps and the
    *  slot empties (the breaking blow still deals its damage). Missed swings
    *  and hits on the world cost nothing. Fists and guns (durability 0) never
-   *  wear. */
+   *  wear. Repairs lower the ceiling (see _effDurability), so a patched-up
+   *  weapon snaps sooner. */
   _degradeMeleeWeapon(weapon) {
     if (weapon.kind !== 'melee' || !(weapon.durability > 0)) return;
     const slot = this.stats.activeSlotName;
     if (!this.stats.equipment[slot]) return; // bare fists in an empty slot
     const wear = this.stats.addWear(slot);
-    if (wear < weapon.durability) {
+    if (wear < this._effDurability(slot, weapon)) {
       this._updateAmmoHud();
       return;
     }
     this.stats.unequip(slot);
     this._toast(`Your ${weapon.name} broke!`);
+    this._refillFromBackpack(slot);
     this._updateHud();
   }
 
@@ -910,8 +984,40 @@ export class GameApp {
     if (died) {
       this.mobs.kills++;
       this._questEvents(this.quests.onKill(mob.type.id));
+      this._dropLoot(mob);
     }
     this._updateHud();
+  }
+
+  /** Loot drop from a dead mob — two independent rolls, materials common and
+   *  weapons rare. The pool comes from the mob's spawner when one is set
+   *  (split by item kind); an explicit empty pool drops nothing. The item
+   *  flies from the corpse straight to the player, exactly like an E-pickup —
+   *  the grant lands when the flight does. */
+  _dropLoot(mob) {
+    const authored = mob._respawn?.loot ?? null;
+    if (authored && authored.length === 0) return; // spawner set to drop nothing
+    const isMelee = (i) => i.kind === 'weapon' && (i.weapon?.kind ?? 'melee') === 'melee';
+    const pick = (ids) => ids[Math.floor(Math.random() * ids.length)];
+
+    let dropId = null;
+    if (Math.random() < LOOT_DROP_CHANCE) {
+      const weapons = authored
+        ? authored.filter((id) => isMelee(getEquipItem(id) ?? {}))
+        : listEquipItems().filter(isMelee).map((i) => i.id);
+      if (weapons.length) dropId = pick(weapons);
+    }
+    if (!dropId && Math.random() < MATERIAL_DROP_CHANCE) {
+      const mats = authored
+        ? authored.filter((id) => getEquipItem(id)?.kind === 'material')
+        : MATERIAL_IDS.filter((id) => getEquipItem(id));
+      if (mats.length) dropId = pick(mats);
+    }
+    const def = dropId ? getEquipItem(dropId) : null;
+    if (!def) return;
+    const start = new THREE.Vector3(mob.pos.x, mob.pos.y + mob.height * 0.5, mob.pos.z);
+    this._pickupQueue.push({ def, start, yaw: Math.random() * Math.PI * 2 });
+    this._pumpPickupQueue();
   }
 
   /** Blood splatter at the point the shot struck — feedback for WHERE you hit
@@ -1008,6 +1114,7 @@ export class GameApp {
   gameOver() {
     if (this.mode === 'dead') return;
     this.mode = 'dead';
+    this._closeBackpack();
     this.touch?.setEnabled(false);
     this.walk.enabled = false;
     this.walk.keys.clear();
@@ -1401,6 +1508,36 @@ export class GameApp {
     });
   }
 
+  /** What the next repair would consume, against what the player carries:
+   *  one adhesive (duck tape, then glue) + REPAIR_COST.scrap pieces of any
+   *  scrap (metal → wood → glass). @returns {{ok:boolean, take:{id:string,
+   *  count:number}[], missing:string[]}} */
+  _repairPlan() {
+    const take = [];
+    const missing = [];
+    const adhesive = ADHESIVE_IDS.find((id) => this.stats.materialCount(id) > 0);
+    if (adhesive) take.push({ id: adhesive, count: REPAIR_COST.adhesive });
+    else missing.push('adhesive (duck tape or glue)');
+    let scrapLeft = REPAIR_COST.scrap;
+    for (const id of SCRAP_IDS) {
+      if (scrapLeft <= 0) break;
+      const use = Math.min(scrapLeft, this.stats.materialCount(id));
+      if (use > 0) {
+        take.push({ id, count: use });
+        scrapLeft -= use;
+      }
+    }
+    if (scrapLeft > 0) missing.push(`${scrapLeft}× scrap (metal / wood / glass)`);
+    return { ok: missing.length === 0, take, missing };
+  }
+
+  /** Durability the picked weapon would cap at AFTER one more repair. */
+  _repairNextMax(slot) {
+    const weapon = weaponFor(this.stats.equipment[slot]);
+    const penalty = Math.max(1, Math.ceil(weapon.durability * REPAIR_DECAY_FRACTION));
+    return Math.max(1, this._effDurability(slot, weapon) - penalty);
+  }
+
   _renderRepair() {
     const list = this.ui.repairList;
     if (!list || !this._repair) return;
@@ -1415,7 +1552,8 @@ export class GameApp {
       const id = this.stats.equipment[slot];
       const item = getItem(id) ?? getEquipItem(id);
       const weapon = weaponFor(id);
-      const left = Math.max(0, weapon.durability - (this.stats.wear[slot] ?? 0));
+      const max = this._effDurability(slot, weapon);
+      const left = Math.max(0, max - (this.stats.wear[slot] ?? 0));
       const row = this.doc.createElement('button');
       row.className = `repair-row${slot === this._repair.slot ? ' selected' : ''}`;
       if (item) row.appendChild(buildItemSwatch(item, 36));
@@ -1423,8 +1561,12 @@ export class GameApp {
       name.className = 'r-name';
       name.textContent = weapon.name;
       const cond = this.doc.createElement('span');
-      cond.className = `r-cond${left < weapon.durability ? ' worn' : ''}`;
-      cond.textContent = `${left}/${weapon.durability}`;
+      cond.className = `r-cond${left < max ? ' worn' : ''}`;
+      cond.textContent = `${left}/${max}`;
+      // A repaired weapon caps lower — say so up front, per row.
+      if (max < weapon.durability) {
+        cond.textContent += ` (was ${weapon.durability})`;
+      }
       row.append(name, cond);
       row.addEventListener('click', () => {
         this._repair.slot = slot;
@@ -1432,17 +1574,67 @@ export class GameApp {
       });
       list.appendChild(row);
     }
-    // Repair only lights up for a weapon that has actually taken wear.
+
+    // Cost strip: each material the next repair consumes, have/need, plus
+    // what's missing in red. Rendered fresh under the weapon rows.
+    const plan = this._repairPlan();
+    const cost = this.doc.createElement('div');
+    cost.id = 'repair-cost';
+    const label = this.doc.createElement('span');
+    label.className = 'rc-label';
+    label.textContent = 'Costs';
+    cost.appendChild(label);
+    for (const t of plan.take) {
+      const def = getEquipItem(t.id);
+      const chip = this.doc.createElement('span');
+      chip.className = 'rc-chip';
+      chip.title = def?.name ?? t.id;
+      if (def) chip.appendChild(buildItemSwatch(def, 24));
+      chip.append(`×${t.count}`);
+      cost.appendChild(chip);
+    }
+    for (const m of plan.missing) {
+      const miss = this.doc.createElement('span');
+      miss.className = 'rc-chip rc-missing';
+      miss.textContent = `needs ${m}`;
+      cost.appendChild(miss);
+    }
+    list.appendChild(cost);
+
     const picked = this._repair.slot;
-    if (this.ui.btnRepairFix) this.ui.btnRepairFix.disabled = !picked || !(this.stats.wear[picked] > 0);
+    if (picked) {
+      const note = this.doc.createElement('p');
+      note.className = 'rc-note';
+      note.textContent = `Patching wears it down: max durability drops to ${this._repairNextMax(picked)} after this fix.`;
+      list.appendChild(note);
+    }
+
+    // Repair lights up for a worn weapon the player can afford to fix.
+    if (this.ui.btnRepairFix) {
+      this.ui.btnRepairFix.disabled = !picked || !(this.stats.wear[picked] > 0) || !plan.ok;
+    }
   }
 
-  /** Repair the picked weapon: its wear drops to zero, good as new. */
+  /** Repair the picked weapon: consumes materials (see _repairPlan), zeroes
+   *  its wear, and permanently lowers its durability ceiling — every patch
+   *  brings the final break closer. */
   _repairFix() {
     const slot = this._repair?.slot;
     if (!slot || !(this.stats.wear[slot] > 0)) return;
+    const plan = this._repairPlan();
+    if (!plan.ok) {
+      this._toast(`Missing ${plan.missing.join(' + ')}`);
+      return;
+    }
+    for (const t of plan.take) this.stats.takeMaterial(t.id, t.count);
+    const weapon = weaponFor(this.stats.equipment[slot]);
+    const penalty = Math.max(1, Math.ceil(weapon.durability * REPAIR_DECAY_FRACTION));
     this.stats.repairWear(slot);
-    this._toast(`${weaponFor(this.stats.equipment[slot]).name} repaired — good as new.`);
+    this.stats.decay[slot] = (this.stats.decay[slot] ?? 0) + penalty;
+    const max = this._effDurability(slot, weapon);
+    this._toast(max <= 1
+      ? `${weapon.name} patched — barely holding together.`
+      : `${weapon.name} repaired — holds ${max} more hits.`);
     this._renderRepair();
     this._updateAmmoHud();
   }
@@ -1604,7 +1796,9 @@ export class GameApp {
     this._hidePickup();
     const [ax, ay, az] = target.item.anchor;
     this.world.removeItemAt(ax, ay, az);
-    const [hx, hy, hz] = gridOf(def).map((g) => (g * MICRO_SIZE) / 2);
+    // Flight starts at the centre of the resting pose (cropped + laid flat),
+    // the shape that was actually sitting in the world.
+    const [hx, hy, hz] = layFlat(def).grid.map((g) => (g * MICRO_SIZE) / 2);
     const start = new THREE.Vector3(ax * CELL_SIZE + hx, ay * CELL_SIZE + hy, az * CELL_SIZE + hz);
     this._pickupQueue.push({ def, start, yaw: target.item.rotation ?? 0 });
     this._pumpPickupQueue();
@@ -1654,6 +1848,12 @@ export class GameApp {
       this._updateHud();
       return;
     }
+    if (def.kind === 'material') {
+      const count = this.stats.addMaterial(def.id, 1);
+      this._toast(`+1 ${def.name} (${count})`);
+      this._updateHud();
+      return;
+    }
     if (def.kind === 'ammo') {
       const a = def.ammo ?? {};
       const type = a.type ?? '';
@@ -1668,6 +1868,14 @@ export class GameApp {
       return;
     }
     const slot = this._pickupSlot(def);
+    if (!slot) {
+      // Every slot is taken — overflow goes into the backpack instead of
+      // silently replacing what's in hand.
+      this.stats.stow(def.id);
+      this._updateHud();
+      this._toast(`${def.name} → backpack (${this.stats.backpack.length})`);
+      return;
+    }
     this.stats.equip(slot, def.id);
     this._updateHud();
     this._toast(`Picked up ${def.name}`);
@@ -1675,7 +1883,8 @@ export class GameApp {
 
   /** Slot a picked-up item lands in: weapons avoid the injection slot, while
    *  consumables (no damage) prefer it. Fills the active slot first when empty,
-   *  then the first empty slot, then replaces the active slot. */
+   *  then the first empty slot; null when everything is taken (the item goes
+   *  to the backpack — see _grantPickup). */
   _pickupSlot(def) {
     const active = this.stats.activeSlotName;
     const isConsumable = !def?.stats || def.stats.damage <= 0;
@@ -1686,7 +1895,157 @@ export class GameApp {
     for (const slot of preferred) {
       if (!this.stats.equipment[slot]) return slot;
     }
-    return isConsumable ? 'injection' : active;
+    return null;
+  }
+
+  /** Refill a freshly emptied slot from the backpack: a weapon slot grabs the
+   *  first stored weapon, the injection slot the first consumable. The stowed
+   *  condition (wear + repair decay) comes back with it. Quiet no-op when the
+   *  backpack has nothing suitable. */
+  _refillFromBackpack(slot) {
+    const wantWeapon = slot !== 'injection';
+    const entry = this.stats.unstow((itemId) => {
+      const def = getEquipItem(itemId) ?? getItem(itemId);
+      const isWeapon = (def?.stats?.damage ?? 0) > 0;
+      return wantWeapon === isWeapon;
+    });
+    if (!entry) return;
+    this.stats.equip(slot, entry.id);
+    this.stats.wear[slot] = entry.wear ?? 0;
+    this.stats.decay[slot] = entry.decay ?? 0;
+    const def = getEquipItem(entry.id) ?? getItem(entry.id);
+    this._toast(`${def?.name ?? entry.id} out of the backpack (${this.stats.backpack.length} left)`);
+  }
+
+  // --- backpack (B): Minecraft-style grid over the game ---
+
+  /** Open the backpack grid. The game keeps running underneath — rummaging
+   *  through your bag mid-horde is a choice. Pointer lock is released so the
+   *  cells are clickable (like the repair screen). */
+  _openBackpack() {
+    if (this._backpackOpen || this.mode !== 'playing') return;
+    this._backpackOpen = true;
+    this._firing = false;
+    if (document.pointerLockElement) document.exitPointerLock();
+    this._renderBackpack();
+    this.ui.backpack?.classList.remove('hidden');
+  }
+
+  _closeBackpack() {
+    if (!this._backpackOpen) return;
+    this._backpackOpen = false;
+    this.ui.backpack?.classList.add('hidden');
+    if (!this.isTouch && this.mode === 'playing' && this.webgl.domElement.requestPointerLock) {
+      this.webgl.domElement.requestPointerLock();
+    }
+  }
+
+  /** Condition suffix for a stored weapon's tooltip, e.g. " — 3/6". */
+  _conditionLabel(id, wear, decay) {
+    const weapon = weaponFor(id);
+    if (weapon.kind !== 'melee' || !(weapon.durability > 0)) return '';
+    const max = Math.max(1, weapon.durability - (decay ?? 0));
+    return ` — ${Math.max(0, max - (wear ?? 0))}/${max}`;
+  }
+
+  /** Render the two halves of the backpack screen: the four equipment slots
+   *  (click to select where the next item goes) and the Minecraft-style grid
+   *  of stored items — material stacks with counts first, then weapons and
+   *  consumables. Clicking a stored item equips it into the first free
+   *  preferred slot, or swaps with the ACTIVE slot when everything is full —
+   *  the displaced weapon drops into the bag keeping its condition. */
+  _renderBackpack() {
+    const equipEl = this.ui.backpackEquip;
+    const grid = this.ui.backpackGrid;
+    if (!equipEl || !grid) return;
+
+    equipEl.replaceChildren();
+    EQUIPMENT_SLOTS.forEach((slot, i) => {
+      const id = this.stats.equipment[slot];
+      const item = id ? getItem(id) ?? getEquipItem(id) : null;
+      const cell = this.doc.createElement('div');
+      cell.className = `bp-slot bp-equip${i === this.stats.activeSlot ? ' active' : ''}`;
+      cell.title = item
+        ? `${item.name}${this._conditionLabel(id, this.stats.wear[slot], this.stats.decay[slot])} (${i + 1})`
+        : `Empty slot (${i + 1})`;
+      const key = this.doc.createElement('span');
+      key.className = 'bp-key';
+      key.textContent = String(i + 1);
+      cell.appendChild(key);
+      if (item) cell.appendChild(buildItemSwatch(item, 44));
+      cell.addEventListener('click', () => {
+        this._selectSlot(i);
+        this._renderBackpack();
+      });
+      equipEl.appendChild(cell);
+    });
+
+    grid.replaceChildren();
+    const cells = [];
+    for (const id of Object.keys(this.stats.materials)) {
+      const def = getEquipItem(id);
+      if (!def || !(this.stats.materials[id] > 0)) continue;
+      // Big piles split into Minecraft-style stacks.
+      let left = this.stats.materials[id];
+      while (left > 0) {
+        const n = Math.min(left, MATERIAL_STACK);
+        cells.push({ def, count: n });
+        left -= n;
+      }
+    }
+    this.stats.backpack.forEach((entry, index) => {
+      const def = getEquipItem(entry.id) ?? getItem(entry.id);
+      if (def) cells.push({ def, entry, index });
+    });
+
+    const COLS = 6;
+    const total = Math.max(COLS * 3, Math.ceil(cells.length / COLS) * COLS);
+    for (let i = 0; i < total; i++) {
+      const c = cells[i];
+      const cell = this.doc.createElement('div');
+      cell.className = 'bp-slot';
+      if (!c) {
+        cell.classList.add('empty');
+        grid.appendChild(cell);
+        continue;
+      }
+      cell.appendChild(buildItemSwatch(c.def, 44));
+      if (c.count != null) {
+        cell.title = `${c.def.name} ×${c.count} — repair material`;
+        const badge = this.doc.createElement('span');
+        badge.className = 'bp-count';
+        badge.textContent = String(c.count);
+        cell.appendChild(badge);
+      } else {
+        cell.classList.add('takeable');
+        cell.title = `${c.def.name}${this._conditionLabel(c.entry.id, c.entry.wear, c.entry.decay)} — click to equip`;
+        cell.addEventListener('click', () => this._takeFromBackpack(c.index));
+      }
+      grid.appendChild(cell);
+    }
+  }
+
+  /** Equip a stored item: into the first free preferred slot, else swap with
+   *  the active slot — the displaced item goes back into the bag with its
+   *  wear and repair decay intact. */
+  _takeFromBackpack(index) {
+    const entry = this.stats.backpack[index];
+    if (!entry) return;
+    const def = getEquipItem(entry.id) ?? getItem(entry.id);
+    if (!def) return;
+    const slot = this._pickupSlot(def) ?? this.stats.activeSlotName;
+    const displacedId = this.stats.equipment[slot];
+    this.stats.backpack.splice(index, 1);
+    if (displacedId) {
+      this.stats.stow(displacedId, this.stats.wear[slot], this.stats.decay[slot]);
+    }
+    this.stats.equip(slot, entry.id);
+    this.stats.wear[slot] = entry.wear ?? 0;
+    this.stats.decay[slot] = entry.decay ?? 0;
+    const displaced = displacedId ? (getEquipItem(displacedId) ?? getItem(displacedId)) : null;
+    this._toast(displaced ? `${def.name} out, ${displaced.name} stowed` : `${def.name} equipped`);
+    this._updateHud();
+    this._renderBackpack();
   }
 
   /** Use the equipped injection (heals, consumes it). */
@@ -1697,6 +2056,7 @@ export class GameApp {
     }
     if (this.stats.useInjection()) {
       this._toast('Injection used');
+      this._refillFromBackpack('injection');
       this._updateHud();
     }
   }
@@ -1740,6 +2100,7 @@ export class GameApp {
 
   showMenu() {
     this.mode = 'menu';
+    this._closeBackpack();
     this.touch?.setEnabled(false);
     this.ui.menu.classList.remove('hidden');
     this.ui.pause.classList.add('hidden');
@@ -1800,6 +2161,7 @@ export class GameApp {
   pauseGame() {
     if (this.mode !== 'playing') return;
     this.mode = 'paused';
+    this._closeBackpack();
     this._firing = false;
     this.touch?.setEnabled(false);
     this.walk.enabled = false;
@@ -1943,6 +2305,7 @@ export class GameApp {
     this.ui.btnDeathMenu?.addEventListener('click', () => this.showMenu());
     this.ui.btnRepairFix?.addEventListener('click', () => this._repairFix());
     this.ui.btnRepairClose?.addEventListener('click', () => this._closeRepair());
+    this.ui.btnBackpackClose?.addEventListener('click', () => this._closeBackpack());
     // Clear the hit-flash when its vignette animation completes (event-driven,
     // so it stays in sync even if the page's timers are throttled).
     const hitFeedback = this.doc.querySelector('#hit-feedback');
@@ -1962,6 +2325,10 @@ export class GameApp {
           this._closeRepair();
           return;
         }
+        if (this._backpackOpen) {
+          this._closeBackpack();
+          return;
+        }
         if (this.mode === 'playing') this.pauseGame();
         else if (this.mode === 'paused') this.resumeGame();
         else if (this.mode === 'dead') this.showMenu();
@@ -1975,6 +2342,17 @@ export class GameApp {
       // The repair screen is mouse-driven — keys must not leak through to the
       // dialogue replies or the hotbar underneath it.
       if (this._repair) return;
+      // The backpack grid leaves the legs alone — you can keep running from
+      // the horde while rummaging. B (or Esc) closes it.
+      if (this._backpackOpen) {
+        if (e.code === 'KeyB') this._closeBackpack();
+        else this.walk.onKeyDown(e.code);
+        return;
+      }
+      if (e.code === 'KeyB') {
+        this._openBackpack();
+        return;
+      }
       const digit = parseInt(e.code.slice(-1), 10);
       // With dialogue replies on screen, digits pick a reply, not a weapon.
       if (this._dialog?.convo.choices() && e.code.startsWith('Digit')) {
@@ -2022,7 +2400,7 @@ export class GameApp {
     // enter pointer lock, so they pause on backgrounding instead (below).
     on(this.doc, 'pointerlockchange', () => {
       const locked = document.pointerLockElement === this.webgl.domElement;
-      if (!this.isTouch && this.mode === 'playing' && !locked && !this._repair) this.pauseGame();
+      if (!this.isTouch && this.mode === 'playing' && !locked && !this._repair && !this._backpackOpen) this.pauseGame();
     });
     // Mobile: when the app is backgrounded, auto-pause (there's no Esc and
     // pointer-lock loss never fires) so the player isn't killed while away.

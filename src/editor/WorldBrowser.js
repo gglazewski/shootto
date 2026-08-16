@@ -9,6 +9,8 @@
 // the same two-step confirm the catalogues use. All filesystem work happens
 // through injected callbacks, so this class is DOM-only and server-agnostic.
 
+import { closeX } from './closeX.js';
+
 /** Group a flat /api/worlds listing into a nested tree for rendering.
  *  @param {Array<{path:string,type:string,size?:number,mtime?:number}>} entries
  *  @returns {Array} nodes: {name, path, type, children?} sorted folders-first */
@@ -76,6 +78,7 @@ export class WorldBrowser {
     this.count.className = 'cat-count';
     this.head.appendChild(this.count);
     panel.appendChild(this.head);
+    panel.appendChild(closeX(doc, () => this.hide()));
     // Dropping a world on the heading moves it to the root.
     this._dropTarget(this.head, '');
 

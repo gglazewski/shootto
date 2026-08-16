@@ -14,6 +14,7 @@ import { getItem } from '../../engine/ItemRegistry.js';
 import { getEquipItem } from '../../engine/EquipmentRegistry.js';
 import { createItemGeometry } from '../ItemGeometry.three.js';
 import { MICRO_SIZE, cellsOf, gridOf, quarterTurns } from '../../engine/ItemTypes.js';
+import { layFlat, layFlatCells } from '../../engine/LayFlat.js';
 import { CELL_SIZE } from '../../engine/Space.js';
 import { spanVecFor } from '../../engine/VoxelShape.js';
 
@@ -35,9 +36,17 @@ export class ItemTool extends Tool {
     return resolveItem(this.ctx.state.get('itemId'));
   }
 
-  /** Footprint of the selected item in cells [w, h, d]. */
+  /** Selected equipment def, or null when a placeable object is selected. */
+  get _equip() {
+    const id = this.ctx.state.get('itemId');
+    return getItem(id) ? null : getEquipItem(id);
+  }
+
+  /** Footprint of the selected item in cells [w, h, d]. Equipment places in
+   *  its resting pose — cropped to its voxels and laid flat (LayFlat.js). */
   get cells() {
-    return cellsOf(this.item);
+    const equip = this._equip;
+    return equip ? layFlatCells(equip) : cellsOf(this.item);
   }
 
   /** Current yaw in radians for the selected item (R cycles 90° steps). */
@@ -152,7 +161,9 @@ export class ItemTool extends Tool {
     if (this._preview) this.ctx.scene?.remove?.(this._preview.group);
     const group = new T.Group();
     const c = MICRO_SIZE;
-    const geo = createItemGeometry(T, it.microVoxels, { rotation: this.rotation, grid: gridOf(it) });
+    // Equipment previews in its resting pose, matching how it will render.
+    const model = this._equip ? layFlat(this._equip) : { microVoxels: it.microVoxels, grid: gridOf(it) };
+    const geo = createItemGeometry(T, model.microVoxels, { rotation: this.rotation, grid: model.grid });
     const mesh = new T.Mesh(
       geo,
       new T.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6, depthWrite: false }),

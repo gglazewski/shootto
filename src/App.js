@@ -44,6 +44,7 @@ import { NpcSpriteMarker } from './editor/NpcSpriteMarker.js';
 import { NpcQuestEditor } from './editor/npc/NpcQuestEditor.js';
 import { QuestAreaMarker } from './editor/QuestAreaMarker.js';
 import { registerBuiltinQuestItems } from './engine/QuestItems.js';
+import { registerBuiltinMaterials } from './engine/Materials.js';
 import { raycastVoxel, worldToCell } from './engine/VoxelRaycaster.js';
 import { ItemTool } from './editor/tools/ItemTool.js';
 import { DecalTool } from './editor/tools/DecalTool.js';
@@ -65,6 +66,8 @@ import { isSwitchDecal, isSwitchOn, flipSwitch, setSwitchArt, seedSwitchFlags, f
 import { GameFlags, bindWorldReactions } from './game/Reactions.js';
 import { LightModal } from './editor/LightModal.js';
 import { SwitchModal } from './editor/SwitchModal.js';
+import { MobModal } from './editor/MobModal.js';
+import { getMob } from './engine/mobTypes.js';
 import { InputDispatcher } from './editor/Input.js';
 import { ToolRing } from './editor/ToolRing.js';
 import { Notice, onNotice } from './editor/Notice.js';
@@ -118,7 +121,13 @@ export class App {
       blockRotation: 0, decalId: null, decalRotation: 0,
       prefabId: null, prefabRotation: 0, prefabMirror: false,
     });
-    this.history = new History({ max: CONFIG.history.max, onChange: () => this._markDirty() });
+    this.history = new History({
+      max: CONFIG.history.max,
+      onChange: () => {
+        this._markDirty();
+        this._syncHistoryUI();
+      },
+    });
 
     this.controls = new FlyControls({ THREE, camera: this.renderer.camera, domElement: this.webgl.domElement, opts: CONFIG.controls });
     this.walk = new WalkControls({
@@ -273,6 +282,10 @@ export class App {
     // Clicking a wall switch opens its flag wiring.
     this.switchModal = new SwitchModal({ doc, container: this.doc.querySelector('#switch-settings') });
     this.switchModal.onClose = this.doorModal.onClose;
+
+    // Clicking a mob spawn beacon opens its loot pool / respawn timer settings.
+    this.mobModal = new MobModal({ doc, container: this.doc.querySelector('#mob-settings') });
+    this.mobModal.onClose = this.doorModal.onClose;
     this._raycaster = new THREE.Raycaster();
 
     // --- equippable items (F3 editor) ---
@@ -495,6 +508,7 @@ export class App {
     // initial HUD state
     this.ui.setSelection(this.state.get('blockId'), this.state.get('size'));
     this.ui.setTool(this.tools.active.name);
+    this._syncHistoryUI();
     // Item/equip/npc/quest registries restore together with the world file
     // in restore() — the bundle carries them all.
   }
@@ -741,6 +755,7 @@ export class App {
     this.state.set('itemId', null);
     this.state.set('decalId', null);
     this.history.clear();
+    this._syncHistoryUI();
     this.world.clear();
 
     const dims = normalizePrefabDims(prefab?.dims ?? [16, 12, 16]);
@@ -1168,6 +1183,60 @@ export class App {
     });
   }
 
+  /** Mob spawn beacon under the crosshair, or null. Spawns live in air cells,
+   *  so the block raycast can't find them — instead test each spawn's marker
+   *  centre against the aim ray (perpendicular distance), capped at the door
+   *  click range and at the first solid hit so beacons behind walls don't
+   *  respond. */
+  _spawnUnderCrosshair() {
+    const cam = this.renderer.camera;
+    const dir = cam.getWorldDirection(new THREE.Vector3());
+    const solid = itemAwarePick(this.world, THREE, this.renderer.camera, CONFIG.editor.doorClickCells);
+    const limit = solid ? solid.dist * CELL_SIZE : CONFIG.editor.doorClickCells * CELL_SIZE;
+    let best = null;
+    let bestT = Infinity;
+    this.world.forEachMobSpawn((s) => {
+      const cx = s.x * CELL_SIZE + CELL_SIZE / 2 - cam.position.x;
+      const cy = s.y * CELL_SIZE + CELL_SIZE / 2 - cam.position.y;
+      const cz = s.z * CELL_SIZE + CELL_SIZE / 2 - cam.position.z;
+      const t = cx * dir.x + cy * dir.y + cz * dir.z; // along-ray distance
+      if (t < 0 || t > limit || t > bestT) return;
+      const px = cx - dir.x * t;
+      const py = cy - dir.y * t;
+      const pz = cz - dir.z * t;
+      if (Math.hypot(px, py, pz) > CELL_SIZE * 0.9) return; // off the beacon
+      best = s;
+      bestT = t;
+    });
+    return best;
+  }
+
+  /** LMB on a mob spawn beacon: open its spawner settings (loot pool +
+   *  respawn timer). Changes land directly on the spawn record.
+   *  @returns {boolean} true when a beacon was hit (the click is consumed) */
+  _clickMobSpawn() {
+    const spawn = this._spawnUnderCrosshair();
+    if (!spawn) return false;
+    if (document.pointerLockElement) document.exitPointerLock();
+    this.mobModal.open({
+      typeName: getMob(spawn.type)?.name ?? spawn.type,
+      loot: spawn.loot ? [...spawn.loot] : null,
+      delay: spawn.delay ? [...spawn.delay] : null,
+    }, (change) => {
+      if ('loot' in change) {
+        if (change.loot) spawn.loot = [...change.loot];
+        else delete spawn.loot;
+        this._markDirty();
+      }
+      if ('delay' in change) {
+        if (change.delay) spawn.delay = [...change.delay];
+        else delete spawn.delay;
+        this._markDirty();
+      }
+    });
+    return true;
+  }
+
   /** Remove the splash camera nearest to the editor view (Shift+F8). */
   async deleteNearestSplashCam() {
     if (this.prefabSession) return;
@@ -1202,6 +1271,7 @@ export class App {
   clearWorld({ silent = false } = {}) {
     this.world.clear();
     this.history.clear();
+    this._syncHistoryUI();
     this.renderer.clearChunks();
     this.itemRenderer.clear();
     this._refreshItemLights();
@@ -1217,6 +1287,31 @@ export class App {
   redo() {
     const cmd = this.history.redo();
     if (cmd) this.ui.toast(`Redo: ${cmd.description}`, 700);
+  }
+
+  /** Push the undo/redo timeline into the sidebar widget. */
+  _syncHistoryUI() {
+    this.ui.setHistory(this.history.timeline(), (delta) => this.jumpHistory(delta));
+  }
+
+  /** Timeline click: undo (delta < 0) or redo (delta > 0) that many steps. */
+  jumpHistory(delta) {
+    let last = null;
+    for (let i = 0; i < Math.abs(delta); i++) {
+      const cmd = delta < 0 ? this.history.undo() : this.history.redo();
+      if (!cmd) break;
+      last = cmd;
+    }
+    if (!last) return;
+    const verb = delta < 0 ? 'Undo' : 'Redo';
+    const n = Math.abs(delta);
+    if (n === 1) {
+      this.ui.toast(`${verb}: ${last.description}`, 900);
+    } else {
+      const { past } = this.history.timeline();
+      const dest = past.length ? past[past.length - 1] : 'the original state';
+      this.ui.toast(`${verb} ×${n} — now at: ${dest}`, 1400);
+    }
   }
 
   /** F1 / sidebar "Help": the keyboard reference overlay. */
@@ -1248,8 +1343,22 @@ export class App {
     this.ui.toast(`Polaroid filter: ${on ? 'on' : 'off'}`, 900);
   }
 
-  /** Middle-click: aim the selection at the block or item under the crosshair. */
+  /** Middle-click: aim the selection at the block or item under the crosshair.
+   *  A mob spawn beacon copies the whole spawner instead — type plus its
+   *  settings (loot pool, respawn timer) — into the mob tool. */
   pickBlock() {
+    const spawn = this._spawnUnderCrosshair();
+    if (spawn) {
+      const mobTool = this.tools.get('mob');
+      mobTool?.copyFrom(spawn);
+      this.tools.activate('mob');
+      const extras = [
+        spawn.loot ? (spawn.loot.length ? `loot ×${spawn.loot.length}` : 'no loot') : 'default loot',
+        spawn.delay ? `${spawn.delay[0]}–${spawn.delay[1]} s` : null,
+      ].filter(Boolean).join(', ');
+      this.ui.toast(`Copied spawner: ${getMob(spawn.type)?.name ?? spawn.type} (${extras})`, 1400);
+      return;
+    }
     const hit = itemAwarePick(this.world, THREE, this.renderer.camera);
     if (!hit) return;
     const item = this.world.itemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
@@ -1918,9 +2027,10 @@ export class App {
   }
 
   async restore() {
-    // Built-in quest items register first; an authored def under the same id
-    // in the world file wins.
+    // Built-in quest items and repair materials register first; an authored
+    // def under the same id in the world file wins.
     registerBuiltinQuestItems();
+    registerBuiltinMaterials();
 
     // File driven: the world file on disk (served by server.mjs) is the
     // single source of truth; the world baked into this build is the
@@ -2053,7 +2163,7 @@ export class App {
       // Clicking a splash-cam gizmo edits the shot's motion instead of the world.
       if (button === 0 && this._clickSplashCam()) return;
       // Same for doors: LMB opens their settings, Shift+LMB builds as usual.
-      if (button === 0 && !shiftKey && (this._clickDoor() || this._clickLight() || this._clickSwitch())) return;
+      if (button === 0 && !shiftKey && (this._clickDoor() || this._clickLight() || this._clickSwitch() || this._clickMobSpawn())) return;
       this.tools.active?.onMouseDown(button);
     });
     sub('mouseup', ({ button, x, y }) => {

@@ -368,7 +368,7 @@ export class World {
     });
     other.forEachPaint?.((p) => this.paintFace(p.x, p.y, p.z, p.face, p.type));
     other.forEachItem((it) => this.placeItem(it.itemId, it.cells ?? it.size, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0));
-    other.forEachMobSpawn((s) => this.addMobSpawn(s.type, s.x, s.y, s.z));
+    other.forEachMobSpawn((s) => this.addMobSpawn(s.type, s.x, s.y, s.z, s));
     other.forEachNpcSpawn((s) => this.addNpcSpawn(s.type, s.x, s.y, s.z));
     other.forEachSplashCam((c) => this.addSplashCam({ ...c, pos: [...c.pos] }));
     if (other.spawn) {
@@ -468,11 +468,19 @@ export class World {
     return this.mobSpawns.get(key(x, y, z)) ?? null;
   }
 
-  /** Add a mob spawn at a cell (rejects overlaps). @returns {boolean} */
-  addMobSpawn(type, x, y, z) {
+  /** Add a mob spawn at a cell (rejects overlaps). Optional per-spawner
+   *  settings ride on the record: `loot` (equip item ids the spawner's mobs
+   *  may drop; null = default pool, [] = no drops) and `delay` ([min,max]
+   *  respawn wait in seconds; null = game default). @returns {boolean} */
+  addMobSpawn(type, x, y, z, settings = null) {
     const k = key(x, y, z);
     if (this.mobSpawns.has(k)) return false;
-    this.mobSpawns.set(k, { type, x, y, z });
+    const spawn = { type, x, y, z };
+    if (Array.isArray(settings?.loot)) spawn.loot = [...settings.loot];
+    if (Array.isArray(settings?.delay) && settings.delay.length === 2) {
+      spawn.delay = [Number(settings.delay[0]), Number(settings.delay[1])];
+    }
+    this.mobSpawns.set(k, spawn);
     return true;
   }
 

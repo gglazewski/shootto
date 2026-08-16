@@ -7,9 +7,10 @@
 // gameplay-relevant editor fields:
 //   - kind:  what the item is — 'weapon' (held and fought with), 'ammo'
 //            (a resource type a weapon consumes), 'armor' (a vest that
-//            grants armor points when picked up) or 'quest' (a fetch-quest
+//            grants armor points when picked up), 'quest' (a fetch-quest
 //            objective: pickable only while a quest wants it, never shown
-//            in the hotbar — see quests.js).
+//            in the hotbar — see quests.js) or 'material' (a stackable
+//            repair resource — see engine/Materials.js).
 //   - grip:  the micro-voxel cell where the player's right hand grips the
 //            item; grip2 is the left-hand cell for two-handed weapons,
 //   - yaw:   the item's forward/direction angle (degrees about the vertical
@@ -127,10 +128,12 @@ const clampNum = (v, min, max, fallback) => {
   return Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : fallback;
 };
 
-/** Normalize the item kind: anything other than 'ammo'/'armor'/'quest' is a
- *  weapon. */
+/** Normalize the item kind: anything other than 'ammo'/'armor'/'quest'/
+ *  'material' is a weapon. Materials are stackable crafting/repair resources
+ *  (see engine/Materials.js) — picked up into the backpack, never equipped. */
 export function normalizeKind(kind) {
-  return kind === 'ammo' || kind === 'armor' || kind === 'quest' ? kind : 'weapon';
+  return kind === 'ammo' || kind === 'armor' || kind === 'quest' || kind === 'material'
+    ? kind : 'weapon';
 }
 
 /** Normalize an armor pack to the canonical {amount} shape (1..100). */

@@ -267,6 +267,8 @@ export class ItemEditor extends MicroVoxelEditor {
       this.lightStrength = Number(ui.lightStrength.value);
       this._rebuild();
     });
+    // Live readout + track fill while dragging ('change' alone only fires on release).
+    ui.lightStrength.addEventListener('input', () => this._paintStrength());
     this._buildLightColors();
 
     ui.load.addEventListener('click', () => ui.file.click());
@@ -280,6 +282,17 @@ export class ItemEditor extends MicroVoxelEditor {
       };
       reader.readAsText(file);
     });
+  }
+
+  /** Sync the strength slider's readout and painted track to its value. */
+  _paintStrength() {
+    const el = this._ui.lightStrength;
+    if (!el) return;
+    const v = Number(el.value);
+    const min = Number(el.min) || 0;
+    const max = Number(el.max) || 1;
+    el.style?.setProperty?.('--fill', `${(((v - min) / (max - min)) * 100).toFixed(1)}%`);
+    if (this._ui.lightStrengthVal) this._ui.lightStrengthVal.textContent = `${v.toFixed(1)} m`;
   }
 
   _buildLightColors() {
@@ -310,7 +323,7 @@ export class ItemEditor extends MicroVoxelEditor {
   _openLightModal() {
     this._ui.lightOn.checked = this.lightOn;
     this._ui.lightStrength.value = String(this.lightStrength);
-    this._ui.lightStrengthVal.textContent = `${this.lightStrength.toFixed(1)} m`;
+    this._paintStrength();
     this._openModal(this._ui.lightModal);
   }
 
@@ -326,6 +339,7 @@ export class ItemEditor extends MicroVoxelEditor {
     ui.solidBlocking?.classList.toggle('active', this.item.solid !== false);
     ui.solidTraversable?.classList.toggle('active', this.item.solid === false);
     if (ui.lightLabel) ui.lightLabel.textContent = this.lightOn ? `on · ${this.lightStrength.toFixed(1)} m` : 'off';
-    if (ui.lightStrengthVal) ui.lightStrengthVal.textContent = `${this.lightStrength.toFixed(1)} m`;
+    if (ui.lightStrength) ui.lightStrength.value = String(this.lightStrength);
+    this._paintStrength();
   }
 }

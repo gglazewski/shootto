@@ -68,3 +68,48 @@ export function createItemGeometry(THREE, microVoxels, opts = {}) {
   geo.computeBoundingSphere();
   return geo;
 }
+
+/**
+ * Silhouette-hull geometry for the pickup highlight: a clone of an item's
+ * geometry carrying an `outlineDir` attribute — at each vertex the normalized
+ * average of the face normals meeting at that position. A shader pushes the
+ * vertices outward along it and draws back faces only (inverted hull), so the
+ * item shows one closed halo around its form instead of a wire over every
+ * voxel edge. Averaging by shared position keeps the inflated shell
+ * watertight where the voxel mesh has hard per-face normals.
+ * @param {import('three')} THREE
+ * @param {import('three').BufferGeometry} geo  an item geometry (createItemGeometry)
+ * @returns {import('three').BufferGeometry}  caller owns (and disposes) the clone
+ */
+export function createOutlineGeometry(THREE, geo) {
+  const out = geo.clone();
+  const pos = out.getAttribute('position');
+  const nor = out.getAttribute('normal');
+  const keyAt = (i) => `${pos.getX(i)},${pos.getY(i)},${pos.getZ(i)}`;
+  const sums = new Map();
+  for (let i = 0; i < pos.count; i++) {
+    const k = keyAt(i);
+    let s = sums.get(k);
+    if (!s) sums.set(k, (s = [0, 0, 0]));
+    s[0] += nor.getX(i);
+    s[1] += nor.getY(i);
+    s[2] += nor.getZ(i);
+  }
+  const dirs = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    let [x, y, z] = sums.get(keyAt(i));
+    let len = Math.hypot(x, y, z);
+    if (len < 1e-6) {
+      // Opposing faces cancelled out — fall back to this vertex's own normal.
+      x = nor.getX(i);
+      y = nor.getY(i);
+      z = nor.getZ(i);
+      len = Math.hypot(x, y, z) || 1;
+    }
+    dirs[i * 3] = x / len;
+    dirs[i * 3 + 1] = y / len;
+    dirs[i * 3 + 2] = z / len;
+  }
+  out.setAttribute('outlineDir', new THREE.BufferAttribute(dirs, 3));
+  return out;
+}

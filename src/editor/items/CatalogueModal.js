@@ -13,6 +13,7 @@
 // search text → the modal.
 
 import { buildItemSwatch } from './itemSwatch.js';
+import { closeX } from '../closeX.js';
 
 export class CatalogueModal {
   /**
@@ -44,6 +45,7 @@ export class CatalogueModal {
     this.count.className = 'cat-count';
     head.appendChild(this.count);
     panel.appendChild(head);
+    panel.appendChild(closeX(doc, () => this.hide()));
 
     const bar = doc.createElement('div');
     bar.className = 'cat-bar';

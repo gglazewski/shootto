@@ -282,11 +282,20 @@ default 8×8×8 cells at a fixed 6.25 cm cell) instead of one fixed size. The
 Volume presets cover the common silhouettes — Sidearm 8×8×8 (0.5 m), Long gun
 8×8×16 (1 m — shotguns, rifles), Spear 8×8×24 (1.5 m), Axe 8×16×8 (1 m tall) —
 and the Cells steppers allow any 4–32 cells per axis (Z is the direction the
-weapon points). Resizing keeps the sculpture centred; a shrink the content
-wouldn't survive is refused, never silently cropped. Held-item rendering is
-grip-relative, so long weapons aim, fire and swing correctly; old item files
-without a `grid` load as the classic 8×8×8. The F3 editor also has Grip (`G`)
-and Muzzle (`M`) tools plus `R` to rotate the forward direction.
+weapon points). Like the prefab editor, the ◧/◨ toggles beside each stepper
+pick which wall a resize moves (the sculpture stays anchored to the still
+wall) and **Crop** shrinks the volume to the painted voxels; a shrink the
+content wouldn't survive is refused, never silently cropped. Held-item
+rendering is grip-relative, so long weapons aim, fire and swing correctly;
+old item files without a `grid` load as the classic 8×8×8. The F3 editor also
+has Grip (`G`) and Muzzle (`M`) tools plus `R` to rotate the forward
+direction.
+
+Placed in the world, an equippable item takes its **resting pose**: the art
+is cropped to its painted voxels and laid flat on the surface (its thinnest
+axis turns upright — a pistol lies on its side), and its footprint follows
+that pose. Aiming at it in the game draws a shader halo around the item's
+silhouette; `E` picks it up.
 
 To place a saved object in the world, open the inventory (`E`), click it under
 **Placeable Objects**, then `LMB`/`RMB` places/removes it like a block. The

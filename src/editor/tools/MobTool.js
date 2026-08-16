@@ -15,7 +15,20 @@ export class MobTool extends Tool {
   constructor(ctx) {
     super({ id: 'mob', name: 'Mobs', ctx });
     this.typeId = listMobs()[0]?.id ?? 'imp';
+    /** Settings new spawns are placed with (see World.addMobSpawn). Filled by
+     *  middle-clicking an existing spawner beacon ("copy spawner"), cleared
+     *  when cycling to a different mob type. */
+    this.settings = { loot: null, delay: null };
     this.lastAction = '';
+  }
+
+  /** Copy a spawner: aim the tool at this type + settings (middle-click). */
+  copyFrom(spawn) {
+    this.typeId = spawn.type;
+    this.settings = {
+      loot: spawn.loot ? [...spawn.loot] : null,
+      delay: spawn.delay ? [...spawn.delay] : null,
+    };
   }
 
   /** Cell where the spawn would go (adjacent to the hovered face). */
@@ -62,7 +75,7 @@ export class MobTool extends Tool {
       Notice.warn('Cannot place a mob inside a block');
       return;
     }
-    const cmd = addMobSpawnCommand(this.ctx.world, { type: this.typeId, cell });
+    const cmd = addMobSpawnCommand(this.ctx.world, { type: this.typeId, cell, settings: this.settings });
     if (!cmd.do()) {
       Notice.warn('A mob spawn is already here');
       return;
@@ -78,6 +91,7 @@ export class MobTool extends Tool {
     if (!mobs.length) return;
     const i = mobs.findIndex((m) => m.id === this.typeId);
     this.typeId = mobs[(i + 1) % mobs.length].id;
+    this.settings = { loot: null, delay: null }; // copied settings don't outlive their type
     Notice.info(`Mob: ${getMob(this.typeId).name}`);
   }
 

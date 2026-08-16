@@ -6,6 +6,8 @@
 // toolbar so blocks always look consistent. Opening frees the pointer lock
 // (wired in App); `onClose` lets the caller re-lock it when the panel closes.
 
+import { closeX } from './closeX.js';
+
 export class Inventory {
   /**
    * @param {object} deps
@@ -40,6 +42,7 @@ export class Inventory {
     const title = document.createElement('h2');
     title.textContent = 'Inventory';
     panel.appendChild(title);
+    panel.appendChild(closeX(document, () => this.hide()));
 
     const grid = document.createElement('div');
     grid.className = 'inventory-grid';

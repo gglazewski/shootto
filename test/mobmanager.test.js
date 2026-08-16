@@ -381,3 +381,75 @@ test('a pack of two never flanks', () => {
   for (let i = 0; i < 5; i++) mgr.update(0.1, player);
   assert.ok(mgr.mobs.every((m) => m.flankRole === 'direct'), 'both charge — no lone flanker');
 });
+
+test('a cleared spawn point respawns — but only away from the player and off-screen', () => {
+  const world = new World();
+  for (let x = 0; x < 48; x += 2) {
+    for (let z = 0; z < 48; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
+  }
+  world.addMobSpawn('imp', 10, 2, 10); // world (5.25, 1.0, 5.25)
+
+  const mgr = makeManager(world);
+  mgr.rebuild();
+  assert.equal(mgr.mobs.length, 1);
+  assert.equal(mgr.respawns.length, 1, 'the spawn point registers a respawn entry');
+  const r = mgr.respawns[0];
+  r.clearRadius = 12; // pin the rolled radius so the test is deterministic
+
+  // Kill the mob while standing next to the spawn.
+  const near = { x: 6.25, y: 1.0, z: 6.25 };
+  mgr.mobs[0].takeDamage(9999, near);
+  mgr.update(0.1, near);
+  assert.equal(r.alive, 0, 'the point counts as cleared the moment its mob dies');
+  assert.ok(r.timer > 0, 'clearing arms a respawn countdown');
+  const armed = r.timer;
+
+  // Camping inside the proximity radius holds the countdown.
+  for (let i = 0; i < 10; i++) mgr.update(1, near);
+  assert.equal(r.timer, armed, 'the countdown must not run while the player is close');
+
+  // Far away but STARING at the spawn: the countdown runs out, yet nothing
+  // may pop in on screen.
+  const far = { x: 25.25, y: 1.0, z: 5.25 }; // 20 m east of the spawn
+  const staring = { x: -1, z: 0 }; // facing west, straight at it
+  for (let i = 0; i < 120; i++) mgr.update(1, far, staring);
+  assert.ok(r.timer <= 0, 'the countdown runs while the player is away');
+  assert.equal(mgr.mobs.length, 0, 'no respawn while the spawn sits in the view cone');
+
+  // The moment the player faces away, the wave lands.
+  mgr.update(1, far, { x: 1, z: 0 });
+  assert.equal(mgr.mobs.length, 1, 'looking away releases the wave');
+  assert.equal(r.alive, 1);
+  assert.equal(mgr.mobs[0]._respawn, r, 'the new mob counts against its spawn point');
+});
+
+test('spawner settings reach the respawn entry: loot pool + delay range', () => {
+  const world = new World();
+  for (let x = 0; x < 48; x += 2) {
+    for (let z = 0; z < 48; z += 2) world.place('grass', SIZE.BIG, x, 0, z);
+  }
+  world.addMobSpawn('imp', 10, 2, 10, { loot: ['bat'], delay: [3, 3] });
+  world.addMobSpawn('imp', 30, 2, 30);
+
+  const mgr = makeManager(world);
+  mgr.rebuild();
+  const tuned = mgr.respawns.find((r) => r.loot);
+  const plain = mgr.respawns.find((r) => !r.loot);
+  assert.deepEqual(tuned.loot, ['bat'], 'the loot pool rides into the game');
+  assert.deepEqual(tuned.delay, [3, 3]);
+  assert.equal(plain.loot, null, 'a plain spawner keeps the defaults');
+  assert.equal(plain.delay, null);
+  assert.deepEqual(mgr.mobs[0]._respawn.loot ?? mgr.mobs[1]._respawn.loot, ['bat'],
+    'a spawned mob can reach its spawner loot pool via its respawn entry');
+
+  // A pinned [3,3] range makes the re-arm countdown exact, not a random roll.
+  const far = { x: 40, y: 1.0, z: 5 };
+  tuned.clearRadius = 5;
+  const victim = mgr.mobs.find((m) => m._respawn === tuned);
+  victim.takeDamage(9999, far);
+  mgr.update(0.1, far);
+  // The same update that arms the countdown already runs it down by dt (the
+  // player is out of range), so the pinned 3 s roll reads 3 - 0.1 here.
+  assert.ok(Math.abs(tuned.timer - 2.9) < 1e-9,
+    `the spawner delay range overrides the default roll (timer=${tuned.timer})`);
+});

@@ -9,6 +9,8 @@
 // DOM-only (reuses the door modal's styles); the caller applies the choice
 // to the voxel and re-meshes.
 
+import { closeX } from './closeX.js';
+
 /** The three states, in display order. */
 const MODES = [
   { mode: 'on', label: '💡 On' },
@@ -77,6 +79,7 @@ export class LightModal {
     const head = doc.createElement('h2');
     head.textContent = s.name || 'Light';
     this.panel.appendChild(head);
+    this.panel.appendChild(closeX(doc, () => this.hide()));
 
     // --- state ---
     const row = doc.createElement('div');
