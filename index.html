@@ -680,6 +680,29 @@
       border: 1px solid var(--stroke-strong); border-radius: 4px; max-width: 100%;
     }
     .sign-buttons { display: flex; gap: 8px; justify-content: flex-end; }
+
+    /* ---- decal pixel editor ------------------------------------- */
+    .de-tools { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+    .de-tools .de-tool { margin-top: 0; padding: 5px 10px; }
+    .de-tools .de-tool.active { border-color: var(--accent); color: var(--accent); }
+    .de-tools input[type="color"] { width: 34px; height: 28px; margin-left: auto; }
+    .de-palette { display: flex; gap: 6px; margin-bottom: 10px; }
+    .de-swatch {
+      width: 22px; height: 22px; padding: 0; cursor: pointer;
+      border: 1px solid var(--stroke-strong); border-radius: 4px;
+    }
+    .de-swatch:hover { border-color: #fff; }
+    .de-tools .de-zoom { margin-left: 0; padding: 5px 8px; min-width: 28px; }
+    /* the wrap scrolls, so a zoomed-in canvas can outgrow the modal */
+    .decal-canvas-wrap {
+      max-width: 480px; max-height: 50vh; overflow: auto;
+      margin: 0 auto 10px; border: 1px solid var(--stroke-strong); border-radius: 4px;
+    }
+    .decal-canvas {
+      display: block; margin: 0 auto; image-rendering: pixelated;
+      background: repeating-conic-gradient(#3a3f47 0% 25%, #2a2e35 0% 50%) 0 0/16px 16px;
+      cursor: crosshair; touch-action: none;
+    }
     #ie-light-strength { width: 170px; }
     #ie-light-strength-val { min-width: 44px; text-align: right; font-variant-numeric: tabular-nums; }
 
@@ -692,12 +715,12 @@
     body.equip-mode #ui-crosshair { display: none; }
 
     /* ---- catalogues & settings modals --------------------------- */
-    #item-catalogue, #equip-catalogue, #world-browser, #splash-motion, #door-settings, #light-settings, #switch-settings, #mob-settings, #prefab-browser {
+    #item-catalogue, #equip-catalogue, #world-browser, #splash-motion, #door-settings, #light-settings, #switch-settings, #mob-settings, #object-settings, #prefab-browser {
       position: fixed; z-index: 25; inset: 0; display: none;
       align-items: center; justify-content: center; background: rgba(4, 6, 9, 0.6);
     }
-    #item-catalogue.open, #equip-catalogue.open, #world-browser.open, #splash-motion.open, #door-settings.open, #light-settings.open, #switch-settings.open, #mob-settings.open, #prefab-browser.open { display: flex; }
-    #item-catalogue .panel, #equip-catalogue .panel, #world-browser .panel, #splash-motion .panel, #door-settings .panel, #light-settings .panel, #switch-settings .panel, #mob-settings .panel, #prefab-browser .panel {
+    #item-catalogue.open, #equip-catalogue.open, #world-browser.open, #splash-motion.open, #door-settings.open, #light-settings.open, #switch-settings.open, #mob-settings.open, #object-settings.open, #prefab-browser.open { display: flex; }
+    #item-catalogue .panel, #equip-catalogue .panel, #world-browser .panel, #splash-motion .panel, #door-settings .panel, #light-settings .panel, #switch-settings .panel, #mob-settings .panel, #object-settings .panel, #prefab-browser .panel {
       position: relative;
       background: var(--surface-0); border: 1px solid var(--stroke);
       border-radius: var(--r-l); box-shadow: var(--shadow-pop);
@@ -708,7 +731,7 @@
     #item-catalogue .panel.drop-target, #equip-catalogue .panel.drop-target, #prefab-browser .panel.drop-target {
       border-color: var(--accent); box-shadow: 0 0 0 2px rgba(87, 217, 163, 0.35) inset;
     }
-    #item-catalogue h2, #equip-catalogue h2, #world-browser h2, #splash-motion h2, #door-settings h2, #light-settings h2, #switch-settings h2, #mob-settings h2, #prefab-browser h2 {
+    #item-catalogue h2, #equip-catalogue h2, #world-browser h2, #splash-motion h2, #door-settings h2, #light-settings h2, #switch-settings h2, #mob-settings h2, #object-settings h2, #prefab-browser h2 {
       margin-bottom: 12px; font-size: 16px;
       display: flex; align-items: baseline; gap: 8px;
     }
@@ -817,9 +840,9 @@
     .sm-option span { font-size: 11px; color: var(--text-dim); }
     .sm-option.active { border-color: var(--accent-strong); background: var(--accent-soft); }
 
-    /* door / light / switch / mob settings */
-    #door-settings .panel, #light-settings .panel, #switch-settings .panel, #mob-settings .panel { width: min(92vw, 380px); }
-    #mob-settings .panel { overflow-y: auto; }
+    /* door / light / switch / mob / object settings */
+    #door-settings .panel, #light-settings .panel, #switch-settings .panel, #mob-settings .panel, #object-settings .panel { width: min(92vw, 380px); }
+    #mob-settings .panel, #object-settings .panel { overflow-y: auto; }
     .mob-loot-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; }
     .mob-loot-item {
       display: flex; align-items: center; gap: 8px; padding: 4px 6px;
@@ -827,7 +850,8 @@
     }
     .mob-loot-item:hover { border-color: var(--stroke-strong); background: var(--surface-2); }
     .mob-loot-item canvas { image-rendering: pixelated; flex: 0 0 auto; }
-    #door-settings h3, #mob-settings h3 {
+    .mob-skin-thumb { height: 34px; width: auto; }
+    #door-settings h3, #mob-settings h3, #object-settings h3 {
       margin: 14px 0 8px; font-size: 10.5px; font-weight: 600;
       letter-spacing: 1.4px; text-transform: uppercase; color: var(--text-faint);
     }
@@ -1118,6 +1142,10 @@
   </div>
 
   <div id="mob-settings">
+    <div class="panel"></div>
+  </div>
+
+  <div id="object-settings">
     <div class="panel"></div>
   </div>
 

@@ -1,10 +1,10 @@
-// SaveSlots.js — three save-game slots for the playable game.
+// SaveSlots.js — LEGACY v1 save slots (localStorage + embedded WorldBundle).
 //
-// Each slot stores a full snapshot: the world + its item registry (as a
-// WorldBundle) plus the player's position/orientation, so loading a slot
-// restores exactly the state that was saved — independent of later edits to
-// the editor's map. Storage is injected (localStorage in the browser, a stub
-// in tests) so this module stays pure and testable.
+// Kept as a reader forever so old saves keep loading: LegacySaves.js imports
+// v1 slots into the v2 SaveStore (IndexedDB + WorldSnapshot) on startup.
+// Do not write new saves through this module — the game saves via
+// persistence/SaveStore.js. Storage is injected (localStorage in the
+// browser, a stub in tests) so this module stays pure and testable.
 
 export const SLOT_COUNT = 3;
 export const SAVE_FORMAT = 'voxelsave';
@@ -44,9 +44,10 @@ export function listSlots(storage) {
 }
 
 /** Build a fresh slot payload from a bundle + player state. `quests` is the
- *  serialized QuestLog, `flags` the serialized GameFlags (older saves
- *  without either load with a fresh log/store). */
-export function makeSlot({ bundle, player, stats, quests = null, flags = null }) {
+ *  serialized QuestLog, `flags` the serialized GameFlags, `containers` the
+ *  serialized ContainerStore (older saves without any of them load with a
+ *  fresh log/store/empty stashes). */
+export function makeSlot({ bundle, player, stats, quests = null, flags = null, containers = null }) {
   return {
     format: SAVE_FORMAT,
     version: SAVE_VERSION,
@@ -56,5 +57,6 @@ export function makeSlot({ bundle, player, stats, quests = null, flags = null })
     stats,
     quests,
     flags,
+    containers,
   };
 }

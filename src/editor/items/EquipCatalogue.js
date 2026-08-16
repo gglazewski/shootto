@@ -41,6 +41,11 @@ export class EquipCatalogue extends CatalogueModal {
     ];
   }
 
+  /** Cards offer a copy into the F2 object catalogue (pickable → scenery). */
+  _convertLabel() {
+    return 'To Objects';
+  }
+
   _list() {
     // Built-in quest items are code, not authored content: they don't appear
     // in the catalogue (or persist — see serializeEquipRegistry). An author's

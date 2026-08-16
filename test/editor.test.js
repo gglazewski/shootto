@@ -27,6 +27,7 @@ import { ToolRing } from '../src/editor/ToolRing.js';
 import { Toolbar } from '../src/editor/Toolbar.js';
 import { Notice, onNotice } from '../src/editor/Notice.js';
 import { tileFor } from '../src/engine/VoxelTypes.js';
+import { packedAtlasUV, POS_QUANT } from '../src/engine/ChunkMeshBuilder.js';
 import { renderAtlasRGBA, generateTilePixels, tilesForBlocks, listTileNames, TILE_SIZE, ATLAS_WIDTH, ATLAS_HEIGHT } from '../src/textures/TextureAtlas.js';
 
 // --- pure helpers ---
@@ -1176,7 +1177,10 @@ test('ChunkMesh builds geometry from the builder output', () => {
   const hasVerts = mesh.update();
   assert.equal(hasVerts, true);
   assert.ok(mesh.geometry.attributes.position.count > 0);
-  assert.ok(mesh.geometry.attributes.color.count > 0);
+  assert.ok(mesh.geometry.attributes.shade.count > 0);
+  // packed geometry: positions quantized ints, shade normalized bytes
+  assert.ok(mesh.geometry.attributes.position.array instanceof Int16Array);
+  assert.ok(mesh.geometry.attributes.shade.array instanceof Uint8Array);
 });
 
 test('ChunkMesh can be emptied after removal', () => {
@@ -1217,17 +1221,24 @@ test('every block face maps its UVs to the correct atlas tile', () => {
     wood: { u: [0.25, 0.5], v: [0, 0.5] },      // wood_top (py/ny face)
   };
 
+  // Packed geometry: positions are chunk-local quantized cells, normals Int8,
+  // and the effective atlas UV is decoded from uvLocal + tileInfo with the
+  // same math the packed shader runs.
   const pos = mesh.geometry.attributes.position.array;
   const norm = mesh.geometry.attributes.normal.array;
-  const uv = mesh.geometry.attributes.uv.array;
+  const packedData = {
+    uvLocal: mesh.geometry.attributes.uvLocal.array,
+    tileInfo: mesh.geometry.attributes.tileInfo.array,
+  };
+  const atlasDims = { width: 4, height: 2 };
 
   for (let v = 0; v < pos.length / 3; v++) {
-    if (norm[v * 3 + 1] > 0.9) { // top face
-      const x = pos[v * 3];
+    if (norm[v * 3 + 1] > 115) { // top face (Int8-normalized +y)
+      const x = (pos[v * 3] / POS_QUANT) * 0.5; // quantized cells -> meters
       for (const t of types) {
         const blockX = types.indexOf(t); // small block at world x = index
         if (x >= blockX - 0.001 && x < blockX + 0.5 && !region[t].verified) {
-          const [u, vv] = [uv[v * 2], uv[v * 2 + 1]];
+          const [u, vv] = packedAtlasUV(packedData, v, atlasDims);
           assert.ok(u >= region[t].u[0] && u <= region[t].u[1], `${t} top face u out of range`);
           assert.ok(vv >= region[t].v[0] && vv <= region[t].v[1], `${t} top face v out of range`);
           region[t].verified = true;

@@ -194,7 +194,7 @@ export function translatePrefabContent(world, shift) {
   for (const it of items) world.placeItem(it.itemId, it.cells, it.anchor[0] + dx, it.anchor[1] + dy, it.anchor[2] + dz, it.rotation);
   for (const d of decals) world.placeDecal(d.decalId, d.cell[0] + dx, d.cell[1] + dy, d.cell[2] + dz, d.face, d.rotation);
   for (const p of paint) world.paintFace(p.x + dx, p.y + dy, p.z + dz, p.face, p.type);
-  for (const s of mobs) world.addMobSpawn(s.type, s.x + dx, s.y + dy, s.z + dz);
+  for (const s of mobs) world.addMobSpawn(s.type, s.x + dx, s.y + dy, s.z + dz, s);
   for (const s of npcs) world.addNpcSpawn(s.type, s.x + dx, s.y + dy, s.z + dz);
   return voxels.length + items.length + decals.length + mobs.length + npcs.length;
 }

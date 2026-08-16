@@ -45,10 +45,17 @@ no browser storage in between.
   **fists**; `LMB` attacks with whatever is in hand (a melee swing — blocks are
   not destructible). `F` uses the injection if one is equipped (heals, consumes
   it).
+- **Storage containers:** in the editor, click a placed object and tick
+  **Storage container** — in game `E` opens its stash: a grid like the
+  backpack (`B`) where you click or drag items and whole material stacks
+  between the container, your backpack and your equipment slots (drop a stored
+  weapon straight onto a slot to equip it). Contents ride with the save slots,
+  so furniture in your base works as a persistent hoard.
 - **Save / Load (3 slots):** `Esc` opens the pause menu with three slots. A
   save snapshots the whole world (map + objects) plus your position/orientation
-  **and** health/armor/equipment, so loading a slot restores exactly what was
-  saved. Slots live in `localStorage` under `voxelgame.save.0..2`.
+  **and** health/armor/equipment and every storage container's stash, so
+  loading a slot restores exactly what was saved. Slots live in `localStorage`
+  under `voxelgame.save.0..2`.
 
 To share data between the editor and the game, run both off the dev server:
 `npm run server`, then `http://localhost:4173/index.html` (editor) and
@@ -296,6 +303,29 @@ is cropped to its painted voxels and laid flat on the surface (its thinnest
 axis turns upright — a pistol lies on its side), and its footprint follows
 that pose. Aiming at it in the game draws a shader halo around the item's
 silhouette; `E` picks it up.
+
+### Moving art between the two catalogues
+
+Objects (`F2`) and equippable items (`F3`) are the same art — colored
+micro-voxels on the same 6.25 cm lattice — in two different envelopes, so a
+sculpture can be sent either way without rebuilding it. Every catalogue card
+carries the transfer button:
+
+* **To Items** (Object Catalogue) copies a placeable object into the equipment
+  catalogue as a **quest item**, so a piece of scenery — a veg box, a toolbox —
+  becomes something the player can be sent to fetch. The build volume shrinks
+  to the sculpture's bounding box, which then sits centred on the volume floor;
+  open it in `F3` to change the kind (weapon / ammo / armor / material), set the
+  grip and tune the stats.
+* **To Objects** (Equipment Catalogue) copies an equippable item into the object
+  catalogue as a blocking prop on the smallest whole-cell footprint that holds
+  it — a way to dress a scene with the weapons and gear you already sculpted.
+
+Both directions **copy**: the original stays in its own catalogue and the copy
+gets a fresh id, unique across both (world placements resolve ids in one shared
+space). What the other side cannot express is dropped, and the toast says so —
+an object's light has no equipment equivalent, and a shape longer than the
+32-cell equipment volume is cropped to fit.
 
 To place a saved object in the world, open the inventory (`E`), click it under
 **Placeable Objects**, then `LMB`/`RMB` places/removes it like a block. The
@@ -563,9 +593,14 @@ Optional fields on the block def:
   alpha cutouts in the opaque pass, so overlapping see-through blocks never
   blend in the wrong order. The block still occupies its full cell for
   collision.
+- `shape: 'cross'` — two crossed diagonal cutout quads spanning the block
+  (bushes, plants): the same X the grass ground cover sprouts, as a placeable
+  block. No rotation (the X is symmetric); occupies its full cell for
+  collision; takes no decals, paint or slab variants.
 - `shootThrough: true` — attack rays (bullets and melee swings) pass through
   the block and hit whatever is behind it; movement is still blocked. Used
-  with `shape: 'pane'` so you can fight through fences and barricades.
+  with `shape: 'pane'` (fences, barricades) and `shape: 'cross'` (bushes) so
+  you can fight through them.
 
 It then appears in the hotbar, inventory, meshing and save files
 automatically. Old maps that reference unknown ids load with a warning.

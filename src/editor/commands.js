@@ -193,7 +193,8 @@ export function cubeDeleteCommand(world, { voxels, items }, onChange) {
         world.place(v.type, v.size, v.anchor[0], v.anchor[1], v.anchor[2], v.rotation ?? 0, v.variant ?? null);
       }
       for (const it of removedItems) {
-        world.placeItem(it.itemId, it.cells, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0);
+        // the record doubles as settings: authored loot/storage ride along
+        world.placeItem(it.itemId, it.cells, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0, it);
       }
       if (removedItems.length) onChange?.();
       removedVoxels = [];
@@ -295,7 +296,7 @@ export function prefabResizeCommand(world, { dims, prevDims, shift, apply }) {
  * @param {() => void} [onChange]
  */
 export function removeItemCommand(world, item, onChange) {
-  const { itemId, cells, anchor, rotation = 0 } = item;
+  const { itemId, cells, anchor, rotation = 0, loot = null, storage = false } = item;
   return {
     description: `Remove item ${itemId}`,
     do() {
@@ -304,7 +305,8 @@ export function removeItemCommand(world, item, onChange) {
       return ok;
     },
     undo() {
-      world.placeItem(itemId, cells, anchor[0], anchor[1], anchor[2], rotation);
+      // authored search-loot/storage settings ride the placement — restore them too
+      world.placeItem(itemId, cells, anchor[0], anchor[1], anchor[2], rotation, loot || storage ? { loot, storage } : null);
       onChange?.();
     },
   };
@@ -313,7 +315,7 @@ export function removeItemCommand(world, item, onChange) {
 /**
  * @param {object} world
  * @param {{type:string, cell:[number,number,number], settings?:object}} spec
- *   `settings` = per-spawner loot/delay (see World.addMobSpawn)
+ *   `settings` = per-spawner loot/delay/skins (see World.addMobSpawn)
  */
 export function addMobSpawnCommand(world, { type, cell, settings }) {
   return {

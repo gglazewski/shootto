@@ -52,9 +52,17 @@ const DEFAULT_SKIN = MOB_SKINS[0];
  *  wheelchair) never shamble out of a spawn point. */
 export const SPAWN_SKINS = Object.freeze(MOB_SKINS.filter((s) => !NPC_ONLY_SHEETS.includes(s)));
 
-/** A random character for a freshly spawned mob. @param {() => number} [rng] */
-export function randomMobSkin(rng = Math.random) {
-  return SPAWN_SKINS[Math.floor(rng() * SPAWN_SKINS.length) % SPAWN_SKINS.length];
+/**
+ * A random character for a freshly spawned mob.
+ * @param {() => number} [rng]
+ * @param {string[]|null} [pool]  restrict the pick to these characters (a
+ *   spawner's authored `skins` setting); unknown names are ignored, and an
+ *   empty/absent pool falls back to every spawnable character.
+ */
+export function randomMobSkin(rng = Math.random, pool = null) {
+  const picks = pool?.filter((s) => MOB_SKINS.includes(s));
+  const list = picks?.length ? picks : SPAWN_SKINS;
+  return list[Math.floor(rng() * list.length) % list.length];
 }
 
 /** Decoded strips, shared by every sheet built from them. Keyed by skin name. */

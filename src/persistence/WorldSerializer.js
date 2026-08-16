@@ -4,7 +4,7 @@
 // load old maps:
 //   { format: 'voxelmap', version: 1, cellSize: 0.5,
 //     blocks: [{ x, y, z, size: 'small'|'big', type: <blockId> }, ...],
-//     items: [{ itemId, x, y, z, cells: [w,h,d], rotation }, ...],
+//     items: [{ itemId, x, y, z, cells: [w,h,d], rotation, loot? }, ...],
 //     mobs: [{ type, x, y, z }, ...] }
 // (item placements stored `size: 'small'|'big'` before cells footprints —
 // the reader accepts both)
@@ -16,6 +16,7 @@
 import { World } from '../engine/World.js';
 import { assertValidBlockId, getBlock, SIZE, isDecalId, isBlockId, FACES } from '../engine/VoxelTypes.js';
 import { createTextDecal, textSpecOf } from '../engine/TextDecals.js';
+import { createPixelDecal, pixelSpecOf } from '../engine/PixelDecals.js';
 import { isItemId } from '../engine/ItemRegistry.js';
 import { isEquipId, getEquipItem } from '../engine/EquipmentRegistry.js';
 import { layFlatCells } from '../engine/LayFlat.js';
@@ -25,9 +26,87 @@ import { applyDoorSettings } from '../engine/Doors.js';
 import { applyLightSettings, legacyLightSettings } from '../engine/Lights.js';
 import { canonicalDecalId } from '../engine/Switches.js';
 import { CELL_SIZE } from '../engine/Space.js';
+import { aliasId } from './idAliases.js';
 
 export const FORMAT = 'voxelmap';
 export const VERSION = 1;
+
+/** Everything in a world EXCEPT blocks and paint — the sections that stay
+ *  small (dozens of entries) however big the map grows. Shared between the
+ *  JSON map format and the binary game-save snapshot (WorldSnapshot.js). */
+export function collectSparse(world) {
+  const items = [];
+  world.forEachItem((it) => {
+    // `loot` is additive — search-loot config on container objects (pool
+    // omitted = default pool, reset omitted = never restocks).
+    items.push({
+      itemId: it.itemId,
+      x: it.anchor[0],
+      y: it.anchor[1],
+      z: it.anchor[2],
+      cells: it.cells,
+      rotation: it.rotation ?? 0,
+      ...(it.loot ? {
+        loot: {
+          ...(it.loot.pool ? { pool: [...it.loot.pool] } : {}),
+          ...(it.loot.reset != null ? { reset: it.loot.reset } : {}),
+        },
+      } : {}),
+      // `storage` is additive — a storage container the game opens as a
+      // persistent stash (contents live in save slots, not the map).
+      ...(it.storage ? { storage: true } : {}),
+    });
+  });
+  const spawn = world.spawn ? [...world.spawn] : null;
+  const mobs = [];
+  // Per-spawner settings (`loot` pool, respawn `delay` range, `skins` pool)
+  // are additive — omitted when unset so untouched maps stay byte-identical.
+  world.forEachMobSpawn((s) => mobs.push({
+    type: s.type, x: s.x, y: s.y, z: s.z,
+    ...(s.loot ? { loot: [...s.loot] } : {}),
+    ...(s.delay ? { delay: [...s.delay] } : {}),
+    ...(s.skins ? { skins: [...s.skins] } : {}),
+  }));
+  // `npcs` is additive like `mobs`, and omitted when empty so untouched maps
+  // stay byte-identical.
+  const npcs = [];
+  world.forEachNpcSpawn((s) => npcs.push({ type: s.type, x: s.x, y: s.y, z: s.z }));
+  // `decals` is additive — readers that ignore it still load the map.
+  // Text signs also write their specs (`textDecals`) so a loading engine can
+  // re-register the runtime decals the placements reference; the field is
+  // omitted when no sign is placed, keeping untouched maps byte-identical.
+  const decals = [];
+  const textDecals = new Map();
+  const pixelDecals = new Map();
+  world.forEachDecal((d) => {
+    // A switch caught showing its ON art stores the canonical OFF id —
+    // its state lives in the game's flag store, not the map.
+    decals.push({
+      id: canonicalDecalId(d.decalId), x: d.cell[0], y: d.cell[1], z: d.cell[2], face: d.face,
+      ...(d.rotation ? { rotation: d.rotation } : {}),
+      ...(d.flag ? { flag: d.flag } : {}),
+      ...(d.startOn ? { startOn: true } : {}),
+    });
+    const spec = textSpecOf(d.decalId);
+    if (spec && !textDecals.has(d.decalId)) textDecals.set(d.decalId, { id: d.decalId, ...spec });
+    const pspec = pixelSpecOf(d.decalId);
+    if (pspec && !pixelDecals.has(d.decalId)) pixelDecals.set(d.decalId, { id: d.decalId, ...pspec });
+  });
+  // `splashCams` is additive — authored menu-camera shots ride with the map.
+  const splashCams = [];
+  world.forEachSplashCam((c) => splashCams.push({
+    id: c.id, pos: [...c.pos], yaw: c.yaw, pitch: c.pitch,
+    ...(c.fov ? { fov: c.fov } : {}),
+    ...(c.motion ? { motion: c.motion } : {}),
+  }));
+  return {
+    spawn, spawnYaw: world.spawnYaw ?? 0,
+    items, mobs, npcs, decals,
+    textDecals: [...textDecals.values()],
+    pixelDecals: [...pixelDecals.values()],
+    splashCams,
+  };
+}
 
 /** @returns {string} JSON text of the world. */
 export function serialize(world) {
@@ -52,67 +131,20 @@ export function serialize(world) {
       ...(v.lightFlag ? { lightFlag: v.lightFlag } : {}),
     });
   });
-  const items = [];
-  world.forEachItem((it) => {
-    items.push({
-      itemId: it.itemId,
-      x: it.anchor[0],
-      y: it.anchor[1],
-      z: it.anchor[2],
-      cells: it.cells,
-      rotation: it.rotation ?? 0,
-    });
-  });
-  const spawn = world.spawn ? [...world.spawn] : null;
-  const mobs = [];
-  // Per-spawner settings (`loot` pool + respawn `delay` range) are additive —
-  // omitted when unset so untouched maps stay byte-identical.
-  world.forEachMobSpawn((s) => mobs.push({
-    type: s.type, x: s.x, y: s.y, z: s.z,
-    ...(s.loot ? { loot: [...s.loot] } : {}),
-    ...(s.delay ? { delay: [...s.delay] } : {}),
-  }));
-  // `npcs` is additive like `mobs`, and omitted when empty so untouched maps
-  // stay byte-identical.
-  const npcs = [];
-  world.forEachNpcSpawn((s) => npcs.push({ type: s.type, x: s.x, y: s.y, z: s.z }));
-  // `decals` is additive — readers that ignore it still load the map.
-  // Text signs also write their specs (`textDecals`) so a loading engine can
-  // re-register the runtime decals the placements reference; the field is
-  // omitted when no sign is placed, keeping untouched maps byte-identical.
-  const decals = [];
-  const textDecals = new Map();
-  world.forEachDecal((d) => {
-    // A switch caught showing its ON art stores the canonical OFF id —
-    // its state lives in the game's flag store, not the map.
-    decals.push({
-      id: canonicalDecalId(d.decalId), x: d.cell[0], y: d.cell[1], z: d.cell[2], face: d.face,
-      ...(d.rotation ? { rotation: d.rotation } : {}),
-      ...(d.flag ? { flag: d.flag } : {}),
-      ...(d.startOn ? { startOn: true } : {}),
-    });
-    const spec = textSpecOf(d.decalId);
-    if (spec && !textDecals.has(d.decalId)) textDecals.set(d.decalId, { id: d.decalId, ...spec });
-  });
   // `paint` is additive — per-face texture overrides. Omitted when nothing is
   // painted, so untouched maps stay byte-identical.
   const paint = [];
   world.forEachPaint?.((p) => paint.push({ x: p.x, y: p.y, z: p.z, face: p.face, type: p.type }));
-  // `splashCams` is additive — authored menu-camera shots ride with the map.
-  const splashCams = [];
-  world.forEachSplashCam((c) => splashCams.push({
-    id: c.id, pos: [...c.pos], yaw: c.yaw, pitch: c.pitch,
-    ...(c.fov ? { fov: c.fov } : {}),
-    ...(c.motion ? { motion: c.motion } : {}),
-  }));
+  const { spawn, spawnYaw, items, mobs, npcs, decals, textDecals, pixelDecals, splashCams } = collectSparse(world);
   // Compact JSON: maps can hold a lot of voxels, and the file is written on
   // every autosave — the pretty-printed form doubled the bytes for no reader.
   return JSON.stringify({
-    format: FORMAT, version: VERSION, cellSize: CELL_SIZE, spawn, spawnYaw: world.spawnYaw ?? 0,
+    format: FORMAT, version: VERSION, cellSize: CELL_SIZE, spawn, spawnYaw,
     blocks, items, mobs, decals,
     ...(npcs.length ? { npcs } : {}),
     ...(paint.length ? { paint } : {}),
-    ...(textDecals.size ? { textDecals: [...textDecals.values()] } : {}),
+    ...(textDecals.length ? { textDecals } : {}),
+    ...(pixelDecals.length ? { pixelDecals } : {}),
     ...(splashCams.length ? { splashCams } : {}),
   });
 }
@@ -124,13 +156,21 @@ export function serialize(world) {
  *   that DID load, so callers must keep it rather than start over.
  */
 export function deserialize(text) {
-  const errors = [];
   let data;
   try {
     data = JSON.parse(text);
   } catch (e) {
     return { world: new World(), errors: [`Invalid JSON: ${e.message}`], fatal: true };
   }
+  return deserializeData(data);
+}
+
+/** The same tolerant loader, from an already-parsed data object — used by
+ *  game-save snapshots (WorldSnapshot.js) so multi-MB worlds never round-trip
+ *  through JSON text. Renamed content ids are mapped through the alias table
+ *  (idAliases.js) here, so every load path — maps and saves — benefits. */
+export function deserializeData(data) {
+  const errors = [];
   if (!data || data.format !== FORMAT) {
     return { world: new World(), errors: ['Not a voxelmap file'], fatal: true };
   }
@@ -154,6 +194,7 @@ export function deserialize(text) {
       errors.push('Skipped malformed block entry');
       continue;
     }
+    if (aliasId(b.type) !== b.type) b = { ...b, type: aliasId(b.type) };
     // Maps from the one-block-per-state era: *_blink ids load as the unified
     // light with its mode authored to 'flicker'.
     const legacy = legacyLightSettings(b.type);
@@ -177,11 +218,12 @@ export function deserialize(text) {
     applyLightSettings(world.get(b.x, b.y, b.z), b);
   }
   if (Array.isArray(data.items)) {
-    for (const it of data.items) {
+    for (let it of data.items) {
       if (!it || typeof it.x !== 'number' || typeof it.y !== 'number' || typeof it.z !== 'number' || typeof it.itemId !== 'string') {
         errors.push('Skipped malformed item entry');
         continue;
       }
+      if (aliasId(it.itemId) !== it.itemId) it = { ...it, itemId: aliasId(it.itemId) };
       // v2 placements carry a cells footprint; v1 stored 'small'/'big'
       // (placeItem coerces either via footprintCells).
       const cells = Array.isArray(it.cells) ? it.cells : it.size;
@@ -197,9 +239,21 @@ export function deserialize(text) {
       // cells), fall back to the stored one rather than drop the item.
       const equip = !isItemId(it.itemId) && isEquipId(it.itemId) ? getEquipItem(it.itemId) : null;
       const flatCells = equip ? layFlatCells(equip) : null;
+      // Additive search-loot / storage config; malformed entries load as
+      // plain scenery.
+      const loot = it.loot && typeof it.loot === 'object'
+        ? {
+            pool: Array.isArray(it.loot.pool) ? it.loot.pool.filter((id) => typeof id === 'string') : null,
+            reset: Number.isFinite(it.loot.reset) && it.loot.reset > 0 ? it.loot.reset : null,
+          }
+        : null;
+      const storage = it.storage === true;
+      const settings = loot || storage
+        ? { ...(loot ? { loot } : {}), ...(storage ? { storage: true } : {}) }
+        : null;
       const placed =
-        (flatCells && world.placeItem(it.itemId, flatCells, it.x, it.y, it.z, rotation)) ||
-        world.placeItem(it.itemId, cells, it.x, it.y, it.z, rotation);
+        (flatCells && world.placeItem(it.itemId, flatCells, it.x, it.y, it.z, rotation, settings)) ||
+        world.placeItem(it.itemId, cells, it.x, it.y, it.z, rotation, settings);
       if (!placed) {
         errors.push(`Skipped overlapping item ${it.itemId} at ${it.x},${it.y},${it.z}`);
       }
@@ -219,12 +273,25 @@ export function deserialize(text) {
       }
     }
   }
+  // Drawn decals re-register the same way, before placements reference them.
+  if (Array.isArray(data.pixelDecals)) {
+    for (const p of data.pixelDecals) {
+      if (!p || typeof p.id !== 'string' || typeof p.px !== 'string' || !/^decal_pix_[a-z0-9]+$/.test(p.id)) {
+        errors.push('Skipped malformed pixel decal definition');
+        continue;
+      }
+      if (!createPixelDecal(p, { id: p.id })) {
+        errors.push(`Skipped pixel decal ${p.id}: bad pixel data`);
+      }
+    }
+  }
   if (Array.isArray(data.decals)) {
-    for (const d of data.decals) {
+    for (let d of data.decals) {
       if (!d || typeof d.x !== 'number' || typeof d.y !== 'number' || typeof d.z !== 'number' || typeof d.id !== 'string') {
         errors.push('Skipped malformed decal entry');
         continue;
       }
+      if (aliasId(d.id) !== d.id) d = { ...d, id: aliasId(d.id) };
       if (!isDecalId(d.id)) {
         errors.push(`Skipped decal ${d.id} (not registered)`);
         continue;
@@ -247,11 +314,12 @@ export function deserialize(text) {
   // Paint loads AFTER blocks (a painted face needs its block) and is dropped
   // silently-per-entry: a face whose block did not load keeps no paint.
   if (Array.isArray(data.paint)) {
-    for (const p of data.paint) {
+    for (let p of data.paint) {
       if (!p || typeof p.x !== 'number' || typeof p.y !== 'number' || typeof p.z !== 'number' || typeof p.type !== 'string') {
         errors.push('Skipped malformed paint entry');
         continue;
       }
+      if (aliasId(p.type) !== p.type) p = { ...p, type: aliasId(p.type) };
       if (!isBlockId(p.type)) {
         errors.push(`Skipped paint ${p.type} (not a known block)`);
         continue;
@@ -266,11 +334,12 @@ export function deserialize(text) {
     }
   }
   if (Array.isArray(data.mobs)) {
-    for (const m of data.mobs) {
+    for (let m of data.mobs) {
       if (!m || typeof m.x !== 'number' || typeof m.y !== 'number' || typeof m.z !== 'number' || typeof m.type !== 'string') {
         errors.push('Skipped malformed mob spawn');
         continue;
       }
+      if (aliasId(m.type) !== m.type) m = { ...m, type: aliasId(m.type) };
       if (!isMobId(m.type)) {
         errors.push(`Skipped mob spawn ${m.type} (not registered)`);
         continue;
@@ -280,6 +349,7 @@ export function deserialize(text) {
         delay: Array.isArray(m.delay) && m.delay.length === 2
           && Number.isFinite(m.delay[0]) && Number.isFinite(m.delay[1])
           ? m.delay : null,
+        skins: Array.isArray(m.skins) ? m.skins.filter((id) => typeof id === 'string') : null,
       };
       if (!world.addMobSpawn(m.type, m.x, m.y, m.z, settings)) {
         errors.push(`Skipped duplicate mob spawn at ${m.x},${m.y},${m.z}`);
@@ -287,11 +357,12 @@ export function deserialize(text) {
     }
   }
   if (Array.isArray(data.npcs)) {
-    for (const n of data.npcs) {
+    for (let n of data.npcs) {
       if (!n || typeof n.x !== 'number' || typeof n.y !== 'number' || typeof n.z !== 'number' || typeof n.type !== 'string') {
         errors.push('Skipped malformed NPC spawn');
         continue;
       }
+      if (aliasId(n.type) !== n.type) n = { ...n, type: aliasId(n.type) };
       if (!isNpcId(n.type)) {
         errors.push(`Skipped NPC spawn ${n.type} (not registered)`);
         continue;

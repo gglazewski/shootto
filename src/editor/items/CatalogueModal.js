@@ -6,10 +6,13 @@
 // also be dropped anywhere onto the open modal — the scrollable card grid
 // and the empty state. Cards are keyboard-focusable (Enter/Space
 // activates) and Delete is a two-step confirm so a stray click can't wipe an
-// item from the registry everywhere.
+// item from the registry everywhere. Cards can also carry a convert action
+// that copies the entry into the sibling catalogue (an object becomes a
+// pickable item and back — see engine/itemConvert.js).
 //
 // Subclasses supply the item list (_list), the per-card meta line (_meta) and
-// optionally the filter chips (_filters). Escape peels back one layer:
+// optionally the filter chips (_filters) and convert label (_convertLabel).
+// Escape peels back one layer:
 // search text → the modal.
 
 import { buildItemSwatch } from './itemSwatch.js';
@@ -21,7 +24,8 @@ export class CatalogueModal {
    * @param {Document} [deps.doc]
    * @param {HTMLElement} deps.container  the modal root
    * @param {object} [deps.callbacks]
-   *   { onCard(id), onEdit(id), onExport(id), onDelete(id), onImport(text) }
+   *   { onCard(id), onEdit(id), onExport(id), onConvert(id), onDelete(id),
+   *     onImport(text) }
    * @param {string} deps.title      panel heading
    * @param {string} deps.emptyText  hint shown when the registry is empty
    * @param {string} deps.cardHint   tooltip suffix, e.g. 'click to select'
@@ -177,6 +181,12 @@ export class CatalogueModal {
     return [];
   }
 
+  /** Label of the "copy into the other catalogue" card action (see
+   *  engine/itemConvert.js), or null to leave the action off the cards. */
+  _convertLabel() {
+    return null;
+  }
+
   /** Read each .json file and hand its text to the import callback. */
   _importFiles(files) {
     for (const f of files ?? []) {
@@ -272,6 +282,8 @@ export class CatalogueModal {
     };
     mk('Edit', () => this.cb.onEdit?.(item.id));
     mk('Export', () => this.cb.onExport?.(item.id));
+    const convertLabel = this._convertLabel();
+    if (convertLabel && this.cb.onConvert) mk(convertLabel, () => this.cb.onConvert(item.id));
 
     let armed = null;
     const del = mk('Delete', () => {

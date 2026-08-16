@@ -18,7 +18,7 @@ export class MobTool extends Tool {
     /** Settings new spawns are placed with (see World.addMobSpawn). Filled by
      *  middle-clicking an existing spawner beacon ("copy spawner"), cleared
      *  when cycling to a different mob type. */
-    this.settings = { loot: null, delay: null };
+    this.settings = { loot: null, delay: null, skins: null };
     this.lastAction = '';
   }
 
@@ -28,6 +28,7 @@ export class MobTool extends Tool {
     this.settings = {
       loot: spawn.loot ? [...spawn.loot] : null,
       delay: spawn.delay ? [...spawn.delay] : null,
+      skins: spawn.skins ? [...spawn.skins] : null,
     };
   }
 
@@ -91,7 +92,7 @@ export class MobTool extends Tool {
     if (!mobs.length) return;
     const i = mobs.findIndex((m) => m.id === this.typeId);
     this.typeId = mobs[(i + 1) % mobs.length].id;
-    this.settings = { loot: null, delay: null }; // copied settings don't outlive their type
+    this.settings = { loot: null, delay: null, skins: null }; // copied settings don't outlive their type
     Notice.info(`Mob: ${getMob(this.typeId).name}`);
   }
 

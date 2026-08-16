@@ -35,6 +35,11 @@ export class ItemCatalogue extends CatalogueModal {
     });
   }
 
+  /** Cards offer a copy into the F3 equipment catalogue (scenery → pickable). */
+  _convertLabel() {
+    return 'To Items';
+  }
+
   _list() {
     return listItems();
   }

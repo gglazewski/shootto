@@ -38,9 +38,13 @@ export function createAtlasTexture(THREE) {
   // tile names (ground-cover tufts/flowers, which belong to no block face),
   // so the mesher can look everything up through the same callback.
   const tileIndexFor = (typeId, face) => map.get(getDecal(typeId)?.tile ?? tileFor(typeId, face) ?? typeId);
+  // Live tile-map ref for the mesh worker pool: `map` is mutated in place by
+  // paint(), `rev` tells the pool when to re-send it to its workers.
+  const tiles = { map, rev: 0 };
   const rebuild = () => {
     paint();
+    tiles.rev++;
     texture.needsUpdate = true;
   };
-  return { texture, tileIndexFor, atlas: { ...atlasDims, tileSize: TILE_SIZE }, rebuild };
+  return { texture, tileIndexFor, atlas: { ...atlasDims, tileSize: TILE_SIZE }, rebuild, tiles };
 }

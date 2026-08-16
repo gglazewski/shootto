@@ -1,11 +1,14 @@
 // MobModal.js — per-spawner settings, opened by clicking a mob spawn beacon
 // in the editor.
 //
-// Two settings ride on the spawn record (see World.addMobSpawn):
+// Three settings ride on the spawn record (see World.addMobSpawn):
 //   - loot: the pool of melee items the spawner's mobs may drop.
 //     null = default pool (every melee item), [] = drops nothing,
 //     ['id', ...] = custom pool.
 //   - delay: [min, max] respawn wait in seconds (null = game default).
+//   - skins: the drawn characters this spawner's mobs wear (nurses in a
+//     hospital, police in a station). null = any character; a non-empty
+//     list restricts every wave to those looks. Cosmetic only.
 //
 // DOM-only (reuses the door modal's styles); the caller stores the changes on
 // the spawn record. Middle-clicking a beacon copies these settings into the
@@ -14,6 +17,9 @@
 import { listEquipItems } from '../engine/EquipmentRegistry.js';
 import { buildItemSwatch } from './items/itemSwatch.js';
 import { closeX } from './closeX.js';
+import {
+  buildMobSpriteSheet, SPAWN_SKINS, SHEET_STAND_ROWS, SHEET_GROUND_ROW,
+} from '../game/mobSprites.js';
 
 /** Game-default respawn delay range, shown as input placeholders. */
 const DEFAULT_DELAY = [20, 50];
@@ -29,6 +35,7 @@ export class MobModal {
     this.container = container;
     this.onClose = null;
     this._onApply = null;
+    this._sheets = new Map(); // skin -> sprite sheet, built once per session
 
     this.panel = container.querySelector('.panel');
     container.addEventListener('click', (e) => {
@@ -46,8 +53,10 @@ export class MobModal {
 
   /**
    * Show one spawner's settings.
-   * @param {{typeName: string, loot: string[]|null, delay: [number,number]|null}} state
-   * @param {(change: {loot?: string[]|null, delay?: [number,number]|null}) => void} onApply
+   * @param {{typeName: string, loot: string[]|null, delay: [number,number]|null,
+   *          skins: string[]|null}} state
+   * @param {(change: {loot?: string[]|null, delay?: [number,number]|null,
+   *          skins?: string[]|null}) => void} onApply
    */
   open(state, onApply) {
     this._state = { ...state };
@@ -115,6 +124,42 @@ export class MobModal {
       ? `A cleared wave returns after ${s.delay[0]}–${s.delay[1]} s. Clear both fields for the default.`
       : `Default: a cleared wave returns after ${DEFAULT_DELAY[0]}–${DEFAULT_DELAY[1]} s.`;
     this.panel.appendChild(timerHint);
+
+    // --- character sprites ---
+    const skinHead = doc.createElement('h3');
+    skinHead.textContent = 'Characters';
+    this.panel.appendChild(skinHead);
+
+    const skinGrid = doc.createElement('div');
+    skinGrid.className = 'mob-loot-grid';
+    for (const skin of SPAWN_SKINS) {
+      const row = doc.createElement('label');
+      row.className = 'mob-loot-item';
+      const box = doc.createElement('input');
+      box.type = 'checkbox';
+      box.checked = !!s.skins?.includes(skin);
+      box.addEventListener('change', () => {
+        const pool = new Set(s.skins ?? []);
+        if (box.checked) pool.add(skin);
+        else pool.delete(skin);
+        // Keep SPAWN_SKINS order so the stored pool is stable; an empty pool
+        // stores null = any character (a spawner can't wear nothing).
+        const skins = SPAWN_SKINS.filter((k) => pool.has(k));
+        this._apply({ skins: skins.length ? skins : null });
+      });
+      row.appendChild(box);
+      row.appendChild(this._skinThumb(skin));
+      row.appendChild(doc.createTextNode(skin));
+      skinGrid.appendChild(row);
+    }
+    this.panel.appendChild(skinGrid);
+
+    const skinHint = doc.createElement('p');
+    skinHint.className = 'door-hint';
+    skinHint.textContent = s.skins?.length
+      ? 'This spawner only sends out the checked characters (looks only — stats come from the mob type).'
+      : 'None checked: every wave is a random mix. Check characters to restrict the look — nurses in a hospital, police in a station.';
+    this.panel.appendChild(skinHint);
 
     // --- loot pool ---
     const lootHead = doc.createElement('h3');
@@ -200,6 +245,33 @@ export class MobModal {
     close.textContent = 'Done';
     close.addEventListener('click', () => this.hide());
     this.panel.appendChild(close);
+  }
+
+  /** Canvas with the skin's idle pose, cropped to the standing rows (same
+   *  crop as the NPC palette — the full frame also holds a lying corpse). */
+  _skinThumb(skin) {
+    let sheet = this._sheets.get(skin);
+    if (!sheet) {
+      sheet = buildMobSpriteSheet(skin);
+      this._sheets.set(skin, sheet);
+    }
+    const canvas = this.doc.createElement('canvas');
+    canvas.className = 'mob-skin-thumb';
+    canvas.width = sheet.frameW;
+    canvas.height = SHEET_STAND_ROWS;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingEnabled = false;
+    const draw = () => {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(
+        sheet.canvas,
+        0, SHEET_GROUND_ROW + 1 - SHEET_STAND_ROWS, sheet.frameW, SHEET_STAND_ROWS,
+        0, 0, canvas.width, canvas.height,
+      );
+    };
+    draw(); // blank before the strip decodes…
+    sheet.ready?.then(draw).catch(() => {}); // …so repaint once the art lands
+    return canvas;
   }
 
   hide() {

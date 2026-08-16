@@ -3,15 +3,17 @@
 // a DOM canvas (browser).
 
 import { generateTilePixels, tilePixelDims, TILE_SIZE } from '../textures/TextureAtlas.js';
-import { tileFor, getDecal } from '../engine/VoxelTypes.js';
+import { tileFor, getBlock, getDecal } from '../engine/VoxelTypes.js';
 
 /**
- * Build an HTMLCanvasElement preview for a block's side tile.
+ * Build an HTMLCanvasElement preview for a block's tile: an explicit icon
+ * tile when the def names one (car parts, whose top face is plain paint),
+ * else the top tile.
  * @param {string} blockId
  * @param {number} [scale]
  */
 export function buildSwatch(blockId, scale = 4) {
-  const tile = tileFor(blockId, 'py') ?? tileFor(blockId, 'px');
+  const tile = getBlock(blockId)?.icon ?? tileFor(blockId, 'py') ?? tileFor(blockId, 'px');
   const [w, h] = tilePixelDims(tile);
   const pixels = generateTilePixels(tile);
   const canvas = document.createElement('canvas');

@@ -203,16 +203,15 @@ export class LightField {
 
   /** Build opacityData + heightMap from the world's occupied cells. */
   _buildOccupancy() {
-    for (const [k, v] of this.world.cells) {
-      if (opacityFor(v.type) < 255) continue;
-      const [x, y, z] = k.split(',').map(Number);
+    this.world.forEachCell((x, y, z, v) => {
+      if (opacityFor(v.type) < 255) return;
       const code = CODE_FOR_FILL[cellFillFor(v, y)];
-      if (code === OPEN) continue; // carved-away layer of a BIG slab
+      if (code === OPEN) return; // carved-away layer of a BIG slab
       this.opacityData[this._idx(x, y, z)] = code;
       const ci = this._colIdx(x, z);
       const top = this._shadowTop(code, y);
       if (top > this.heightMap[ci]) this.heightMap[ci] = top;
-    }
+    });
   }
 
   /** Topmost sky-blocking y in column (x,z) by scanning the opacity mirror. */

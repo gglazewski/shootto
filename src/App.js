@@ -19,6 +19,7 @@ import {
   deserializeEquipItem,
 } from './engine/EquipmentRegistry.js';
 import { MICRO_SIZE, gridOf, lightLevelForMeters, slugifyName, deserializeItem, rotateMicroPoint } from './engine/ItemTypes.js';
+import { objectToEquip, equipToObject } from './engine/itemConvert.js';
 import { createAtlasTexture } from './textures/AtlasTexture.three.js';
 import { Blinkers } from './engine/Blinkers.js';
 import { FlyControls } from './editor/FlyControls.js';
@@ -67,11 +68,13 @@ import { GameFlags, bindWorldReactions } from './game/Reactions.js';
 import { LightModal } from './editor/LightModal.js';
 import { SwitchModal } from './editor/SwitchModal.js';
 import { MobModal } from './editor/MobModal.js';
+import { ObjectModal } from './editor/ObjectModal.js';
 import { getMob } from './engine/mobTypes.js';
 import { InputDispatcher } from './editor/Input.js';
 import { ToolRing } from './editor/ToolRing.js';
 import { Notice, onNotice } from './editor/Notice.js';
 import { SignModal } from './editor/SignModal.js';
+import { DecalEditor } from './editor/DecalEditor.js';
 import { WorldBrowser } from './editor/WorldBrowser.js';
 import { PrefabTool } from './editor/tools/PrefabTool.js';
 import { PaintTool } from './editor/tools/PaintTool.js';
@@ -87,6 +90,7 @@ import { stampPrefab, flipPlacement } from './engine/PrefabStamp.js';
 import { SplashCamMarker } from './editor/SplashCamMarker.js';
 import { SplashMotionModal, SPLASH_MOTIONS } from './editor/SplashMotionModal.js';
 import { createTextDecal } from './engine/TextDecals.js';
+import { createPixelDecal } from './engine/PixelDecals.js';
 import { GameLoop } from './GameLoop.js';
 import { PersistenceService } from './PersistenceService.js';
 import { CONFIG } from './config.js';
@@ -111,9 +115,9 @@ export class App {
     this.blinkers = new Blinkers(this.world);
     this.webgl = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
     this.container.appendChild(this.webgl.domElement);
-    const { texture, tileIndexFor, atlas, rebuild } = createAtlasTexture(THREE);
+    const { texture, tileIndexFor, atlas, rebuild, tiles } = createAtlasTexture(THREE);
     this.rebuildAtlas = rebuild;
-    this.renderer = new Renderer({ THREE, webgl: this.webgl, world: this.world, atlasTexture: texture, tileIndexFor, atlas });
+    this.renderer = new Renderer({ THREE, webgl: this.webgl, world: this.world, atlasTexture: texture, tileIndexFor, atlas, tiles });
 
     // --- editor state / history ---
     this.state = new EditorState({
@@ -197,11 +201,15 @@ export class App {
         onCard: (id) => this._catalogueCard(id),
         onEdit: (id) => this._editItem(id),
         onExport: (id) => this._exportItem(id),
+        onConvert: (id) => this._objectToEquip(id),
         onDelete: (id) => this._deleteItem(id),
         onImport: (text) => this._importItem(text),
       },
     });
     this.catalogue.onClose = () => {
+      // A catalogue transfer hands off to the sibling modal — don't grab the
+      // pointer back while that one is on screen.
+      if (this.equipCatalogue?.isOpen) return;
       // Restore pointer lock in the world editor so editing resumes right away.
       if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
     };
@@ -286,6 +294,10 @@ export class App {
     // Clicking a mob spawn beacon opens its loot pool / respawn timer settings.
     this.mobModal = new MobModal({ doc, container: this.doc.querySelector('#mob-settings') });
     this.mobModal.onClose = this.doorModal.onClose;
+
+    // Clicking a placed object opens its search-loot settings.
+    this.objectModal = new ObjectModal({ doc, container: this.doc.querySelector('#object-settings') });
+    this.objectModal.onClose = this.doorModal.onClose;
     this._raycaster = new THREE.Raycaster();
 
     // --- equippable items (F3 editor) ---
@@ -300,12 +312,14 @@ export class App {
         onCard: (id) => this._editEquipItem(id),
         onEdit: (id) => this._editEquipItem(id),
         onExport: (id) => this._exportEquipItem(id),
+        onConvert: (id) => this._equipToObject(id),
         onDelete: (id) => this._deleteEquipItem(id),
         onImport: (text) => this._importEquipItem(text),
       },
     });
     this.equipCatalogue.onClose = () => {
       if (this.mode === 'equip') return; // stays inside the F3 editor
+      if (this.catalogue.isOpen) return; // handing off to the object catalogue
       if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
     };
 
@@ -477,6 +491,21 @@ export class App {
       Notice.info(`Sign ready — click a wall to place it`);
     };
     this.signModal.onClose = () => {
+      if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
+    };
+
+    // --- drawn decals (2D pixel editor, from the Decals section) ---
+    this.decalEditor = new DecalEditor({ doc });
+    this.inventory.onCreateDecal = () => this.decalEditor.show();
+    this.decalEditor.onCreate = (spec) => {
+      const decal = createPixelDecal(spec);
+      if (!decal) return;
+      this.rebuildAtlas();
+      this._refreshDecalItems();
+      this.state.set('decalId', decal.id); // in hand, decal tool active
+      Notice.info(`Decal ready — click a surface to place it`);
+    };
+    this.decalEditor.onClose = () => {
       if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
     };
     // Closing the inventory (selection, E, or backdrop click) re-locks the
@@ -1211,8 +1240,9 @@ export class App {
     return best;
   }
 
-  /** LMB on a mob spawn beacon: open its spawner settings (loot pool +
-   *  respawn timer). Changes land directly on the spawn record.
+  /** LMB on a mob spawn beacon: open its spawner settings (loot pool,
+   *  respawn timer, character sprites). Changes land directly on the spawn
+   *  record.
    *  @returns {boolean} true when a beacon was hit (the click is consumed) */
   _clickMobSpawn() {
     const spawn = this._spawnUnderCrosshair();
@@ -1222,6 +1252,7 @@ export class App {
       typeName: getMob(spawn.type)?.name ?? spawn.type,
       loot: spawn.loot ? [...spawn.loot] : null,
       delay: spawn.delay ? [...spawn.delay] : null,
+      skins: spawn.skins ? [...spawn.skins] : null,
     }, (change) => {
       if ('loot' in change) {
         if (change.loot) spawn.loot = [...change.loot];
@@ -1231,6 +1262,42 @@ export class App {
       if ('delay' in change) {
         if (change.delay) spawn.delay = [...change.delay];
         else delete spawn.delay;
+        this._markDirty();
+      }
+      if ('skins' in change) {
+        if (change.skins?.length) spawn.skins = [...change.skins];
+        else delete spawn.skins;
+        this._markDirty();
+      }
+    });
+    return true;
+  }
+
+  /** LMB on a placed object (F2 catalogue): open its search-loot settings —
+   *  whether searching it grants loot, the pool, and the restock timer.
+   *  Changes land directly on the placement record. Equip items stay out:
+   *  they ARE loot, not containers.
+   *  @returns {boolean} true when an object was hit (the click is consumed) */
+  _clickObject() {
+    if (this.prefabSession) return false;
+    const hit = itemAwarePick(this.world, THREE, this.renderer.camera, CONFIG.editor.doorClickCells);
+    if (!hit) return false;
+    const item = this.world.itemAt(hit.cell[0], hit.cell[1], hit.cell[2]);
+    if (!item || !isItemId(item.itemId)) return false;
+    if (document.pointerLockElement) document.exitPointerLock();
+    this.objectModal.open({
+      name: getItem(item.itemId)?.name ?? item.itemId,
+      loot: item.loot ? { pool: item.loot.pool ? [...item.loot.pool] : null, reset: item.loot.reset ?? null } : null,
+      storage: !!item.storage,
+    }, (change) => {
+      if ('loot' in change) {
+        if (change.loot) item.loot = { pool: change.loot.pool ? [...change.loot.pool] : null, reset: change.loot.reset ?? null };
+        else delete item.loot;
+        this._markDirty();
+      }
+      if ('storage' in change) {
+        if (change.storage) item.storage = true;
+        else delete item.storage;
         this._markDirty();
       }
     });
@@ -1482,6 +1549,45 @@ export class App {
     this.ui.toast(`Deleted "${item.name}"${placed ? ` (${placed} placed)` : ''}`);
   }
 
+  /** A registry id free in *both* catalogues — world placements look an id up
+   *  in the object registry first and the equipment registry second, so the
+   *  two share one id space. `preferred` (an imported file's id) is kept when
+   *  it is free, otherwise the name is slugified and numbered. */
+  _freeItemId(preferred, name) {
+    const taken = (id) => isItemId(id) || isEquipId(id);
+    if (preferred && !taken(preferred)) return preferred;
+    const base = slugifyName(name ?? preferred ?? 'item');
+    let id = base;
+    let n = 2;
+    while (taken(id)) id = `${base}_${n++}`;
+    return id;
+  }
+
+  /** Catalogue transfer, object → equipment: copy a placeable object into the
+   *  items catalogue as a pickable quest item (the sculpture carries over 1:1;
+   *  kind, grip and stats are tuned afterwards in F3). The object stays put —
+   *  this copies rather than moves. */
+  _objectToEquip(id) {
+    const src = getItem(id);
+    if (!src) return;
+    const { item, dropped, lightLost } = objectToEquip(src);
+    item.id = this._freeItemId(null, src.name);
+    registerEquipItem(item);
+    this._markDirty();
+    this._refreshInventoryEquip();
+    // Show the result where it landed (open first, so closing this one does
+    // not grab the pointer back mid-handoff).
+    this.openEquipCatalogue();
+    this.catalogue.hide();
+    const notes = [];
+    if (dropped) notes.push(`${dropped} voxels cropped to the 32-cell build volume`);
+    if (lightLost) notes.push('light dropped (items carry no light)');
+    this.ui.toast(
+      `Copied "${item.name}" to the items catalogue as a quest item${notes.length ? ` — ${notes.join(', ')}` : ''}`,
+      notes.length ? 3600 : 2600,
+    );
+  }
+
   /** Import an item file into the catalogue (handles id collisions). */
   _importItem(text) {
     const { item, errors } = deserializeItem(text);
@@ -1489,14 +1595,7 @@ export class App {
       this.ui.toast(errors[0] ?? 'Import failed', 2400);
       return;
     }
-    let id = item.id;
-    if (!id || isItemId(id)) {
-      const base = slugifyName(item.name);
-      id = base;
-      let n = 2;
-      while (isItemId(id)) id = `${base}_${n++}`;
-    }
-    item.id = id;
+    item.id = this._freeItemId(item.id, item.name);
     registerItem(item);
     this._markDirty();
     this.itemRenderer.rebuildAll();
@@ -1624,6 +1723,25 @@ export class App {
     this.ui.toast(`Deleted "${item.name}"${placed ? ` (${placed} placed)` : ''}`);
   }
 
+  /** Catalogue transfer, equipment → object: copy an equippable item into the
+   *  object catalogue as a placeable, blocking prop. The sculpture carries
+   *  over 1:1 into the smallest whole-cell footprint that holds it; kind,
+   *  grip, stats and the weapon/ammo/armor profile have no object equivalent
+   *  and are dropped. The item stays put — this copies rather than moves. */
+  _equipToObject(id) {
+    const src = getEquipItem(id);
+    if (!src) return;
+    const { item } = equipToObject(src);
+    item.id = this._freeItemId(null, src.name);
+    registerItem(item);
+    this._markDirty();
+    this.itemRenderer.rebuildAll();
+    this._refreshInventoryObjects();
+    this.openCatalogue(); // shows the result where it landed (see _objectToEquip)
+    this.equipCatalogue.hide();
+    this.ui.toast(`Copied "${item.name}" to the object catalogue — F2 to adjust its shape or add a light`, 3000);
+  }
+
   /** Import an equippable item file into the catalogue (handles id collisions). */
   _importEquipItem(text) {
     const { item, errors } = deserializeEquipItem(text);
@@ -1631,14 +1749,7 @@ export class App {
       this.ui.toast(errors[0] ?? 'Import failed', 2400);
       return;
     }
-    let id = item.id;
-    if (!id || isEquipId(id)) {
-      const base = slugifyName(item.name);
-      id = base;
-      let n = 2;
-      while (isEquipId(id)) id = `${base}_${n++}`;
-    }
-    item.id = id;
+    item.id = this._freeItemId(item.id, item.name);
     registerEquipItem(item);
     this._markDirty();
     this.equipCatalogue.refresh();
@@ -1649,6 +1760,7 @@ export class App {
   openEquipCatalogue() {
     this.equipCatalogue.refresh();
     this.equipCatalogue.show();
+    if (document.pointerLockElement) document.exitPointerLock();
   }
 
   /** Recompute item light sources for the light field, then re-flood and
@@ -2163,7 +2275,7 @@ export class App {
       // Clicking a splash-cam gizmo edits the shot's motion instead of the world.
       if (button === 0 && this._clickSplashCam()) return;
       // Same for doors: LMB opens their settings, Shift+LMB builds as usual.
-      if (button === 0 && !shiftKey && (this._clickDoor() || this._clickLight() || this._clickSwitch() || this._clickMobSpawn())) return;
+      if (button === 0 && !shiftKey && (this._clickDoor() || this._clickLight() || this._clickSwitch() || this._clickMobSpawn() || this._clickObject())) return;
       this.tools.active?.onMouseDown(button);
     });
     sub('mouseup', ({ button, x, y }) => {

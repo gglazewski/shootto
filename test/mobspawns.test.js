@@ -80,49 +80,58 @@ test('deserialize skips malformed or unknown mob spawns with errors', () => {
   assert.equal(count, 1);
 });
 
-test('spawner settings (loot pool + respawn delay) ride the spawn record', () => {
+test('spawner settings (loot pool + respawn delay + skins) ride the spawn record', () => {
   const w = new World();
-  assert.ok(w.addMobSpawn('imp', 2, 3, 2, { loot: ['bat', 'pipe'], delay: [5, 15] }));
+  assert.ok(w.addMobSpawn('imp', 2, 3, 2, { loot: ['bat', 'pipe'], delay: [5, 15], skins: ['nurse', 'granny'] }));
   const s = w.mobSpawnAt(2, 3, 2);
   assert.deepEqual(s.loot, ['bat', 'pipe']);
   assert.deepEqual(s.delay, [5, 15]);
+  assert.deepEqual(s.skins, ['nurse', 'granny']);
 
   // Plain spawns carry no settings fields at all.
   assert.ok(w.addMobSpawn('imp', 4, 3, 2));
   assert.equal('loot' in w.mobSpawnAt(4, 3, 2), false);
   assert.equal('delay' in w.mobSpawnAt(4, 3, 2), false);
+  assert.equal('skins' in w.mobSpawnAt(4, 3, 2), false);
+
+  // An empty skins pool means "any" and stays off the record entirely.
+  assert.ok(w.addMobSpawn('imp', 6, 3, 2, { skins: [] }));
+  assert.equal('skins' in w.mobSpawnAt(6, 3, 2), false);
 
   // copyFrom threads the settings.
   const copy = new World();
   copy.copyFrom(w);
   assert.deepEqual(copy.mobSpawnAt(2, 3, 2).loot, ['bat', 'pipe']);
   assert.deepEqual(copy.mobSpawnAt(2, 3, 2).delay, [5, 15]);
+  assert.deepEqual(copy.mobSpawnAt(2, 3, 2).skins, ['nurse', 'granny']);
   assert.equal('loot' in copy.mobSpawnAt(4, 3, 2), false);
 });
 
 test('serialize/deserialize round-trips spawner settings, omitting defaults', () => {
   const w = new World();
   w.place('grass', SIZE.BIG, 0, 0, 0);
-  w.addMobSpawn('imp', 2, 3, 2, { loot: [], delay: [10, 20] });
+  w.addMobSpawn('imp', 2, 3, 2, { loot: [], delay: [10, 20], skins: ['policeman'] });
   w.addMobSpawn('brute', 6, 3, 6);
 
   const text = serialize(w);
   const plain = JSON.parse(text).mobs.find((m) => m.type === 'brute');
   assert.equal('loot' in plain, false, 'default settings stay off the wire');
   assert.equal('delay' in plain, false);
+  assert.equal('skins' in plain, false);
 
   const { world, errors } = deserialize(text);
   assert.deepEqual(errors, []);
   const s = world.mobSpawnAt(2, 3, 2);
   assert.deepEqual(s.loot, [], 'an explicit empty pool (no drops) survives');
   assert.deepEqual(s.delay, [10, 20]);
+  assert.deepEqual(s.skins, ['policeman']);
   assert.equal('loot' in world.mobSpawnAt(6, 3, 6), false);
 });
 
 test('deserialize drops malformed spawner settings but keeps the spawn', () => {
   const text = JSON.stringify({
     format: 'voxelmap', version: 1, cellSize: 0.5, spawn: null, blocks: [], items: [],
-    mobs: [{ type: 'imp', x: 1, y: 2, z: 3, loot: 'bat', delay: [5] }],
+    mobs: [{ type: 'imp', x: 1, y: 2, z: 3, loot: 'bat', delay: [5], skins: 'nurse' }],
   });
   const { world, errors } = deserialize(text);
   assert.deepEqual(errors, []);
@@ -130,4 +139,18 @@ test('deserialize drops malformed spawner settings but keeps the spawn', () => {
   assert.ok(s, 'the spawn itself loads');
   assert.equal('loot' in s, false, 'a non-array pool is ignored');
   assert.equal('delay' in s, false, 'a one-number range is ignored');
+  assert.equal('skins' in s, false, 'a non-array skin pool is ignored');
+});
+
+test('randomMobSkin honors a spawner skin pool and falls back on junk', async () => {
+  const { randomMobSkin, SPAWN_SKINS } = await import('../src/game/mobSprites.js');
+  // A one-entry pool always wins, whatever the roll.
+  assert.equal(randomMobSkin(() => 0.99, ['nurse']), 'nurse');
+  // Every pick from a pool stays inside it.
+  for (let i = 0; i < 20; i++) {
+    assert.ok(['nurse', 'policeman'].includes(randomMobSkin(Math.random, ['nurse', 'policeman'])));
+  }
+  // Unknown names are dropped; an emptied pool falls back to any character.
+  assert.ok(SPAWN_SKINS.includes(randomMobSkin(() => 0, ['not-a-skin'])));
+  assert.ok(SPAWN_SKINS.includes(randomMobSkin(() => 0, null)));
 });

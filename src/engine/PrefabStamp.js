@@ -19,6 +19,7 @@
 import { spanVecFor, cellsFor } from './VoxelShape.js';
 import { isDecalId } from './VoxelTypes.js';
 import { createTextDecal } from './TextDecals.js';
+import { createPixelDecal } from './PixelDecals.js';
 import { applyDoorSettings } from './Doors.js';
 import { applyLightSettings } from './Lights.js';
 
@@ -181,6 +182,9 @@ export function stampPrefab(world, prefab, offset, turns, mirror = false) {
   // checked (ids are pinned; re-registering an existing id is a no-op).
   for (const t of prefab.textDecals ?? []) {
     if (!isDecalId(t.id)) createTextDecal(t, { id: t.id });
+  }
+  for (const p of prefab.pixelDecals ?? []) {
+    if (!isDecalId(p.id)) createPixelDecal(p, { id: p.id });
   }
 
   const { blocks, items, decals, paint } = prefabPlacements(prefab, offset, turns, mirror);

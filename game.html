@@ -278,17 +278,27 @@
     .rc-chip.rc-missing { border-color: var(--ui-red-hot); color: var(--ui-red-hot); }
     .rc-note { margin-top: 8px; font-size: 12px; color: var(--ui-amber); }
 
-    /* backpack grid (B): Minecraft-style slots over the running game */
-    #backpack .box { min-width: 420px; }
-    #backpack-equip {
+    /* backpack grid (B) + storage container screen (E): Minecraft-style
+       slots over the running game */
+    #backpack .box, #container .box { min-width: 420px; }
+    /* two grids + the equip row can outgrow small windows — scroll the box */
+    #container .box { max-height: 92vh; overflow-y: auto; }
+    #backpack-equip, #container-equip {
       display: flex; justify-content: center; gap: 6px;
       margin: 12px 0 4px; padding-bottom: 10px;
       border-bottom: 1px solid rgba(255,255,255,0.12);
     }
-    #backpack-grid {
+    #backpack-grid, #container-grid, #container-player-grid {
       display: grid; grid-template-columns: repeat(6, 52px);
       gap: 6px; justify-content: center; margin: 12px 0 16px;
     }
+    #container-grid { margin-bottom: 8px; }
+    #container .stash-label {
+      font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--ui-muted); margin-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.12); padding-top: 10px;
+    }
+    #container-player-grid { margin-top: 6px; }
     .bp-slot {
       position: relative; width: 52px; height: 52px;
       border: 2px solid rgba(255,255,255,0.15); border-radius: 6px;
@@ -513,6 +523,21 @@
       <div id="backpack-equip"></div>
       <div id="backpack-grid"></div>
       <button id="btn-backpack-close">Done <kbd>B</kbd></button>
+    </div>
+  </div>
+
+  <!-- Storage container (E on an object authored as storage): the stash grid
+       on top, the player's equipment slots + backpack below. Click or drag
+       items to move them between the two — contents persist in save slots. -->
+  <div id="container" class="screen hidden">
+    <div class="box">
+      <h1 id="container-title">Storage</h1>
+      <div class="sub">Click or drag items to move them — the game keeps running!</div>
+      <div id="container-grid"></div>
+      <div class="stash-label">Your gear</div>
+      <div id="container-equip"></div>
+      <div id="container-player-grid"></div>
+      <button id="btn-container-close">Done <kbd>E</kbd></button>
     </div>
   </div>
 

@@ -31,6 +31,7 @@ import { createItemGeometry } from '../ItemGeometry.three.js';
 import { raycastVoxel } from '../../engine/VoxelRaycaster.js';
 import { Notice } from '../Notice.js';
 import { buildItemSwatch } from './itemSwatch.js';
+import { applyMicroNoise } from '../microNoise.js';
 import {
   cellKey,
   buildVoxelIndex,
@@ -191,7 +192,8 @@ export class MicroVoxelEditor {
 
     this.itemMesh = new T.Mesh(
       new T.BufferGeometry(),
-      new T.MeshBasicMaterial({ vertexColors: true }),
+      // Same per-micro-cell grain as the in-game item material (WYSIWYG).
+      applyMicroNoise(new T.MeshBasicMaterial({ vertexColors: true })),
     );
     this.group.add(this.itemMesh);
 

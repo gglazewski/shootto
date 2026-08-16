@@ -32,6 +32,8 @@ export class Inventory {
     this.onSelectDecal = null;
     /** Called when the "New Sign…" card in the Decals section is clicked. */
     this.onCreateSign = null;
+    /** Called when the "New Decal…" card in the Decals section is clicked. */
+    this.onCreateDecal = null;
     /** Called whenever the panel closes (selection, E, or backdrop click). */
     this.onClose = null;
     /** The block/object currently under the cursor: { kind, id } or null. */
@@ -164,6 +166,25 @@ export class Inventory {
       }
     });
     this.decalGrid.appendChild(add);
+    // "New Decal" card: opens the 2D pixel editor (wired by the app).
+    const draw = document.createElement('button');
+    draw.className = 'inv-item inv-item-add';
+    draw.title = 'Draw a pixel-art decal';
+    const brush = document.createElement('span');
+    brush.textContent = '✎';
+    brush.style.fontSize = '28px';
+    brush.style.lineHeight = '48px';
+    draw.appendChild(brush);
+    const drawLabel = document.createElement('span');
+    drawLabel.textContent = 'New Decal…';
+    draw.appendChild(drawLabel);
+    draw.addEventListener('click', () => {
+      if (this.onCreateDecal) {
+        this.hide();
+        this.onCreateDecal();
+      }
+    });
+    this.decalGrid.appendChild(draw);
   }
 
   /** Replace the list of registered equippable items and re-render. */

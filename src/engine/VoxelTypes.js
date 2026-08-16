@@ -22,7 +22,7 @@ export const SIZE = Object.freeze({
  *   transparent by the light field.
  * @property {number} [light]     block-light emitted by this voxel, 0..15
  * @property {boolean} [transparent]  true = rendered in the transparent pass
- * @property {'cube'|'pane'|'door'} [shape]  'cube' (default) = full block faces.
+ * @property {'cube'|'pane'|'door'|'cross'} [shape]  'cube' (default) = full block faces.
  *   'pane' = a single centered quad (chain-link fence, bars, barricade
  *   boards); the tile's alpha channel cuts out the gaps and the voxel's
  *   rotation turns the pane (0/180 = along x, 90/270 = along z). Panes are
@@ -33,6 +33,10 @@ export const SIZE = Object.freeze({
  *   pane and picks the swing side of the open phase (see engine/Doors.js).
  *   Also used for fixed glazing panels (no doorOpen/doorClosed pair) — the
  *   blok sidelight is a static slab meshed by the same code.
+ *   'cross' = two crossed diagonal cutout quads spanning the voxel (bushes,
+ *   plants) — the same X the ground cover uses, as a placeable block. No
+ *   rotation (the X is symmetric); still occupies its full cell for
+ *   collision; takes no decals, paint or slab variants.
  * @property {boolean} [shootThrough]  true = attack rays (bullets, swings)
  *   pass through this block; it still blocks movement.
  * @property {boolean} [mixedAlpha]  true = the tile art mixes opaque and
@@ -41,6 +45,20 @@ export const SIZE = Object.freeze({
  *   texels (alpha < 0.5) blend in the transparent pass.
  * @property {boolean} [glass]  true = a glass surface: attacks pass through
  *   and burst glass shards at the pane instead of puffing smoke.
+ * @property {boolean} [edge]  pane shape only: the quad hugs one side of its
+ *   footprint instead of centering — the rotation picks the edge (0: along x
+ *   at +z, 1: along z at +x, 2: along x at -z, 3: along z at -x), so the
+ *   glass sits flush with the wall face it belongs to (car glazing).
+ * @property {string} [icon]  atlas tile shown as this block's palette swatch
+ *   (defaults to the top tile) — lets blocks whose top is plain (car parts:
+ *   painted body above, the feature art on the sides) show their real face.
+ * @property {boolean} [connect]  true = the tile art merges with same-type
+ *   neighbours: per face, the mesher checks the four in-plane neighbours and
+ *   swaps in the `<tile>_<mask>` atlas variant (mask bits 1/2/4/8 = art
+ *   left/right/top/bottom edge continues into the same block), dissolving
+ *   the frame on shared edges so a run of blocks reads as one big framed
+ *   pane (car windows). The 15 variants are generated alongside the base
+ *   tile in textures/TextureAtlas.js.
  * @property {boolean} [passable]  true = the block does not block movement
  *   (open door phases). Collision facades return null for these cells.
  * @property {string} [doorOpen]   block id of this door's open phase.
@@ -91,6 +109,15 @@ const BLOCKS = [
   { id: 'sand', name: 'Sand', tiles: 'sand' },
   { id: 'sand_red', name: 'Red Sand', tiles: 'sand_red' },
   { id: 'sand_dark', name: 'Wet Sand', tiles: 'sand_dark' },
+  // --- vegetation: canopies and bushes. Leaves are plain opaque cubes (use
+  // them for tree crowns instead of grass, which sprouts ground cover);
+  // bushes are cross-shaped cutouts you can fight through ---
+  { id: 'leaves', name: 'Leaves', tiles: 'leaves' },
+  { id: 'leaves_dark', name: 'Dark Leaves', tiles: 'leaves_dark' },
+  { id: 'leaves_autumn', name: 'Autumn Leaves', tiles: 'leaves_autumn' },
+  { id: 'bush', name: 'Bush', tiles: 'bush', shape: 'cross', opacity: 0, shootThrough: true },
+  { id: 'bush_berry', name: 'Berry Bush', tiles: 'bush_berry', shape: 'cross', opacity: 0, shootThrough: true },
+  { id: 'bush_dry', name: 'Dry Bush', tiles: 'bush_dry', shape: 'cross', opacity: 0, shootThrough: true },
   { id: 'concrete', name: 'Concrete', tiles: 'concrete' },
   { id: 'asphalt', name: 'Asphalt', tiles: 'asphalt' },
   { id: 'asphalt_line', name: 'Road Marking', tiles: { py: 'asphalt_line', ny: 'asphalt', px: 'asphalt', nx: 'asphalt', pz: 'asphalt', nz: 'asphalt' } },
@@ -168,6 +195,28 @@ const BLOCKS = [
   { id: 'door_blok', name: 'Blok Entrance Door', tiles: 'door_blok', shape: 'door', mixedAlpha: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorOpen: 'door_blok_open' },
   { id: 'door_blok_open', name: 'Blok Entrance Door (open)', tiles: 'door_blok', shape: 'door', opacity: 0, mixedAlpha: true, hidden: true, passable: true, shootThrough: true, fixedSize: SIZE.DOOR, tileSpan: [2, 4], doorClosed: 'door_blok' },
   { id: 'sidelight', name: 'Blok Sidelight', tiles: 'sidelight', shape: 'door', mixedAlpha: true, opacity: 0, fixedSize: SIZE.SIDELIGHT, tileSpan: [1, 2] },
+  // --- Nysa van kit: each factory paint gets a plain body panel, a chrome
+  // beltline panel, a grille and a headlight; the rubber-gasket window,
+  // wheel and bumper are shared across colours. Feature tiles sit on the
+  // four side faces so the block works whichever way the van points ---
+  { id: 'car_body_blue', name: 'Car Body (blue)', tiles: 'car_body_blue' },
+  { id: 'car_trim_blue', icon: 'car_trim_blue', name: 'Car Beltline (blue)', tiles: { py: 'car_body_blue', ny: 'car_body_blue', px: 'car_trim_blue', nx: 'car_trim_blue', pz: 'car_trim_blue', nz: 'car_trim_blue' } },
+  { id: 'car_grille_blue', icon: 'car_grille_blue', name: 'Car Grille (blue)', tiles: { py: 'car_body_blue', ny: 'car_body_blue', px: 'car_grille_blue', nx: 'car_grille_blue', pz: 'car_grille_blue', nz: 'car_grille_blue' } },
+  { id: 'car_light_blue', icon: 'car_light_blue', name: 'Car Headlight (blue)', tiles: { py: 'car_body_blue', ny: 'car_body_blue', px: 'car_light_blue', nx: 'car_light_blue', pz: 'car_light_blue', nz: 'car_light_blue' } },
+  { id: 'car_tail_blue', icon: 'car_tail_blue', name: 'Car Tail Light (blue)', tiles: { py: 'car_body_blue', ny: 'car_body_blue', px: 'car_tail_blue', nx: 'car_tail_blue', pz: 'car_tail_blue', nz: 'car_tail_blue' } },
+  { id: 'car_body_red', name: 'Car Body (red)', tiles: 'car_body_red' },
+  { id: 'car_trim_red', icon: 'car_trim_red', name: 'Car Beltline (red)', tiles: { py: 'car_body_red', ny: 'car_body_red', px: 'car_trim_red', nx: 'car_trim_red', pz: 'car_trim_red', nz: 'car_trim_red' } },
+  { id: 'car_grille_red', icon: 'car_grille_red', name: 'Car Grille (red)', tiles: { py: 'car_body_red', ny: 'car_body_red', px: 'car_grille_red', nx: 'car_grille_red', pz: 'car_grille_red', nz: 'car_grille_red' } },
+  { id: 'car_light_red', icon: 'car_light_red', name: 'Car Headlight (red)', tiles: { py: 'car_body_red', ny: 'car_body_red', px: 'car_light_red', nx: 'car_light_red', pz: 'car_light_red', nz: 'car_light_red' } },
+  { id: 'car_tail_red', icon: 'car_tail_red', name: 'Car Tail Light (red)', tiles: { py: 'car_body_red', ny: 'car_body_red', px: 'car_tail_red', nx: 'car_tail_red', pz: 'car_tail_red', nz: 'car_tail_red' } },
+  { id: 'car_body_cream', name: 'Car Body (cream)', tiles: 'car_body_cream' },
+  { id: 'car_trim_cream', icon: 'car_trim_cream', name: 'Car Beltline (cream)', tiles: { py: 'car_body_cream', ny: 'car_body_cream', px: 'car_trim_cream', nx: 'car_trim_cream', pz: 'car_trim_cream', nz: 'car_trim_cream' } },
+  { id: 'car_grille_cream', icon: 'car_grille_cream', name: 'Car Grille (cream)', tiles: { py: 'car_body_cream', ny: 'car_body_cream', px: 'car_grille_cream', nx: 'car_grille_cream', pz: 'car_grille_cream', nz: 'car_grille_cream' } },
+  { id: 'car_light_cream', icon: 'car_light_cream', name: 'Car Headlight (cream)', tiles: { py: 'car_body_cream', ny: 'car_body_cream', px: 'car_light_cream', nx: 'car_light_cream', pz: 'car_light_cream', nz: 'car_light_cream' } },
+  { id: 'car_tail_cream', icon: 'car_tail_cream', name: 'Car Tail Light (cream)', tiles: { py: 'car_body_cream', ny: 'car_body_cream', px: 'car_tail_cream', nx: 'car_tail_cream', pz: 'car_tail_cream', nz: 'car_tail_cream' } },
+  { id: 'car_window', name: 'Car Window', tiles: 'car_window', shape: 'pane', edge: true, opacity: 0, mixedAlpha: true, shootThrough: true, glass: true, connect: true },
+  { id: 'car_wheel', icon: 'car_wheel', name: 'Car Wheel', tiles: { py: 'car_tire', ny: 'car_tire', px: 'car_wheel', nx: 'car_wheel', pz: 'car_wheel', nz: 'car_wheel' } },
+  { id: 'car_bumper', name: 'Car Bumper', tiles: 'car_bumper' },
 ];
 
 const REGISTRY = new Map(BLOCKS.map((b) => [b.id, b]));
@@ -242,6 +291,12 @@ export function isMixedAlpha(id) {
  *  hit bursts glass shards instead of a smoke puff. */
 export function isGlass(id) {
   return REGISTRY.get(id)?.glass === true;
+}
+
+/** True if same-type neighbours merge this block's tile art: the mesher
+ *  picks a `<tile>_<mask>` frame variant per face (see BlockDef.connect). */
+export function isConnecting(id) {
+  return REGISTRY.get(id)?.connect === true;
 }
 
 /** Ground-cover config of a block id (tufts/flowers sprouting from its
@@ -335,6 +390,14 @@ const DECALS = [
   { id: 'decal_curtain', name: 'Lace Curtain', tile: 'decal_curtain' },
   { id: 'decal_hopscotch', name: 'Chalk Hopscotch', tile: 'decal_hopscotch', span: [1, 4] },
   { id: 'decal_domofon', name: 'Domofon Panel', tile: 'decal_domofon' },
+  // --- 90s apartment interior set ---
+  { id: 'decal_jelen', name: 'Deer Print', tile: 'decal_jelen', span: [2, 2] },
+  { id: 'decal_photos', name: 'Family Photos', tile: 'decal_photos', span: [2, 2] },
+  { id: 'decal_makatka', name: 'Makatka', tile: 'decal_makatka', span: [2, 1] },
+  { id: 'decal_kalendarz', name: 'Wall Calendar', tile: 'decal_kalendarz' },
+  { id: 'decal_lustro', name: 'Mirror & Shelf', tile: 'decal_lustro', span: [1, 2] },
+  { id: 'decal_junkers', name: 'Gas Heater', tile: 'decal_junkers', span: [1, 2] },
+  { id: 'decal_telefon', name: 'Wall Phone', tile: 'decal_telefon' },
   // Functional: touching its face lets the player climb (WalkControls).
   { id: 'decal_ladder', name: 'Ladder', tile: 'decal_ladder', span: [1, 4], climbable: true },
   // The 90s Polish flip switch (wyłącznik): cream plastic plate, one big

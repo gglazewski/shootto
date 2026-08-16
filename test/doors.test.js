@@ -293,7 +293,11 @@ test('opening direction flips the swing without moving the footprint', () => {
   const v = world.get(2, 0, 3);
   assert.equal(doorHinge(v), 'left');
   assert.equal(doorSwing(v), 'pz');
-  const cells = () => [...world.cells.keys()].sort().join('|');
+  const cells = () => {
+    const out = [];
+    world.forEachCell((x, y, z) => out.push(`${x},${y},${z}`));
+    return out.sort().join('|');
+  };
   const before = cells();
 
   world.drainDirty();

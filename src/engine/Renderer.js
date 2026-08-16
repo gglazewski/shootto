@@ -16,6 +16,8 @@
 // PostFX pipeline (bloom + polaroid grade).
 
 import { ChunkMesh } from './ChunkMesh.js';
+import { makeChunkSnapshot } from './ChunkSnapshot.js';
+import { MeshWorkerPool } from './MeshWorkerPool.js';
 import { Sky } from './Sky.js';
 import { LightField } from './LightField.js';
 import { MAX_LAMPS } from './chunkShader.js';
@@ -47,9 +49,12 @@ export class Renderer {
    * @param {import('three').Texture} deps.atlasTexture
    * @param {(typeId:string, face:string)=>number} deps.tileIndexFor
    * @param {{width:number,height:number}} deps.atlas
+   * @param {{map: Map<string,number>, rev: number}} [deps.tiles]  the atlas'
+   *   live name->index tile map (from createAtlasTexture). Enables worker
+   *   meshing; without it, chunks always mesh on the main thread.
    * @param {object} [deps.config]  overrides merged over CONFIG
    */
-  constructor({ THREE, webgl, world, atlasTexture, tileIndexFor, atlas, config = {} }) {
+  constructor({ THREE, webgl, world, atlasTexture, tileIndexFor, atlas, tiles = null, config = {} }) {
     this.THREE = THREE;
     this.webgl = webgl;
     this.world = world;
@@ -91,9 +96,10 @@ export class Renderer {
     sun.position.set(0.5, 1.5, 0.4);
     this.scene.add(sun);
 
-    // Chunk materials (shared across all chunks).
-    this.material = createChunkMaterial(THREE, { map: atlasTexture, config: cfg.lighting });
-    this.materialTransparent = createChunkMaterial(THREE, { map: atlasTexture, config: cfg.lighting, transparent: true });
+    // Chunk materials (shared across all chunks). Packed: they consume the
+    // mesher's quantized/greedy vertex format (see ChunkMeshBuilder).
+    this.material = createChunkMaterial(THREE, { map: atlasTexture, config: cfg.lighting, packed: true, atlas });
+    this.materialTransparent = createChunkMaterial(THREE, { map: atlasTexture, config: cfg.lighting, transparent: true, packed: true, atlas });
     // Untextured lit material for placeable object meshes: same light model,
     // but `tex = 1` so the per-vertex color alone drives the surface. Items
     // therefore respond to the light field like chunks instead of glowing in
@@ -120,6 +126,16 @@ export class Renderer {
     /** @type {Map<string, ChunkMesh>} */
     this.chunks = new Map();
     this._prevKey = null;
+
+    // Async (worker) meshing state. The pool spins up lazily on the first
+    // streaming pass; _pendingMesh tracks in-flight snapshot requests and
+    // _chunkGen invalidates their replies when the world changed under them.
+    this.atlasTiles = tiles;
+    this._pool = null;
+    /** @type {Map<string, number>} ckey -> generation captured at request */
+    this._pendingMesh = new Map();
+    /** @type {Map<string, number>} ckey -> current generation */
+    this._chunkGen = new Map();
 
     /** @type {LightField} */
     this.light = new LightField(world);
@@ -217,6 +233,17 @@ export class Renderer {
 
     const keys = this.world.drainDirty();
 
+    // A dirty chunk with an in-flight worker mesh: the reply is now stale —
+    // bump its generation so it gets dropped and re-requested.
+    if (this._pendingMesh.size) {
+      for (const ckey of keys) {
+        if (this._pendingMesh.has(ckey)) {
+          this._chunkGen.set(ckey, (this._chunkGen.get(ckey) ?? 0) + 1);
+          this._streamDirty = true;
+        }
+      }
+    }
+
     // Player edits rebuild instantly so placed blocks appear the same frame;
     // soft edits (blinking lights) tolerate a frame of latency and queue up
     // with the deferred, budgeted work.
@@ -300,14 +327,106 @@ export class Renderer {
     pending.sort((a, b) => a[0] - b[0]);
     // A cold world gets a bigger first burst so the view fills quickly;
     // afterwards the count + time budgets keep streaming hitches out of the
-    // frame time (a dense chunk can take >10 ms to mesh).
+    // frame time (a dense chunk can take >10 ms to mesh). With the worker
+    // pool the frame only pays for snapshots — meshing runs off-thread and
+    // the results land over the next frames.
+    const pool = this._ensurePool();
     const cold = this.chunks.size === 0;
     const budget = cold ? Math.max(R.maxLoadsPerFrame, 32) : R.maxLoadsPerFrame;
     const t0 = nowMs();
-    for (let i = 0; i < pending.length && i < budget; i++) {
-      if (!cold && nowMs() - t0 > REBUILD_BUDGET_MS) break;
-      this._rebuildChunk(pending[i][1]);
+    let issued = 0;
+    for (let i = 0; i < pending.length && issued < budget; i++) {
+      const ckey = pending[i][1];
+      if (pool) {
+        if (this._pendingMesh.has(ckey)) continue; // already in flight
+        this._requestChunkAsync(ckey);
+        issued++;
+      } else {
+        if (!cold && nowMs() - t0 > REBUILD_BUDGET_MS) break;
+        this._rebuildChunk(ckey);
+        issued++;
+      }
     }
+    // More to load than this frame's budget: force the next pass to re-scan
+    // even if the camera holds still, so the radius fills without movement.
+    if (issued < pending.length) this._streamDirty = true;
+  }
+
+  /** Lazily spin up the mesh worker pool; null when unavailable. */
+  _ensurePool() {
+    if (this._pool) return this._pool.available() ? this._pool : null;
+    const R = this.renderCfg;
+    if (!this.atlasTiles || !R.meshWorkers || typeof Worker === 'undefined') return null;
+    this._pool = new MeshWorkerPool({
+      workerUrl: R.meshWorkerUrl,
+      count: R.meshWorkers,
+      tiles: this.atlasTiles,
+      atlas: this.atlas,
+    });
+    return this._pool.available() ? this._pool : null;
+  }
+
+  /** Snapshot one chunk and mesh it in the worker pool. The reply is dropped
+   *  (and the scan re-armed) when the chunk was edited in the meantime. */
+  _requestChunkAsync(ckey) {
+    const gen = this._chunkGen.get(ckey) ?? 0;
+    const origin = this.world.chunkOrigin(ckey);
+    const snapshot = makeChunkSnapshot(this.world, this.light, origin, this.chunkSize);
+    this._pendingMesh.set(ckey, gen);
+    this._pool.request(snapshot).then((data) => {
+      if (this._pendingMesh.get(ckey) !== gen) return; // superseded
+      this._pendingMesh.delete(ckey);
+      if ((this._chunkGen.get(ckey) ?? 0) !== gen) {
+        this._streamDirty = true; // world changed under us — re-scan
+        return;
+      }
+      if (data == null) {
+        this._rebuildChunk(ckey); // pool died — mesh synchronously
+        return;
+      }
+      this._applyMeshData(ckey, data);
+    });
+  }
+
+  /** Install worker-built mesh data for a chunk (mirrors _rebuildChunk). */
+  _applyMeshData(ckey, data) {
+    let mesh = this.chunks.get(ckey);
+    if (!this.world.chunkCounts.has(ckey)) {
+      if (mesh) {
+        mesh.dispose();
+        this.scene.remove(mesh.mesh);
+        if (mesh.meshTransparent) this.scene.remove(mesh.meshTransparent);
+        this.chunks.delete(ckey);
+      }
+      return;
+    }
+    if (!mesh) {
+      const origin = this.world.chunkOrigin(ckey);
+      mesh = new ChunkMesh({
+        THREE: this.THREE,
+        world: this.world,
+        origin,
+        size: this.chunkSize,
+        tileIndexFor: this.tileIndexFor,
+        atlas: this.atlas,
+        material: this.material,
+        materialTransparent: this.materialTransparent,
+        lightField: this.light,
+      });
+      this.chunks.set(ckey, mesh);
+      this.scene.add(mesh.mesh);
+      if (mesh.meshTransparent) this.scene.add(mesh.meshTransparent);
+    }
+    mesh.applyData(data);
+  }
+
+  /** Invalidate every in-flight worker mesh (after light/world reloads whose
+   *  changes aren't tracked per-chunk). Replies get dropped + re-requested. */
+  _invalidatePendingMeshes() {
+    for (const ckey of this._pendingMesh.keys()) {
+      this._chunkGen.set(ckey, (this._chunkGen.get(ckey) ?? 0) + 1);
+    }
+    if (this._pendingMesh.size) this._streamDirty = true;
   }
 
   /** Build or refresh the mesh for one chunk. Chunks emptied of content are
@@ -349,6 +468,7 @@ export class Renderer {
    *  this the surrounding surfaces would keep their old (dark) baked light.
    */
   rebakeChunkLight() {
+    this._invalidatePendingMeshes();
     for (const mesh of this.chunks.values()) mesh.update();
   }
 
@@ -357,6 +477,7 @@ export class Renderer {
    * @returns {string[]} the chunk keys that were loaded
    */
   rebuildAll() {
+    this._invalidatePendingMeshes();
     this.light.recompute();
     this.world.drainEdits();
     this.world.drainDirty();
@@ -376,6 +497,7 @@ export class Renderer {
    * rest streams in as the camera moves.
    */
   loadWorldBounds() {
+    this._invalidatePendingMeshes();
     const b = this.world.bounds();
     if (!b) {
       this.light.clear();
@@ -425,6 +547,7 @@ export class Renderer {
 
   /** Drop all loaded chunk meshes (before clear/load). */
   clearChunks() {
+    this._invalidatePendingMeshes();
     for (const mesh of this.chunks.values()) mesh.dispose();
     this.chunks.clear();
     this.light.clear();
@@ -450,7 +573,7 @@ export class Renderer {
     // drives the visual sky (sun/moon position, dome tint, stars, clouds).
     const angle = this._skyTime * L.dayNightSpeed * Math.PI * 2 + Math.PI / 2;
     const phase = 0.5 + 0.5 * Math.sin(angle);
-    const intensity = 0.15 + 0.85 * phase; // 0.15 .. 1.0
+    const intensity = 0.05 + 0.95 * phase; // 0.05 .. 1.0 — darker nights
 
     // The sky rig moves first so the directional shading below can follow the
     // SAME sun the player sees in the dome (no more static sun direction).

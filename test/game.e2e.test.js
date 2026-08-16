@@ -203,18 +203,25 @@ T('player can walk in the world', async () => {
 });
 
 T('save then load slots round-trips world + position', async () => {
-  // Move somewhere, then save to slot 0.
-  const saved = await page.evaluate(() => {
+  // Move somewhere, then save to slot 0 (v2: async, snapshot in IndexedDB).
+  const saved = await page.evaluate(async () => {
     const { walk } = window.__voxelgame;
     walk.position.set(3.5, 1.0, 1.5);
     walk.yaw = 0.7;
-    window.__voxelgame.saveSlot(0);
-    const raw = JSON.parse(localStorage.getItem('voxelgame.save.0'));
-    return { pos: [raw.player.x, raw.player.y, raw.player.z], yaw: raw.player.yaw, hasBundle: !!raw.bundle, savedAt: !!raw.savedAt };
+    await window.__voxelgame.saveSlot(0);
+    const slot = await window.__voxelgame.saves.read('slot0');
+    return {
+      pos: [slot.player.x, slot.player.y, slot.player.z],
+      yaw: slot.player.yaw,
+      format: slot.format,
+      worldFormat: slot.world?.format,
+      savedAt: !!slot.savedAt,
+    };
   });
   assert.deepEqual(saved.pos, [3.5, 1.0, 1.5]);
   assert.equal(saved.yaw, 0.7);
-  assert.equal(saved.hasBundle, true, 'slot must snapshot the world bundle');
+  assert.equal(saved.format, 'voxelsave');
+  assert.equal(saved.worldFormat, 'voxelsnap', 'slot must snapshot the world');
   assert.equal(saved.savedAt, true);
 
   // Overwrite the authored map, reload, then load slot 0: the saved world wins.

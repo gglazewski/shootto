@@ -13,6 +13,7 @@ import { itemAwarePick } from '../itemPick.js';
 import { getItem } from '../../engine/ItemRegistry.js';
 import { getEquipItem } from '../../engine/EquipmentRegistry.js';
 import { createItemGeometry } from '../ItemGeometry.three.js';
+import { applyMicroNoise } from '../microNoise.js';
 import { MICRO_SIZE, cellsOf, gridOf, quarterTurns } from '../../engine/ItemTypes.js';
 import { layFlat, layFlatCells } from '../../engine/LayFlat.js';
 import { CELL_SIZE } from '../../engine/Space.js';
@@ -166,7 +167,8 @@ export class ItemTool extends Tool {
     const geo = createItemGeometry(T, model.microVoxels, { rotation: this.rotation, grid: model.grid });
     const mesh = new T.Mesh(
       geo,
-      new T.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6, depthWrite: false }),
+      // Grain-patched like the placed item will render (WYSIWYG ghost).
+      applyMicroNoise(new T.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.6, depthWrite: false })),
     );
     mesh.scale.setScalar(c);
     group.add(mesh);

@@ -18,6 +18,7 @@ import base64
 import io
 import re
 from pathlib import Path
+from typing import NamedTuple
 
 import numpy as np
 from PIL import Image
@@ -32,12 +33,35 @@ OUT = ROOT / 'src' / 'game' / 'mobSheetData.js'
 # last run (see previous_strips). Drop a sheet back in to re-cut just that one.
 # Check what a file actually draws before pointing a character at it — earlier
 # drops had the nurse in trunks.png and the granny in nurse.png.
+#
+# `bg` overrides the chroma-key colour for sheets drawn on a different magenta,
+# and `erase` blanks hi-res (x0, y0, x1, y1) rectangles back to the backdrop
+# before keying — that is how a title card the art generator stamped onto the
+# sheet is kept out of the pose layout. Rectangles are in source pixels, so
+# re-check them if the art is redrawn.
+class Sheet(NamedTuple):
+    path: Path
+    bg: np.ndarray = None      # None -> BG
+    erase: tuple = ()
+
+
 SHEETS = {
-    'zombie': ROOT / 'spritesheet.png',
-    'ghoul': ROOT / 'spritesheet2.png',
-    'nurse': ROOT / 'nurse.png',
-    'granny': ROOT / 'granny.png',
-    'firefighter': ROOT / 'firefighter.png',
+    'zombie': Sheet(ROOT / 'spritesheet.png'),
+    'ghoul': Sheet(ROOT / 'spritesheet2.png'),
+    'nurse': Sheet(ROOT / 'nurse.png'),
+    'granny': Sheet(ROOT / 'granny.png'),
+    'firefighter': Sheet(ROOT / 'firefighter.png'),
+    # Shirtless zombie in striped trunks; a flip-flop lies by the corpse and is
+    # dropped as too small to be a pose.
+    'bather': Sheet(ROOT / 'zomb1.png', bg=np.array([177, 1, 128], dtype=np.float32)),
+    # Militia zombie. The sheet carries a "POLICEMAN ZOMBIE (POLAND 1993)" title
+    # card between the IDLE and HURT groups — big enough to read as a pose, so it
+    # is erased first. JPEG, hence the slightly noisier backdrop.
+    'policeman': Sheet(
+        ROOT / 'zomb2.jpeg',
+        bg=np.array([177, 0, 130], dtype=np.float32),
+        erase=((1000, 0, 1780, 500),),
+    ),
 }
 
 # NPC-only character sheets: a single band of two idle poses on the same
@@ -79,7 +103,10 @@ FRAME_ORDER = [
 
 F = 8              # hi-res -> logical downscale
 PAD_X = PAD_Y = 8  # hi-res padding kept clear inside the frame box
-BAND_GAP = 200     # hi-res vertical gap that separates two pose bands
+# Vertical gap that separates two pose bands. Roomy on purpose: within the last
+# band a standing collapse pose starts ~200px above the corpse lying beside it,
+# while one band starts ~470px below the one above it.
+BAND_GAP = 300
 MIN_POSE_H = 120   # taller than any label; shorter than the flattest corpse
 MIN_POSE_AREA = 30000
 
@@ -117,9 +144,15 @@ def despeckle(keep, min_area):
     return out
 
 
-def key_out(path, bg=BG):
-    """Chroma-key a sheet -> (rgb, alpha), with the backdrop un-mixed from edges."""
+def key_out(path, bg=BG, erase=()):
+    """Chroma-key a sheet -> (rgb, alpha), with the backdrop un-mixed from edges.
+
+    Anything inside an `erase` rectangle is painted out with the backdrop first,
+    so it never reaches pose finding.
+    """
     src = np.array(Image.open(path).convert('RGB')).astype(np.float32)
+    for x0, y0, x1, y1 in erase:
+        src[y0:y1, x0:x1] = bg
     dist = np.abs(src - bg).sum(axis=2)
     alpha = np.clip((dist - 70.0) / 90.0, 0.0, 1.0)
     a3 = alpha[:, :, None]
@@ -228,13 +261,18 @@ def rescale_pose(pose, factor):
     return rgb, np.clip(alpha, 0.0, 1.0), anchor * factor
 
 
-def stand_target_px(mob_poses):
-    """Hi-res standing height NPC art is scaled to match: the tallest mob pose
-    cut this run, or the last run's SHEET_STAND_ROWS when everything carried."""
+def stand_target_px(mob_poses, any_carried):
+    """Hi-res standing height NPC art is scaled to match: the tallest mob in the
+    run, cut now or carried from the last one.
+
+    A carried strip has no poses to measure, so it stands in with the last run's
+    SHEET_STAND_ROWS — otherwise re-cutting one short sheet while the rest carry
+    would quietly resize every NPC.
+    """
     heights = [a.shape[0] for sheet in mob_poses for _, a, _ in sheet.values()]
-    if heights:
-        return max(heights)
-    return int(re.search(r'SHEET_STAND_ROWS = (\d+)', OUT.read_text()).group(1)) * F
+    if any_carried:
+        heights.append(int(re.search(r'SHEET_STAND_ROWS = (\d+)', OUT.read_text()).group(1)) * F)
+    return max(heights)
 
 
 def strip_for(poses, frame_w, frame_h):
@@ -343,9 +381,10 @@ def repack(old_w, strip, frame_w, frame_h):
 
 carried = previous_strips()
 cut_sheets, reused = {}, {}
-for name, path in SHEETS.items():
+for name, sheet in SHEETS.items():
+    path = sheet.path
     if path.exists():
-        rgb, alpha = key_out(path)
+        rgb, alpha = key_out(path, BG if sheet.bg is None else sheet.bg, sheet.erase)
         boxes = find_poses(alpha)
         cut_sheets[name] = {pose: cut(rgb, alpha, box) for pose, box in boxes.items()}
         print(f'{name}: {len(boxes)} poses from {path.name}')
@@ -358,7 +397,7 @@ for name, path in SHEETS.items():
 # NPC sheets: cut the two idles, scale them to the mob sheets' standing height
 # (the source art is drawn at a different resolution), and fill the whole
 # 12-frame order from them.
-npc_target = stand_target_px(list(cut_sheets.values()))
+npc_target = stand_target_px(list(cut_sheets.values()), bool(reused))
 for name, path in NPC_SHEETS.items():
     if path.exists():
         rgb, alpha = key_out(path, NPC_BG)

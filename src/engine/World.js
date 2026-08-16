@@ -5,8 +5,14 @@
 //   SMALL -> 1x1x1 starting at its anchor cell.
 //   BIG   -> 2x2x2 starting at its anchor cell (anchor coords are even).
 //
-// Every occupied cell maps to the same Voxel object, so a BIG voxel owns
+// Every occupied cell resolves to the same Voxel object, so a BIG voxel owns
 // 8 entries. Lookup of any sub-cell returns the owning voxel in O(1).
+//
+// Cell storage is chunked: each non-empty chunk holds a dense ref array of
+// chunkSize^3 slots addressed by numeric index, keyed by a packed numeric
+// chunk coordinate. Compared to the old Map<"x,y,z", Voxel> this cuts memory
+// roughly 5x (no per-cell key strings) and makes get() allocation-free —
+// which matters because meshing, physics and raycasting all hammer it.
 
 import { anchorFor, cellsFor } from './VoxelShape.js';
 import { footprintCells, quarterTurns } from './ItemTypes.js';
@@ -27,14 +33,26 @@ export { DEFAULT_CHUNK_SIZE, anchorFor, cellsFor };
 
 const key = (x, y, z) => `${x},${y},${z}`;
 
+// Packed numeric chunk key: 16 bits per axis (offset so negatives pack too),
+// exact in a double up to ±32768 chunks per axis (±262 km). Numeric keys keep
+// the hot cell path free of string allocation.
+const CK_OFF = 32768;
+const CK_SPAN = 65536;
+
 export class World {
   /**
    * @param {number} [chunkSize] edge length of a chunk in small cells
    */
   constructor(chunkSize = DEFAULT_CHUNK_SIZE) {
     this.chunkSize = chunkSize;
-    /** @type {Map<string, Voxel>} cellKey -> voxel */
-    this.cells = new Map();
+    /** @type {Map<number, {arr: (Voxel|null)[], count: number, x0: number,
+     *  y0: number, z0: number, ckey: string}>} packed chunk coord -> dense
+     *  cell chunk (see the header comment). */
+    this._cellChunks = new Map();
+    /** One-entry chunk cache: consecutive get()s cluster heavily (meshing
+     *  halo prefetch, physics sweeps), so the repeat lookup is a compare. */
+    this._lastNk = NaN;
+    this._lastChunk = null;
     /** @type {Map<string, Voxel>} anchorKey -> voxel. One entry per voxel (a
      *  BIG voxel is one entry, not 8), so iteration, counting and bounds are
      *  O(#voxels) instead of O(#cells) — the difference between a quick
@@ -90,6 +108,11 @@ export class World {
      *  entirely on unpainted worlds (the common case), so the feature costs
      *  nothing until it is used. */
     this.paintCount = 0;
+    /** Revision counters bumped on any paint/decal mutation. Consumers that
+     *  index paint/decals by chunk (worker mesh snapshots) key their caches
+     *  on these instead of re-scanning the maps per chunk. */
+    this.paintRev = 0;
+    this.decalRev = 0;
     /** Splash cameras: authored camera shots the main menu can show. Each is
      *  { id, pos: [x,y,z] (meters), yaw, pitch (radians), fov, motion }. */
     this.splashCams = [];
@@ -106,9 +129,60 @@ export class World {
     this.spawnYaw = 0;
   }
 
-  /** Voxel occupying a cell, or null. */
+  /** Voxel occupying a cell, or null. Allocation-free (hot path). */
   get(x, y, z) {
-    return this.cells.get(key(x, y, z)) ?? null;
+    // Cells are integer-addressed; fractional probes (physics sweeps) found
+    // no string key in the old storage and must stay null here too — a
+    // fractional offset can otherwise alias onto a valid array index.
+    if ((x | 0) !== x || (y | 0) !== y || (z | 0) !== z) return null;
+    const s = this.chunkSize;
+    const fx = Math.floor(x / s), fy = Math.floor(y / s), fz = Math.floor(z / s);
+    const nk = ((fx + CK_OFF) * CK_SPAN + (fy + CK_OFF)) * CK_SPAN + (fz + CK_OFF);
+    let c;
+    if (nk === this._lastNk) {
+      c = this._lastChunk;
+    } else {
+      c = this._cellChunks.get(nk) ?? null;
+      this._lastNk = nk;
+      this._lastChunk = c;
+    }
+    if (!c) return null;
+    return c.arr[((x - c.x0) * s + (y - c.y0)) * s + (z - c.z0)];
+  }
+
+  /** Write one cell (voxel ref or null), maintaining chunk records and the
+   *  chunkCounts/chunkCoords indices the renderer streams from. */
+  _setCell(x, y, z, voxel) {
+    const s = this.chunkSize;
+    const fx = Math.floor(x / s), fy = Math.floor(y / s), fz = Math.floor(z / s);
+    const nk = ((fx + CK_OFF) * CK_SPAN + (fy + CK_OFF)) * CK_SPAN + (fz + CK_OFF);
+    let c = this._cellChunks.get(nk);
+    if (!c) {
+      if (!voxel) return;
+      const ckey = `${fx},${fy},${fz}`;
+      c = { arr: new Array(s * s * s).fill(null), count: 0, x0: fx * s, y0: fy * s, z0: fz * s, ckey };
+      this._cellChunks.set(nk, c);
+      this.chunkCoords.set(ckey, [fx, fy, fz]);
+      // A get() miss may have cached null for this key — refresh it.
+      this._lastNk = nk;
+      this._lastChunk = c;
+    }
+    const i = ((x - c.x0) * s + (y - c.y0)) * s + (z - c.z0);
+    const prev = c.arr[i];
+    c.arr[i] = voxel;
+    if (!prev === !voxel) return; // same occupancy (type swap) — counts hold
+    c.count += voxel ? 1 : -1;
+    if (c.count > 0) {
+      this.chunkCounts.set(c.ckey, c.count);
+    } else {
+      this._cellChunks.delete(nk);
+      this.chunkCounts.delete(c.ckey);
+      this.chunkCoords.delete(c.ckey);
+      if (this._lastChunk === c) {
+        this._lastNk = NaN;
+        this._lastChunk = null;
+      }
+    }
   }
 
   /**
@@ -131,9 +205,8 @@ export class World {
     }
     const cells = [...cellsFor(ax, ay, az, size, rot)];
     for (const [x, y, z] of cells) {
-      this.cells.set(key(x, y, z), voxel);
+      this._setCell(x, y, z, voxel);
       this.markDirty(x, y, z);
-      this._countCell(x, y, z, 1);
     }
     this.voxels.set(key(ax, ay, az), voxel);
     this._occupancyChanged = true;
@@ -145,7 +218,7 @@ export class World {
    *  Rotation matters only for non-square footprints (doors). */
   isAreaFree(ax, ay, az, size, rotation = 0) {
     for (const [x, y, z] of cellsFor(ax, ay, az, size, rotation)) {
-      if (this.cells.has(key(x, y, z))) return false;
+      if (this.get(x, y, z)) return false;
       if (this.itemCells.has(key(x, y, z))) return false;
     }
     return true;
@@ -164,9 +237,8 @@ export class World {
     const [ax, ay, az] = voxel.anchor;
     const cells = [...cellsFor(ax, ay, az, voxel.size, voxel.rotation ?? 0)];
     for (const [cx, cy, cz] of cells) {
-      this.cells.delete(key(cx, cy, cz));
+      this._setCell(cx, cy, cz, null);
       this.markDirty(cx, cy, cz);
-      this._countCell(cx, cy, cz, -1);
       // decals ride the voxel's faces — they go with it, whole footprints
       // included (a multi-cell decal loses its backing when any cell goes)
       for (const face of ['px', 'nx', 'py', 'ny', 'pz', 'nz']) {
@@ -238,6 +310,7 @@ export class World {
       this.decals.set(`${key(cx, cy, cz)},${face}`, decal);
       this.markDirty(cx, cy, cz);
     }
+    this.decalRev++;
     return true;
   }
 
@@ -251,6 +324,7 @@ export class World {
       this.decals.delete(`${key(cx, cy, cz)},${face}`);
       this.markDirty(cx, cy, cz);
     }
+    this.decalRev++;
     return decal;
   }
 
@@ -289,6 +363,7 @@ export class World {
     }
     if (rec[face] == null) this.paintCount++;
     rec[face] = blockId;
+    this.paintRev++;
     this.markDirty(x, y, z);
     return true;
   }
@@ -302,6 +377,7 @@ export class World {
     if (prev == null) return null;
     delete rec[face];
     this.paintCount--;
+    this.paintRev++;
     if (Object.keys(rec).length === 0) this.paint.delete(k);
     this.markDirty(x, y, z);
     return prev;
@@ -327,6 +403,7 @@ export class World {
     const n = Object.keys(rec).length;
     this.paint.delete(k);
     this.paintCount -= n;
+    this.paintRev++;
     return n;
   }
 
@@ -367,7 +444,7 @@ export class World {
       }
     });
     other.forEachPaint?.((p) => this.paintFace(p.x, p.y, p.z, p.face, p.type));
-    other.forEachItem((it) => this.placeItem(it.itemId, it.cells ?? it.size, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0));
+    other.forEachItem((it) => this.placeItem(it.itemId, it.cells ?? it.size, it.anchor[0], it.anchor[1], it.anchor[2], it.rotation ?? 0, it));
     other.forEachMobSpawn((s) => this.addMobSpawn(s.type, s.x, s.y, s.z, s));
     other.forEachNpcSpawn((s) => this.addNpcSpawn(s.type, s.x, s.y, s.z));
     other.forEachSplashCam((c) => this.addSplashCam({ ...c, pos: [...c.pos] }));
@@ -379,7 +456,9 @@ export class World {
 
   /** Remove every voxel, item and the spawn point. */
   clear() {
-    this.cells.clear();
+    this._cellChunks.clear();
+    this._lastNk = NaN;
+    this._lastChunk = null;
     this.voxels.clear();
     this.chunkCounts.clear();
     this.chunkCoords.clear();
@@ -395,6 +474,8 @@ export class World {
     this.decals.clear();
     this.paint.clear();
     this.paintCount = 0;
+    this.paintRev++;
+    this.decalRev++;
     this.splashCams.length = 0;
   }
 
@@ -406,9 +487,15 @@ export class World {
    * chunks (they are not part of chunk meshing); the caller triggers light +
    * mesh refresh.
    * @param {number} [rotation] yaw in radians about the footprint centre
+   * @param {object} [settings] per-placement settings riding on the record:
+   *   `loot` = search-loot config ({ pool: string[]|null, reset: number|null };
+   *   pool null = default pool, reset null = never restocks). An object with
+   *   a `loot` field is searchable in game; without one it is plain scenery.
+   *   `storage` = true marks a storage container: in game E opens a
+   *   persistent stash instead of a one-shot search.
    * @returns {boolean} true when placed
    */
-  placeItem(itemId, cells, ax, ay, az, rotation = 0) {
+  placeItem(itemId, cells, ax, ay, az, rotation = 0, settings = null) {
     const span = footprintCells(cells);
     const turns = quarterTurns(rotation);
     if (!this.isAreaFree(ax, ay, az, span, turns)) return false;
@@ -416,7 +503,15 @@ export class World {
     if (this.items.has(anchorKey)) return false;
     const covered = [...cellsFor(ax, ay, az, span, turns)];
     for (const [x, y, z] of covered) this.itemCells.set(key(x, y, z), anchorKey);
-    this.items.set(anchorKey, { itemId, anchor: [ax, ay, az], cells: span, rotation });
+    const record = { itemId, anchor: [ax, ay, az], cells: span, rotation };
+    if (settings?.loot && typeof settings.loot === 'object') {
+      record.loot = {
+        pool: Array.isArray(settings.loot.pool) ? [...settings.loot.pool] : null,
+        reset: Number.isFinite(settings.loot.reset) && settings.loot.reset > 0 ? settings.loot.reset : null,
+      };
+    }
+    if (settings?.storage === true) record.storage = true;
+    this.items.set(anchorKey, record);
     return true;
   }
 
@@ -470,8 +565,10 @@ export class World {
 
   /** Add a mob spawn at a cell (rejects overlaps). Optional per-spawner
    *  settings ride on the record: `loot` (equip item ids the spawner's mobs
-   *  may drop; null = default pool, [] = no drops) and `delay` ([min,max]
-   *  respawn wait in seconds; null = game default). @returns {boolean} */
+   *  may drop; null = default pool, [] = no drops), `delay` ([min,max]
+   *  respawn wait in seconds; null = game default) and `skins` (character
+   *  sheet names the spawner's mobs wear — nurses in a hospital, police in
+   *  a station; null/empty = any character). @returns {boolean} */
   addMobSpawn(type, x, y, z, settings = null) {
     const k = key(x, y, z);
     if (this.mobSpawns.has(k)) return false;
@@ -479,6 +576,9 @@ export class World {
     if (Array.isArray(settings?.loot)) spawn.loot = [...settings.loot];
     if (Array.isArray(settings?.delay) && settings.delay.length === 2) {
       spawn.delay = [Number(settings.delay[0]), Number(settings.delay[1])];
+    }
+    if (Array.isArray(settings?.skins) && settings.skins.length) {
+      spawn.skins = [...settings.skins];
     }
     this.mobSpawns.set(k, spawn);
     return true;
@@ -552,21 +652,6 @@ export class World {
     return `${fx},${fy},${fz}`;
   }
 
-  /** Maintain the per-chunk occupied-cell counter (and its coord index). */
-  _countCell(x, y, z, delta) {
-    const s = this.chunkSize;
-    const fx = Math.floor(x / s), fy = Math.floor(y / s), fz = Math.floor(z / s);
-    const ckey = `${fx},${fy},${fz}`;
-    const n = (this.chunkCounts.get(ckey) ?? 0) + delta;
-    if (n <= 0) {
-      this.chunkCounts.delete(ckey);
-      this.chunkCoords.delete(ckey);
-    } else {
-      this.chunkCounts.set(ckey, n);
-      if (!this.chunkCoords.has(ckey)) this.chunkCoords.set(ckey, [fx, fy, fz]);
-    }
-  }
-
   /** Keys of chunks holding at least one occupied cell. */
   chunkKeys() {
     return [...this.chunkCounts.keys()];
@@ -617,10 +702,25 @@ export class World {
 
   /** Iterate every occupied cell (BIG voxels yield all 8 sub-cells). */
   forEachCell(fn) {
-    for (const [k, v] of this.cells) {
-      const [x, y, z] = k.split(',').map(Number);
-      fn(x, y, z, v);
+    const s = this.chunkSize;
+    for (const c of this._cellChunks.values()) {
+      const { arr, x0, y0, z0 } = c;
+      for (let i = 0; i < arr.length; i++) {
+        const v = arr[i];
+        if (!v) continue;
+        const z = z0 + (i % s);
+        const y = y0 + (((i / s) | 0) % s);
+        const x = x0 + ((i / (s * s)) | 0);
+        fn(x, y, z, v);
+      }
     }
+  }
+
+  /** Total number of occupied cells (a BIG voxel counts 8). */
+  get cellCount() {
+    let n = 0;
+    for (const c of this.chunkCounts.values()) n += c;
+    return n;
   }
 
   /** Iterate each unique voxel once, keyed by anchor. */

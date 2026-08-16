@@ -39,6 +39,13 @@ export const CONFIG = Object.freeze({
     blockBounce: 0.35,
     nightSky: [0.05, 0.07, 0.15], // scene background at night
     fogColor: [0.66, 0.78, 0.9], // distance fog by day; lerps to nightSky at night
+    // Micro-voxel object grain: single-color voxels read flat, so the
+    // untextured item material jitters luminance per micro-cell (hash of the
+    // object-local cell, so the grain sticks to the object when it moves).
+    // Amp is the max ± fraction of the base color; 0 disables. Scale is
+    // grain cells per micro-voxel (2 = finer dither).
+    itemNoiseAmp: 0.05,
+    itemNoiseScale: 1,
   },
   render: {
     // Chunk streaming: chunks beyond viewDistance (in chunks, 8 m each) from
@@ -50,6 +57,12 @@ export const CONFIG = Object.freeze({
     unloadDistance: 30,
     // Max newly streamed chunk builds per frame (dirty rebuilds don't count).
     maxLoadsPerFrame: 4,
+    // Off-thread chunk meshing: streamed chunks snapshot on the main thread
+    // and mesh in this many Web Workers (0 = always mesh on the main
+    // thread). Fails soft to synchronous meshing when Workers are
+    // unavailable (node tests, file:// pages, missing bundle).
+    meshWorkers: 2,
+    meshWorkerUrl: 'build/mesh-worker.js',
     // Distance fog hides the streaming edge; near/far in meters. fogFar <= 0
     // derives both from viewDistance.
     fogNear: 0,

@@ -159,10 +159,13 @@ T('face paint repaints a rendered face without adding geometry', async () => {
   const info = await page.evaluate(async () => {
     const { world, renderer } = window.__voxelgame;
     const snapshot = () => {
+      // packed geometry: the sampled tile lives in tileInfo (uvLocal is the
+      // tile-local mapping) — together they define what the face samples
       let uvs = '';
       let tris = 0;
       for (const c of renderer.chunks.values()) {
-        uvs += [...c.geometry.attributes.uv.array].join(',');
+        uvs += [...c.geometry.attributes.uvLocal.array].join(',')
+          + '|' + [...c.geometry.attributes.tileInfo.array].join(',');
         tris += c.geometry.index.count;
       }
       return { uvs, tris };
@@ -241,9 +244,10 @@ T('lighting pipeline: sealed room is dark, roof hole lets light in', async () =>
     const { renderer } = window.__voxelgame;
     let minSky = 1;
     for (const c of renderer.chunks.values()) {
-      const light = c.geometry.attributes.light?.array;
-      if (!light) continue;
-      for (let i = 0; i < light.length; i += 2) minSky = Math.min(minSky, light[i]);
+      // packed geometry: shade = [ao, sky, block, emissive] bytes per vertex
+      const shade = c.geometry.attributes.shade?.array;
+      if (!shade) continue;
+      for (let i = 0; i < shade.length; i += 4) minSky = Math.min(minSky, shade[i + 1] / 255);
     }
     return { interior: renderer.light.get(0, 3, 0).sky, minSky };
   });
@@ -257,9 +261,9 @@ T('lighting pipeline: sealed room is dark, roof hole lets light in', async () =>
     const { renderer } = window.__voxelgame;
     let maxSky = 0;
     for (const c of renderer.chunks.values()) {
-      const light = c.geometry.attributes.light?.array;
-      if (!light) continue;
-      for (let i = 0; i < light.length; i += 2) maxSky = Math.max(maxSky, light[i]);
+      const shade = c.geometry.attributes.shade?.array;
+      if (!shade) continue;
+      for (let i = 0; i < shade.length; i += 4) maxSky = Math.max(maxSky, shade[i + 1] / 255);
     }
     return {
       shaft: renderer.light.get(0, 5, 0).sky,
@@ -526,11 +530,13 @@ T('F5 toggles test-run mode and back, restoring the editor camera', async () => 
   assert.ok(entered.walkPos.every((v) => Number.isFinite(v)), 'walk player must have a finite position');
   assert.ok(entered.spawn === null, 'this world has no spawn point, so it must use the fallback');
 
+  // Poll for the state flips instead of fixed sleeps: under SwiftShader the
+  // frame rate can dip low enough that a 120ms wait fits no physics frame.
   await page.keyboard.down('c');
-  await page.waitForTimeout(120);
+  await page.waitForFunction(() => window.__voxelgame.walk.crouching === true, { timeout: 3000 });
   const crouched = await page.evaluate(() => window.__voxelgame.walk.crouching);
   await page.keyboard.up('c');
-  await page.waitForTimeout(120);
+  await page.waitForFunction(() => window.__voxelgame.walk.crouching === false, { timeout: 3000 });
   const stood = await page.evaluate(() => window.__voxelgame.walk.crouching);
   assert.equal(crouched, true, 'C must crouch in test mode');
   assert.equal(stood, false, 'releasing C must stand back up when there is headroom');
@@ -1608,9 +1614,10 @@ T('placing a light-emitting object bakes its light into the world instantly', as
   const maxChunkBlock = async () => page.evaluate(() => {
     let max = 0;
     for (const c of window.__voxelgame.renderer.chunks.values()) {
-      const light = c.geometry.attributes.light;
-      if (!light) continue;
-      for (let i = 1; i < light.count * 2; i += 2) max = Math.max(max, light.array[i]);
+      // packed geometry: shade = [ao, sky, block, emissive] bytes per vertex
+      const shade = c.geometry.attributes.shade;
+      if (!shade) continue;
+      for (let i = 2; i < shade.count * 4; i += 4) max = Math.max(max, shade.array[i] / 255);
     }
     return max;
   });

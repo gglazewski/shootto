@@ -19,6 +19,7 @@
 
 import { assertValidBlockId, SIZE, isDecalId, isBlockId, FACES, getBlock } from '../engine/VoxelTypes.js';
 import { textSpecOf } from '../engine/TextDecals.js';
+import { pixelSpecOf } from '../engine/PixelDecals.js';
 import { legacyLightSettings } from '../engine/Lights.js';
 import { canonicalDecalId } from '../engine/Switches.js';
 import { isItemId } from '../engine/ItemRegistry.js';
@@ -99,6 +100,7 @@ export function serializePrefab(world, { id, name, dims, thumb = null }) {
 
   const decals = [];
   const textDecals = new Map();
+  const pixelDecals = new Map();
   world.forEachDecal((d) => {
     const [x, y, z] = d.cell;
     if (y < 0) return;
@@ -114,6 +116,8 @@ export function serializePrefab(world, { id, name, dims, thumb = null }) {
     });
     const spec = textSpecOf(d.decalId);
     if (spec && !textDecals.has(d.decalId)) textDecals.set(d.decalId, { id: d.decalId, ...spec });
+    const pspec = pixelSpecOf(d.decalId);
+    if (pspec && !pixelDecals.has(d.decalId)) pixelDecals.set(d.decalId, { id: d.decalId, ...pspec });
   });
 
   // Paint rides the faces of blocks already checked above, so it needs no
@@ -141,6 +145,7 @@ export function serializePrefab(world, { id, name, dims, thumb = null }) {
       decals,
       ...(paint.length ? { paint } : {}),
       ...(textDecals.size ? { textDecals: [...textDecals.values()] } : {}),
+      ...(pixelDecals.size ? { pixelDecals: [...pixelDecals.values()] } : {}),
     },
     outside: 0,
   };
@@ -224,6 +229,18 @@ export function deserializePrefab(text) {
     }
   }
 
+  // Drawn decal specs ride along the same way.
+  const pixelDecals = [];
+  if (Array.isArray(data.pixelDecals)) {
+    for (const p of data.pixelDecals) {
+      if (!p || typeof p.id !== 'string' || typeof p.px !== 'string' || !/^decal_pix_[a-z0-9]+$/.test(p.id)) {
+        errors.push('Skipped malformed pixel decal definition');
+        continue;
+      }
+      pixelDecals.push(p);
+    }
+  }
+
   const decals = [];
   if (Array.isArray(data.decals)) {
     for (const d of data.decals) {
@@ -277,6 +294,7 @@ export function deserializePrefab(text) {
       decals,
       paint,
       ...(textDecals.length ? { textDecals } : {}),
+      ...(pixelDecals.length ? { pixelDecals } : {}),
     },
     errors,
   };

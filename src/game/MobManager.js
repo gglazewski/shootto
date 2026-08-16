@@ -134,8 +134,10 @@ export class MobManager {
         aggroDelay: Math.random() * 0.3,
         // A spawn point says what a mob *is*; which of the drawn characters it
         // looks like, and how tall it stands, are rolled here so a crowd is a
-        // mix rather than a row of clones. Stats and AI are untouched.
-        skin: randomMobSkin(),
+        // mix rather than a row of clones. Stats and AI are untouched. An
+        // authored `skins` pool narrows the roll (hospital spawners roll
+        // nurses), it never changes stats.
+        skin: randomMobSkin(Math.random, s.skins ?? null),
         height: randomMobHeight(),
         onDamagePlayer: this.onDamagePlayer,
       });
@@ -152,9 +154,11 @@ export class MobManager {
         timer: 0,
         waves: 0,
         // authored spawner settings (see World.addMobSpawn): loot pool the
-        // point's mobs may drop, and its respawn-delay range override
+        // point's mobs may drop, its respawn-delay range override, and the
+        // characters its waves wear
         loot: s.loot ?? null,
         delay: s.delay ?? null,
+        skins: s.skins ?? null,
       };
       mob._respawn = entry;
       this.respawns.push(entry);
@@ -209,7 +213,7 @@ export class MobManager {
         world: this.solidWorld,
         nav,
         aggroDelay: Math.random() * 0.3,
-        skin: randomMobSkin(),
+        skin: randomMobSkin(Math.random, origin?.skins ?? null),
         height: randomMobHeight(),
         onDamagePlayer: this.onDamagePlayer,
       });

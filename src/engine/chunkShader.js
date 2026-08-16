@@ -13,6 +13,8 @@
 // player's own hands/weapon near the barrel without touching the light field.
 
 import { CONFIG } from '../config.js';
+import { CELL_SIZE } from './Space.js';
+import { POS_QUANT, UV_QUANT } from './ChunkMeshBuilder.js';
 
 /** Max dynamic flicker-lamp lights the shader evaluates per fragment; the
  *  Renderer keeps the nearest ones when a map has more lit flickering lamps. */
@@ -26,10 +28,19 @@ export const MAX_LAMPS = 8;
  *   the surface — used to light placeable object meshes with the same engine.
  * @param {object} [deps.config]  overrides merged over CONFIG.lighting
  * @param {boolean} [deps.transparent]  transparent (alpha-blended) variant
+ * @param {boolean} [deps.packed]  consume the mesher's packed vertex format
+ *   (quantized chunk-local positions, shade vec4, tile-local UVs re-tiled in
+ *   the shader so greedy-merged quads repeat their tile). Requires `map` and
+ *   `atlas`.
+ * @param {{width:number,height:number,tileSize?:number}} [deps.atlas]
  */
-export function createChunkMaterial(THREE, { map, config = {}, transparent = false }) {
+export function createChunkMaterial(THREE, { map, config = {}, transparent = false, packed = false, atlas = null }) {
   const L = { ...CONFIG.lighting, ...config };
   const hasMap = !!map;
+  if (packed && (!hasMap || !atlas)) throw new Error('packed chunk material needs map + atlas');
+  const AW = atlas?.width ?? 1;
+  const AH = atlas?.height ?? 1;
+  const tileSize = atlas?.tileSize ?? 16;
 
   const material = new THREE.ShaderMaterial({
     uniforms: {
@@ -55,6 +66,16 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       uLampI: { value: new Float32Array(MAX_LAMPS) },
       uLampCount: { value: 0 },
       uLampGain: { value: L.flickerGain ?? 0.5 },
+      ...(packed ? {
+        uAtlasGrid: { value: new THREE.Vector2(AW, AH) },
+        uTexelPad: { value: new THREE.Vector2(0.5 / (AW * tileSize), 0.5 / (AH * tileSize)) },
+        uPosScale: { value: CELL_SIZE / POS_QUANT },
+        uUvScale: { value: 1 / UV_QUANT },
+      } : {}),
+      ...(hasMap ? {} : {
+        uNoiseAmp: { value: L.itemNoiseAmp ?? 0.05 },
+        uNoiseScale: { value: L.itemNoiseScale ?? 1 },
+      }),
     },
     transparent,
     // The transparent pass writes depth too: chunk transparent buffers hold
@@ -65,9 +86,20 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
     depthWrite: true,
     side: transparent ? THREE.DoubleSide : THREE.FrontSide,
     vertexShader: `
+      ${packed ? `
+      // Packed chunk vertices (see ChunkMeshBuilder): quantized chunk-local
+      // positions, shade = [ao, sky, block, emissive], tile-local UVs plus a
+      // packed atlas-rect descriptor decoded here once per vertex.
+      attribute vec2 uvLocal;
+      attribute float tileInfo;
+      attribute vec4 shade;
+      uniform vec2 uAtlasGrid;
+      uniform float uPosScale;
+      uniform float uUvScale;
+      varying vec4 vTileRect;` : `
       attribute vec3 color;
       attribute vec2 light;
-      attribute float emissive;
+      attribute float emissive;`}
       uniform vec3 uSunDir;
       varying vec2 vUv;
       varying vec3 vColor;
@@ -75,14 +107,34 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       varying float vSun;
       varying float vEmissive;
       varying vec3 vWorldPos;
+      ${hasMap ? '' : 'varying vec3 vNoisePos;'}
 
       void main() {
+        ${packed ? `
+        vUv = uvLocal * uUvScale;
+        float ti = tileInfo;
+        float th = floor(ti / 65536.0); ti -= th * 65536.0;
+        float tw = floor(ti / 4096.0); ti -= tw * 4096.0;
+        float row = floor((ti + 0.5) / uAtlasGrid.x);
+        float col = ti - row * uAtlasGrid.x;
+        // Atlas is flipY: a rect ending in row \`row\` spans v upward from
+        // 1-(row+h)/AH (same math as the CPU packer).
+        vTileRect = vec4(col / uAtlasGrid.x, 1.0 - (row + th) / uAtlasGrid.y, tw / uAtlasGrid.x, th / uAtlasGrid.y);
+        vColor = vec3(shade.x);
+        vLight = shade.yz;
+        vEmissive = shade.w;
+        vec3 pos = position * uPosScale;` : `
         vUv = uv;
         vColor = color;
         vLight = light;
         vEmissive = emissive;
+        vec3 pos = position;`}
+        // Sample point for the per-micro-cell grain: pulled half a cell into
+        // the voxel the face belongs to, in object-local units, so the grain
+        // is stable under movement/rotation and unambiguous on cell borders.
+        ${hasMap ? '' : 'vNoisePos = pos - normal * 0.5;'}
         vSun = max(0.0, dot(normalize(normal), normalize(uSunDir)));
-        vec4 worldPos = modelMatrix * vec4(position, 1.0);
+        vec4 worldPos = modelMatrix * vec4(pos, 1.0);
         vWorldPos = worldPos.xyz;
         gl_Position = projectionMatrix * viewMatrix * worldPos;
       }
@@ -109,7 +161,11 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       uniform float uLampI[${MAX_LAMPS}]; // 0..1 gutter signal per lamp
       uniform int uLampCount;
       uniform float uLampGain;
-      ${hasMap ? 'varying vec2 vUv;' : ''}
+      ${hasMap ? 'varying vec2 vUv;' : `varying vec3 vNoisePos;
+      uniform float uNoiseAmp;
+      uniform float uNoiseScale;`}
+      ${packed ? `varying vec4 vTileRect;
+      uniform vec2 uTexelPad;` : ''}
       varying vec3 vColor;
       varying vec2 vLight;
       varying float vSun;
@@ -117,7 +173,15 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
       varying vec3 vWorldPos;
 
       void main() {
-        ${hasMap ? 'vec4 tex = texture2D(map, vUv);' : 'vec4 tex = vec4(1.0);'}
+        ${packed ? `
+        // Re-tile: merged greedy quads carry tile-local UVs spanning 0..N —
+        // wrap each unit back into the (half-texel inset) atlas rect. Values
+        // in [0,1] pass through untouched so single quads sample exactly the
+        // rect the CPU packer intended, endpoints included. The clamp guards
+        // MSAA extrapolation on sliver triangles.
+        vec2 wuv = clamp(vUv - floor(vUv) * step(1.0001, vUv), 0.0, 1.0);
+        vec2 tuv = vTileRect.xy + uTexelPad + wuv * (vTileRect.zw - 2.0 * uTexelPad);
+        vec4 tex = texture2D(map, tuv);` : hasMap ? 'vec4 tex = texture2D(map, vUv);' : 'vec4 tex = vec4(1.0);'}
         // Opaque pass: cutout shapes (chain-link, bars, boards) live here so
         // they write depth and sort correctly — discard their holes. Cube
         // tiles are fully opaque, so they never hit the discard.
@@ -133,6 +197,16 @@ export function createChunkMaterial(THREE, { map, config = {}, transparent = fal
         // back to its valid range first.
         vec2 lightIn = clamp(vLight, 0.0, 1.0);
         vec3 vertCol = clamp(vColor, 0.0, 1.0);
+        // Untextured objects are flat single-color voxels; a luminance-only
+        // jitter hashed per object-local micro-cell gives them the same
+        // "texel" grain the atlas tiles bake in. Greedy-merged quads still
+        // resolve per-cell because vNoisePos interpolates across the rect.
+        // The hash MUST match src/editor/microNoise.js (editor previews) so
+        // what you paint is what you place.
+        ${hasMap ? '' : `
+        vec3 noiseCell = floor(vNoisePos * uNoiseScale);
+        float grain = fract(sin(dot(noiseCell, vec3(127.1, 311.7, 74.7))) * 43758.5453);
+        vertCol = clamp(vertCol * (1.0 + uNoiseAmp * (grain * 2.0 - 1.0)), 0.0, 1.0);`}
         float sunIn = clamp(vSun, 0.0, 1.0);
         float emissiveIn = clamp(vEmissive, 0.0, 1.0);
         float sky = lightIn.x * uSkyIntensity;

@@ -7,7 +7,7 @@
 import { listBlockIds, getBlock, tileFor, listDecalIds, getDecal } from '../engine/VoxelTypes.js';
 
 export const TILE_SIZE = 16;export const ATLAS_WIDTH = 8; // tiles per row
-export const ATLAS_HEIGHT = 40; // rows (small tiles + multi-slot decal/door art + runtime sign tiles)
+export const ATLAS_HEIGHT = 44; // rows (small tiles + multi-slot decal/door art + runtime sign tiles)
 export const ATLAS_TILES = ATLAS_WIDTH * ATLAS_HEIGHT;
 
 /** Deterministic PRNG so textures are stable between runs. */
@@ -169,6 +169,42 @@ const dirtDry = tint(dirt, 1.22, 1.14, 0.98);        // dusty cracked ground
 const dirtDark = tint(dirt, 0.6, 0.56, 0.54);        // rich damp soil
 const sandRed = tint(sand, 1.04, 0.7, 0.48);         // red desert sand
 const sandDark = tint(sand, 0.66, 0.64, 0.62);       // wet shoreline sand
+
+// --- vegetation: tree-canopy cubes and bush cutouts ---
+
+// Tree foliage: clustered leaf clumps (coarse 2x2 tones), pocked by deep
+// shadow holes and the odd lit leaf tip — denser and darker than grass so
+// canopies read as foliage, not lawn.
+const leaves = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 14;
+  if (hash2(x, y + 91) < 0.05) return [26, 46, 22];            // shadow holes
+  if (hash2(x, y + 37) < 0.07) return [116 + n, 164 + n, 82];  // lit leaf tips
+  const clump = hash2(x >> 1, (y >> 1) + 57);
+  const base = [
+    [44, 86, 34], [56, 104, 40], [66, 118, 48], [38, 72, 30], [78, 132, 56],
+  ][Math.floor(clump * 5)];
+  return [base[0] + n, base[1] + n, base[2] + n];
+};
+const leavesDark = tint(leaves, 0.64, 0.7, 0.68);   // spruce-dark crown
+const leavesAutumn = tint(leaves, 2.1, 0.95, 0.4);  // orange-brown fall crown
+
+// A bush (cutout for the cross shape): three overlapping leaf blobs anchored
+// to the tile bottom, edges raggedized by hash2, filled with the same leaf
+// mottle as the canopy cubes. `berries` sprinkles red dots on top.
+const bushGen = (tr, tg, tb, berries) => (x, y, s, rng) => {
+  const blobs = [[4.6, 10.4, 4.6], [11.2, 10.8, 4.3], [8, 7.2, 4.5]];
+  let inside = false;
+  for (const [bx, by, r] of blobs) {
+    if (Math.hypot(x - bx, y - by) <= r - hash2(x, y) * 1.7) { inside = true; break; }
+  }
+  if (!inside) return [0, 0, 0, 0];
+  if (berries && hash2(x * 3 + 1, y * 3 + 2) < 0.08) return [198, 40, 44, 255];
+  const [lr, lg, lb, la] = leaves(x, y, s, rng);
+  return [lr * tr, lg * tg, lb * tb, la ?? 255];
+};
+const bush = bushGen(1, 1, 1, false);
+const bushBerry = bushGen(0.9, 0.95, 0.9, true);
+const bushDry = bushGen(1.7, 1.15, 0.55, false);
 
 // --- ground cover: cutout art for the crossed quads the mesher sprouts on
 // grass-family tops (see ChunkMeshBuilder's cover()). Alpha 0 = air; the
@@ -996,6 +1032,124 @@ const garageBrown = garageDoor(118, 72, 52);
 const garageGreen = garageDoor(74, 128, 82);
 const garageRed = garageDoor(152, 62, 52);
 
+// --- Nysa van kit: painted body panels with a chrome beltline, a painted
+// grille and chrome-ringed headlights in three factory paints, plus shared
+// rubber-gasket glazing, steel wheels and a black bumper blade ---
+const carPaint = (pr, pg, pb) => (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 6;
+  const sheen = y < 3 ? (3 - y) * 6 : 0;                     // sky sheen along the top
+  const chip = hash2(x * 5, y * 5) < 0.02 ? -14 : 0;         // dulled paint chips
+  return [pr + sheen + chip + n, pg + sheen + chip + n, pb + sheen + chip + n];
+};
+const carTrim = (pr, pg, pb) => {
+  const base = carPaint(pr, pg, pb);
+  return (x, y, s, rng) => {
+    const n = (rng() - 0.5) * 8;
+    if (y === 7) return [224 + n, 226 + n, 230 + n];         // chrome strip, lit
+    if (y === 8) return [148 + n, 152 + n, 158 + n];         // chrome strip, shade
+    return base(x, y, s, rng);
+  };
+};
+const carGrille = (pr, pg, pb) => {
+  const base = carPaint(pr, pg, pb);
+  return (x, y, s, rng) => {
+    const n = (rng() - 0.5) * 8;
+    if (x < 2 || x >= s - 2 || y < 2 || y >= s - 2) return base(x, y, s, rng); // painted surround
+    if (x === 2 || x === s - 3 || y === 2 || y === s - 3) return [pr * 0.5 + n, pg * 0.5 + n, pb * 0.5 + n]; // recess shadow
+    if ((y & 1) === 0 && (x & 3) !== 3) return [22 + n, 22 + n, 24 + n]; // stamped slots
+    return [pr * 0.8 + n, pg * 0.8 + n, pb * 0.8 + n];       // painted mesh bars
+  };
+};
+const carLight = (pr, pg, pb) => {
+  const base = carPaint(pr, pg, pb);
+  return (x, y, s, rng) => {
+    const n = (rng() - 0.5) * 8;
+    const d = Math.hypot(x - (s / 2 - 0.5), y - (s / 2 - 0.5));
+    if (d < 3.4) {                                           // glass lens
+      const hi = x < s / 2 - 1 && y < s / 2 - 1 ? 42 : 0;    // reflection
+      return [204 + hi + n, 200 + hi + n, 178 + n];
+    }
+    if (d < 4.8) return [214 + n, 218 + n, 224 + n];         // chrome rim
+    if (d < 5.6) return [pr * 0.62 + n, pg * 0.62 + n, pb * 0.62 + n]; // bezel shadow
+    return base(x, y, s, rng);
+  };
+};
+// Upright rear lamp cluster on body paint: chrome bezel, red brake/tail
+// lens on top, two amber indicator segments below (the Nysa's tail light).
+const carTail = (pr, pg, pb) => {
+  const base = carPaint(pr, pg, pb);
+  return (x, y, s, rng) => {
+    const n = (rng() - 0.5) * 8;
+    if (x >= 5 && x <= 10 && y >= 2 && y <= 13) {
+      if (x === 5 || x === 10 || y === 2 || y === 13) return [198 + n, 202 + n, 208 + n]; // chrome bezel
+      const hi = x === 6 ? 26 : 0;                           // lens highlight
+      if (y <= 6) return [182 + hi + n, 36 + n, 30 + n];     // brake/tail lens
+      if (y === 7 || y === 10) return [96 + n, 44 + n, 26 + n]; // segment ribs
+      return [222 + hi + n, 140 + n, 30 + n];                // indicator lenses
+    }
+    return base(x, y, s, rng);
+  };
+};
+// Rubber-gasket van glazing: black seal ring around green-grey tinted glass.
+// Glass texels stay below the cutout threshold (alpha < 128) so the opaque
+// pass discards them and the transparent pass blends them. The gasket is
+// per-edge: `mask` bits (1 = art left, 2 = right, 4 = top, 8 = bottom) name
+// the edges where a neighbouring car_window continues the pane, and the
+// frame gives way to glass there so a run of blocks reads as one big framed
+// window. The mesher picks the `car_window_<mask>` variant per face (see
+// `connect` in engine/VoxelTypes.js); mask 0 is the standalone tile.
+const carWindowConn = (mask) => (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 6;
+  const L = !(mask & 1), R = !(mask & 2), T = !(mask & 4), B = !(mask & 8);
+  if ((L && x < 2) || (R && x >= s - 2) || (T && y < 2) || (B && y >= s - 2))
+    return [36 + n, 36 + n, 38 + n, 255];                    // rubber gasket
+  if ((L && x === 2) || (R && x === s - 3) || (T && y === 2) || (B && y === s - 3))
+    return [20 + n, 22 + n, 24 + n, 255];                    // seal lip
+  const d = Math.floor(x + y * 0.6);
+  const streak = d % 9 === 2 || d % 9 === 3 ? 38 : 0;        // sky reflection
+  return [70 + streak + n, 84 + streak + n, 94 + streak + n, 115];
+};
+const carWindow = carWindowConn(0);
+const carWindowVariants = {};
+for (let m = 1; m < 16; m++) carWindowVariants[`car_window_${m}`] = carWindowConn(m);
+// Steel wheel for the block's side faces: black tyre, cream dished rim with
+// vent slots, dark hub cap; the corners fall into wheel-arch shadow.
+const carWheel = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 8;
+  const cx = s / 2 - 0.5;
+  const d = Math.hypot(x - cx, y - cx);
+  if (d < 1.7) return [28 + n, 28 + n, 30 + n];              // hub cap
+  if (d < 2.4) return [188 + n, 182 + n, 162 + n];           // cap ring
+  if (d < 4.9) {
+    const slot = d > 3.4 && Math.abs(Math.sin(Math.atan2(y - cx, x - cx) * 3)) > 0.94;
+    if (slot) return [96 + n, 92 + n, 82 + n];               // vent slots
+    return [226 + n, 218 + n, 194 + n];                      // cream steel rim
+  }
+  if (d < 5.6) return [150 + n, 144 + n, 128 + n];           // rim lip shade
+  if (d < 7.8) return [40 + n, 40 + n, 42 + n];              // tyre sidewall
+  return [18 + n, 18 + n, 20 + n];                           // arch shadow
+};
+// Tyre tread for the wheel block's top/bottom faces.
+const carTire = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 6;
+  const lug = ((x + ((y >> 2) & 1) * 2) & 3) === 0 ? -12 : 4;
+  return [36 + lug + n, 36 + lug + n, 38 + lug + n];
+};
+// Black steel bumper blade: lit top roll, scuffed face, shadow underneath.
+const carBumper = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 8;
+  if (y < 2) return [72 + n, 72 + n, 76 + n];                // lit top roll
+  if (y >= s - 2) return [16 + n, 16 + n, 18 + n];           // under shadow
+  const scuff = hash2(x * 3, y * 3) < 0.05 ? 30 : 0;
+  return [34 + scuff + n, 34 + scuff + n, 36 + scuff + n];
+};
+const CAR_BLUE = [64, 148, 188], CAR_RED = [168, 52, 44], CAR_CREAM = [222, 208, 170];
+const carBodyBlue = carPaint(...CAR_BLUE), carBodyRed = carPaint(...CAR_RED), carBodyCream = carPaint(...CAR_CREAM);
+const carTrimBlue = carTrim(...CAR_BLUE), carTrimRed = carTrim(...CAR_RED), carTrimCream = carTrim(...CAR_CREAM);
+const carGrilleBlue = carGrille(...CAR_BLUE), carGrilleRed = carGrille(...CAR_RED), carGrilleCream = carGrille(...CAR_CREAM);
+const carLightBlue = carLight(...CAR_BLUE), carLightRed = carLight(...CAR_RED), carLightCream = carLight(...CAR_CREAM);
+const carTailBlue = carTail(...CAR_BLUE), carTailRed = carTail(...CAR_RED), carTailCream = carTail(...CAR_CREAM);
+
 // Framed window pane: white PVC/wood frame around slightly bluish glass
 // with a diagonal sky reflection. Rendered in the transparent pass.
 const windowWhite = (x, y, s, rng) => {
@@ -1371,6 +1525,166 @@ const decalLadder = (x, y, s, rng) => {
   return [g, g + 4, g + 10, 255];
 };
 
+// --- 90s apartment interior set: decals ---
+
+// 32x32 framed "jeleń na rykowisku" print: gilt frame, misty forest
+// clearing, a bugling stag — the mandatory painting over every wall unit.
+const decalJelen = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 10;
+  if (x < 1 || x > 30 || y < 1 || y > 30) return [0, 0, 0, 0];
+  if (x < 3 || x > 28 || y < 3 || y > 28) {               // gilt frame
+    const bevel = (x === 1 || y === 1) ? 24 : (x === 30 || y === 30) ? -22 : 0;
+    return [172 + bevel + n, 138 + bevel + n, 58, 255];
+  }
+  // stag silhouette: body, raised neck, head thrown back, legs, antlers
+  const body = inRect(x, y, 12, 17, 21, 21);
+  const neck = y >= 11 && y <= 17 && Math.abs(x - (19 + (17 - y) * 0.35)) < 1.6;
+  const head = inRect(x, y, 20, 10, 23, 12);
+  const legs = y > 21 && y <= 25 && (x === 13 || x === 16 || x === 19 || x === 21);
+  const antler = y >= 5 && y <= 9 &&
+    ((x === 20 && (y & 1) === 0) || x === 22 || (x === 24 && (y & 1)));
+  if (body || neck || head || legs || antler) return [70 + n * 0.5, 50, 34, 255];
+  if (y <= 10) return [150 + n, 168 + n, 178 + n, 255];   // misty sky
+  if (y <= 13) {                                          // dark pine treeline
+    if (hash2(x, y) < 0.75) return [42 + n, 64, 48, 255];
+    return [122 + n, 142 + n, 150 + n, 255];
+  }
+  if (y <= 15) return [140 + n, 152 + n, 148 + n, 255];   // mist over the meadow
+  const g = 66 + hash2(x, y) * 26;                        // meadow
+  return [g * 0.8 + n, g + 10 + n, 44, 255];
+};
+
+// 32x32 family photo wall: a cluster of mismatched frames, sepia
+// head-and-shoulders portraits inside.
+const decalPhotos = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 8;
+  const frames = [
+    [2, 3, 12, 15, 92, 62, 36],                           // dark wood, portrait
+    [16, 2, 29, 12, 60, 44, 30],                          // wide landscape
+    [4, 19, 13, 29, 132, 100, 52],                        // lighter frame
+    [17, 16, 28, 30, 70, 50, 34],                         // tall portrait
+  ];
+  for (const [x0, y0, x1, y1, fr, fg, fb] of frames) {
+    if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+    if (x === x0 || x === x1 || y === y0 || y === y1) return [fr + n, fg + n, fb, 255];
+    const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+    const head = Math.hypot(x - cx, y - (cy - 1)) < 1.8;
+    const chest = y > cy && y < y1 - 1 && Math.abs(x - cx) < 2.5;
+    if (head || chest) return [196 + n, 178 + n, 148, 255];
+    return [148 + n, 122 + n, 92, 255];                   // faded sepia ground
+  }
+  return [0, 0, 0, 0];
+};
+
+// 32x16 kitchen makatka: white embroidered cloth on a rod, red cross-stitch
+// borders, a flower motif each side and a line of stitched motto between.
+const decalMakatka = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 8;
+  const hem = 13 + ((x >> 2) & 1);                        // gently stepped hem
+  if (x < 1 || x > 30 || y > hem) return [0, 0, 0, 0];
+  if (y === 0) return [150 + n, 110, 74, 255];            // hanging rod
+  const cloth = [236 + n, 232 + n, 222 + n, 255];
+  const red = [178 + n, 44, 42, 255];
+  if (y === 2 || y === hem - 1) return ((x + y) & 1) ? red : cloth; // stitch borders
+  for (const fx of [6, 25]) {                             // flower crosses
+    const dx = Math.abs(x - fx), dy = Math.abs(y - 7);
+    if ((dx === 0 && dy <= 2) || (dy === 0 && dx <= 2)) return red;
+    if (dx === 1 && dy === 1) return [96 + n, 128, 60, 255]; // leaves
+  }
+  // stitched motto, illegible at this size the way the real ones were not
+  if (y >= 6 && y <= 8 && x >= 10 && x <= 21 && (y & 1) === 0 && hash2(x, y) < 0.55) return red;
+  return cloth;
+};
+
+// 16x16 tear-off wall calendar: nail, red month band, a big "13" and a
+// ragged bottom edge from a year of tearing.
+const decalKalendarz = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 8;
+  if (y === 0 && (x === 7 || x === 8)) return [140, 140, 144, 255]; // nail
+  if (x < 3 || x > 12 || y < 1 || y > 14) return [0, 0, 0, 0];
+  if (y <= 3) {                                           // month band
+    if (y === 2 && x >= 5 && x <= 10 && (x & 1)) return [232, 222, 212, 255];
+    return [182 + n, 46, 40, 255];
+  }
+  if (y === 14) return hash2(x, y) < 0.5 ? [196 + n, 190 + n, 176, 255] : [0, 0, 0, 0]; // torn edge
+  const one = x === 5 && y >= 6 && y <= 11;
+  const three = ((y === 6 || y === 9 || y === 11) && x >= 8 && x <= 10) ||
+    (x === 10 && y >= 6 && y <= 11);
+  if (one || three) return [44, 42, 46, 255];             // the big date
+  if (y === 13 && x >= 5 && x <= 10 && (x & 1)) return [140, 70, 66, 255]; // day name
+  return [228 + n, 224 + n, 212 + n, 255];
+};
+
+// 16x32 bathroom mirror with shelf: aluminium frame, a diagonal light
+// streak, and below it a glass shelf holding the toothbrush tumbler.
+const decalLustro = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 8;
+  if (y >= 1 && y <= 18) {                                // mirror
+    if (x < 2 || x > 13) return [0, 0, 0, 0];
+    if (x === 2 || x === 13 || y === 1 || y === 18) return [150 + n, 154 + n, 158, 255];
+    if (Math.abs((x - 5) - (16 - y) * 0.5) < 1.1) return [212 + n, 220 + n, 226, 255]; // streak
+    if (hash2(x, y) < 0.06) return [140, 144, 138, 255];  // desilvering specks
+    return [170 + n, 180 + n, 186 + n, 255];
+  }
+  if (y === 26 || y === 27) return x >= 1 && x <= 14 ? [222 + n, 228 + n, 228, 255] : [0, 0, 0, 0]; // shelf
+  if ((y === 28 || y === 29) && (x === 3 || x === 12)) return [128, 132, 136, 255]; // brackets
+  if (x >= 5 && x <= 8 && y >= 22 && y <= 25) return [198 + n, 210, 214, 220]; // tumbler
+  if (y >= 19 && y <= 21 && (x === 5 || x === 8)) {       // toothbrush handles
+    return x === 5 ? [190, 60, 54, 255] : [60, 100, 170, 255];
+  }
+  return [0, 0, 0, 0];
+};
+
+// 16x32 gas water heater ("junkers"): white enamel casing, louvred vents,
+// pilot-flame window, flue on top, water and gas lines out the bottom.
+const decalJunkers = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 8;
+  if (y <= 3) return x >= 6 && x <= 9 ? [128 + n, 130 + n, 134, 255] : [0, 0, 0, 0]; // flue
+  if (y <= 25 && x >= 2 && x <= 13) {                     // enamel casing
+    if (x === 2 || x === 13 || y === 4 || y === 25) {
+      if (hash2(x, y) < 0.12) return [150 + n, 108, 62, 255]; // rust nibbling the edges
+      return [196 + n, 198 + n, 196, 255];
+    }
+    if (y >= 6 && y <= 9 && (y & 1) === 0 && x >= 4 && x <= 11) return [172 + n, 176 + n, 176, 255]; // louvres
+    if (y >= 19 && y <= 23 && (y & 1) && x >= 4 && x <= 11) return [168 + n, 172 + n, 172, 255];
+    if (inRect(x, y, 6, 13, 9, 15)) {                     // pilot window
+      if (x === 7 && y === 14) return [232, 150, 40, 255]; // the flame
+      return [40, 38, 36, 255];
+    }
+    if (y === 11 && x >= 5 && x <= 10 && (x & 1)) return [120, 124, 128, 255]; // badge
+    return [226 + n, 228 + n, 226 + n, 255];
+  }
+  if (y > 25) {                                           // plumbing
+    if (x === 4 || x === 5) return [180 + n, 184 + n, 186, 255]; // water pipe
+    if (x === 10) return [190 + n, 168, 60, 255];         // brass gas line
+    if (x === 11 && y === 27) return [150, 40, 36, 255];  // valve wheel
+  }
+  return [0, 0, 0, 0];
+};
+
+// 16x16 wall telephone: the red rotary unit by the corridor mirror, handset
+// resting on top, curly cord dangling.
+const decalTelefon = (x, y, s, rng) => {
+  const n = (rng() - 0.5) * 10;
+  if (inRect(x, y, 3, 1, 12, 3)) {                        // handset
+    if ((x === 3 || x === 12) && y === 1) return [0, 0, 0, 0]; // rounded ends
+    return y === 1 ? [172 + n, 40, 36, 255] : [130 + n, 30, 28, 255];
+  }
+  if (inRect(x, y, 4, 4, 11, 13)) {                       // body
+    const d = Math.hypot(x - 7.5, y - 8.5);
+    if (d < 1.3) return [58, 54, 52, 255];                // dial hub
+    if (d < 3.5) {                                        // rotary dial, finger holes
+      const seg = Math.floor((Math.atan2(y - 8.5, x - 7.5) + Math.PI) / (Math.PI / 4));
+      if (d >= 2 && (seg & 1)) return [222 + n, 216, 206, 255];
+      return [166 + n, 38, 34, 255];
+    }
+    if (x === 4 || x === 11 || y === 13) return [128 + n, 28, 26, 255]; // body shade
+    return [158 + n, 36, 32, 255];
+  }
+  if (y >= 14 && x === 3 + (y & 1)) return [96, 26, 24, 255]; // curly cord
+  return [0, 0, 0, 0];
+};
+
 // --- registry (adding a tile name here makes it available to block defs) ---
 
 const GENERATORS = Object.freeze({
@@ -1388,6 +1702,12 @@ const GENERATORS = Object.freeze({
   sand,
   sand_red: sandRed,
   sand_dark: sandDark,
+  leaves,
+  leaves_dark: leavesDark,
+  leaves_autumn: leavesAutumn,
+  bush,
+  bush_berry: bushBerry,
+  bush_dry: bushDry,
   tuft_grass: tuftGrass,
   tuft_grass_dry: tuftGrassDry,
   tuft_grass_lush: tuftGrassLush,
@@ -1455,6 +1775,26 @@ const GENERATORS = Object.freeze({
   door_steel: doorSteel,
   door_blok: doorBlok,
   sidelight: sidelightPane,
+  car_body_blue: carBodyBlue,
+  car_body_red: carBodyRed,
+  car_body_cream: carBodyCream,
+  car_trim_blue: carTrimBlue,
+  car_trim_red: carTrimRed,
+  car_trim_cream: carTrimCream,
+  car_grille_blue: carGrilleBlue,
+  car_grille_red: carGrilleRed,
+  car_grille_cream: carGrilleCream,
+  car_light_blue: carLightBlue,
+  car_light_red: carLightRed,
+  car_light_cream: carLightCream,
+  car_tail_blue: carTailBlue,
+  car_tail_red: carTailRed,
+  car_tail_cream: carTailCream,
+  car_window: carWindow,
+  ...carWindowVariants,
+  car_wheel: carWheel,
+  car_tire: carTire,
+  car_bumper: carBumper,
   decal_blood: decalBlood,
   decal_blood2: decalBlood2,
   decal_blood3: decalBlood3,
@@ -1488,6 +1828,13 @@ const GENERATORS = Object.freeze({
   decal_hopscotch: decalHopscotch,
   decal_ladder: decalLadder,
   decal_domofon: decalDomofon,
+  decal_jelen: decalJelen,
+  decal_photos: decalPhotos,
+  decal_makatka: decalMakatka,
+  decal_kalendarz: decalKalendarz,
+  decal_lustro: decalLustro,
+  decal_junkers: decalJunkers,
+  decal_telefon: decalTelefon,
   decal_switch: decalSwitch,
   decal_switch_on: decalSwitchOn,
 });
@@ -1635,8 +1982,14 @@ export function tilesForBlocks() {
     }
     // ground-cover tiles (tufts, flowers) are referenced by the cover
     // config, not by any face — they still need atlas slots
-    const c = getBlock(id)?.cover;
+    const def = getBlock(id);
+    const c = def?.cover;
     if (c) for (const t of [...(c.tufts ?? []), ...(c.flowers ?? [])]) names.add(t);
+    // connecting blocks (car windows): the mesher swaps in the 15 edge-mask
+    // frame variants, which no block face references directly
+    if (def?.connect && typeof def.tiles === 'string') {
+      for (let m = 1; m < 16; m++) names.add(`${def.tiles}_${m}`);
+    }
   }
   for (const id of listDecalIds()) names.add(getDecal(id).tile);
   return [...names];

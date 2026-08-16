@@ -23,8 +23,10 @@ import { ItemRenderer } from '../editor/ItemRenderer.js';
 import { collisionWorld } from '../editor/itemPick.js';
 import { GameLoop } from '../GameLoop.js';
 import { CONFIG } from '../config.js';
-import { deserialize } from '../persistence/WorldSerializer.js';
-import { serializeBundle, deserializeBundle, BUNDLE_FORMAT } from '../persistence/WorldBundle.js';
+import { deserialize, collectSparse } from '../persistence/WorldSerializer.js';
+import { deserializeBundle, BUNDLE_FORMAT } from '../persistence/WorldBundle.js';
+import { openSaveStore, makeSave, manualSlotKey, diffPickedUp } from '../persistence/SaveStore.js';
+import { importLegacySlots } from '../persistence/LegacySaves.js';
 import { getItem } from '../engine/ItemRegistry.js';
 import { getEquipItem, listEquipItems } from '../engine/EquipmentRegistry.js';
 import { registerBuiltinQuestItems } from '../engine/QuestItems.js';
@@ -32,17 +34,16 @@ import {
   registerBuiltinMaterials, MATERIAL_IDS, REPAIR_COST, REPAIR_DECAY_FRACTION,
   ADHESIVE_IDS, SCRAP_IDS, MATERIAL_STACK,
 } from '../engine/Materials.js';
-import { deserializeNpcRegistry } from '../engine/NpcRegistry.js';
-import { deserializeQuestRegistry } from '../engine/QuestRegistry.js';
 import { ammoName } from '../engine/AmmoTypes.js';
-import { MICRO_SIZE, gridOf, lightLevelForMeters, rotateMicroPoint } from '../engine/ItemTypes.js';
+import { MICRO_SIZE, gridOf, lightLevelForMeters, rotateMicroPoint, quarterTurns } from '../engine/ItemTypes.js';
 import { layFlat } from '../engine/LayFlat.js';
 import { isPassable, isGlass } from '../engine/VoxelTypes.js';
 import { isDoorVoxel, isOpenDoor, toggleDoor, canToggle, isDoorLocked } from '../engine/Doors.js';
 import { isSwitchDecal, isSwitchOn, flipSwitch, seedSwitchFlags, faceFromNormal } from '../engine/Switches.js';
 import { BUNDLED_WORLD } from '../bundledWorld.js';
-import { SLOT_COUNT, readSlot, writeSlot, makeSlot } from './SaveSlots.js';
+import { SLOT_COUNT } from './SaveSlots.js';
 import { PlayerStats, MAX_HEALTH, EQUIPMENT_SLOTS } from './PlayerStats.js';
+import { ContainerStore } from './ContainerStore.js';
 import { weaponFor, FISTS } from './weapons.js';
 import { PlayerHand } from './PlayerHand.js';
 import { SmokeParticles } from './SmokeParticles.js';
@@ -117,12 +118,14 @@ export class GameApp {
    * @param {object} [deps]
    * @param {Document} [deps.doc]
    * @param {HTMLElement} [deps.container]
-   * @param {Storage} [deps.storage]  localStorage in the browser (save slots)
+   * @param {Storage} [deps.storage]  localStorage (legacy v1 save-slot import)
+   * @param {object} [deps.saveStore]  injected SaveStore (tests); opened async in start() otherwise
    */
-  constructor({ doc = document, container, storage = null } = {}) {
+  constructor({ doc = document, container, storage = null, saveStore = null } = {}) {
     this.doc = doc;
     this.container = container ?? doc.querySelector('#game');
     this.storage = storage ?? (typeof localStorage !== 'undefined' ? localStorage : null);
+    this.saves = saveStore; // resolved in start() when not injected
     this.mode = 'menu'; // 'menu' | 'playing' | 'paused'
     // Touch devices get the on-screen touch layer and skip pointer lock (and
     // render a bit cheaper: no MSAA, capped pixel ratio).
@@ -139,12 +142,12 @@ export class GameApp {
     });
     if (this.isTouch) this.webgl.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     this.container.appendChild(this.webgl.domElement);
-    const { texture, tileIndexFor, atlas, rebuild } = createAtlasTexture(THREE);
+    const { texture, tileIndexFor, atlas, rebuild, tiles } = createAtlasTexture(THREE);
     this.rebuildAtlas = rebuild;
     // The game starts shortly after nightfall (the editor keeps its day start),
     // so a fresh run faces most of the night before the first dawn.
     this.renderer = new Renderer({
-      THREE, webgl: this.webgl, world: this.world, atlasTexture: texture, tileIndexFor, atlas,
+      THREE, webgl: this.webgl, world: this.world, atlasTexture: texture, tileIndexFor, atlas, tiles,
       config: { lighting: { dayNightStart: 0.4 } },
     });
 
@@ -253,6 +256,15 @@ export class GameApp {
     this._repair = null;
     // Backpack grid (B): open state — the game keeps running underneath.
     this._backpackOpen = false;
+    // Storage containers (E on an object authored as storage): persistent
+    // stash contents keyed by placement anchor, serialized into save slots.
+    this.containers = new ContainerStore();
+    // The open container: { item, key } or null. Like the backpack, the game
+    // keeps running underneath while you rummage.
+    this._container = null;
+    // Item being dragged between the stash and backpack grids (see
+    // _renderContainer): { from: 'storage'|'player'|'equip', ... } or null.
+    this._containerDrag = null;
     // Quest state: NPCs are the quest givers (see quests.js). Reset on new
     // game, serialized into save slots.
     this.quests = new QuestLog();
@@ -333,6 +345,10 @@ export class GameApp {
     // _pumpPickupQueue).
     this._pickupQueue = [];
 
+    // Containers already searched this run: placement anchor key -> seconds
+    // until the loot restocks (Infinity = never; see _searchObject).
+    this._searched = new Map();
+
     // --- UI ---
     this.ui = {
       menu: this.doc.querySelector('#menu'),
@@ -349,6 +365,12 @@ export class GameApp {
       backpackEquip: this.doc.querySelector('#backpack-equip'),
       backpackGrid: this.doc.querySelector('#backpack-grid'),
       btnBackpackClose: this.doc.querySelector('#btn-backpack-close'),
+      container: this.doc.querySelector('#container'),
+      containerTitle: this.doc.querySelector('#container-title'),
+      containerGrid: this.doc.querySelector('#container-grid'),
+      containerEquip: this.doc.querySelector('#container-equip'),
+      containerPlayerGrid: this.doc.querySelector('#container-player-grid'),
+      btnContainerClose: this.doc.querySelector('#btn-container-close'),
       repair: this.doc.querySelector('#repair'),
       repairSub: this.doc.querySelector('#repair-sub'),
       repairList: this.doc.querySelector('#repair-list'),
@@ -388,6 +410,10 @@ export class GameApp {
     this._onResize = () => this.renderer.resize(window.innerWidth, window.innerHeight);
     window.addEventListener('resize', this._onResize);
     this._onResize();
+
+    this.saves ??= await openSaveStore();
+    // One-time import of legacy v1 localStorage slots (frees their quota).
+    await importLegacySlots(this.storage, this.saves);
 
     this._setLoadProgress(0.1, 'Fetching world…');
     await this._loadBaseWorld();
@@ -489,6 +515,7 @@ export class GameApp {
       if (this._firing || this.touch?.attacking) this._attack();
       this._updatePickup();
       this._updateVisit();
+      this._tickSearched(dt);
       this.mobs.update(dt, this.walk.position, this._viewFacing());
       this.npcs.update(dt);
       // Walking away mid-chat ends the conversation.
@@ -577,6 +604,15 @@ export class GameApp {
    *  inside the bundle and are registered BEFORE the map deserializes, so
    *  placed items/NPC spawns resolve. */
   async _loadBaseWorld() {
+    const world = await this._fetchBaseWorld();
+    this._setLoadProgress(0.6, 'Building world…');
+    this._applyWorld(world);
+  }
+
+  /** Fetch + build a fresh base world, registering the current content along
+   *  the way, WITHOUT touching the world in play. Also remembers the map's
+   *  object placements — saves store which of them the player picked up. */
+  async _fetchBaseWorld() {
     // Built-in quest items first — an authored def under the same id wins.
     registerBuiltinQuestItems();
     registerBuiltinMaterials();
@@ -587,8 +623,9 @@ export class GameApp {
     if (!world && BUNDLED_WORLD?.map) {
       world = deserializeBundle(JSON.stringify(BUNDLED_WORLD)).world;
     }
-    this._setLoadProgress(0.6, 'Building world…');
-    this._applyWorld(world ?? new World());
+    world ??= new World();
+    this._baseItems = collectSparse(world).items.map(({ itemId, x, y, z }) => ({ itemId, x, y, z }));
+    return world;
   }
 
   /** @returns {Promise<string|null>} the world file text from the server, or
@@ -603,26 +640,6 @@ export class GameApp {
     } catch {
       return null;
     }
-  }
-
-  /** Re-register the authored NPC + quest registries from the current world
-   *  source (the live file behind /api/world, or the baked-in bundle on a
-   *  static deploy) WITHOUT touching the world in play. Saves snapshot the
-   *  registries as they were; content keeps evolving — this puts the current
-   *  content back on top after a save's bundle loaded. Item/equipment
-   *  registries stay with the save: its placed items reference them. */
-  async _refreshAuthoredContent() {
-    let data = null;
-    const text = await this._fetchWorldFile();
-    try {
-      data = text ? JSON.parse(text) : null;
-    } catch {
-      data = null;
-    }
-    if (data?.format !== BUNDLE_FORMAT) data = BUNDLED_WORLD?.map ? BUNDLED_WORLD : null;
-    if (!data) return;
-    if (Array.isArray(data.npcs)) deserializeNpcRegistry(JSON.stringify(data.npcs));
-    if (data.quests && typeof data.quests === 'object') deserializeQuestRegistry(JSON.stringify(data.quests));
   }
 
   /** Deserialize a world file (bundle or plain map). @returns {World|null} */
@@ -653,6 +670,7 @@ export class GameApp {
     this.renderer.clearChunks();
     this.renderer.loadWorldBounds();
     this.itemRenderer.rebuildAll();
+    this._searched.clear();
     this.smoke.clear();
     this.glassFX.clear();
     this.blood.clear();
@@ -995,8 +1013,19 @@ export class GameApp {
    *  flies from the corpse straight to the player, exactly like an E-pickup —
    *  the grant lands when the flight does. */
   _dropLoot(mob) {
-    const authored = mob._respawn?.loot ?? null;
-    if (authored && authored.length === 0) return; // spawner set to drop nothing
+    const def = this._rollLoot(mob._respawn?.loot ?? null);
+    if (!def) return;
+    const start = new THREE.Vector3(mob.pos.x, mob.pos.y + mob.height * 0.5, mob.pos.z);
+    this._pickupQueue.push({ def, start, yaw: Math.random() * Math.PI * 2 });
+    this._pumpPickupQueue();
+  }
+
+  /** One loot roll — two independent chances, weapons rare and materials
+   *  common. `authored` narrows the pool (split by item kind); an explicit
+   *  empty pool never yields anything. Shared by mob deaths and container
+   *  searches. @returns {object|null} the rolled equip def */
+  _rollLoot(authored) {
+    if (authored && authored.length === 0) return null;
     const isMelee = (i) => i.kind === 'weapon' && (i.weapon?.kind ?? 'melee') === 'melee';
     const pick = (ids) => ids[Math.floor(Math.random() * ids.length)];
 
@@ -1013,11 +1042,45 @@ export class GameApp {
         : MATERIAL_IDS.filter((id) => getEquipItem(id));
       if (mats.length) dropId = pick(mats);
     }
-    const def = dropId ? getEquipItem(dropId) : null;
-    if (!def) return;
-    const start = new THREE.Vector3(mob.pos.x, mob.pos.y + mob.height * 0.5, mob.pos.z);
-    this._pickupQueue.push({ def, start, yaw: Math.random() * Math.PI * 2 });
+    return dropId ? getEquipItem(dropId) ?? null : null;
+  }
+
+  /** Search a loot-granting object (garbage can, cupboard, …): one roll from
+   *  its authored pool. The object itself stays put — only the find (if any)
+   *  flies to the player, exactly like an E-pickup. The container counts as
+   *  searched either way, restocking after its authored `reset` seconds or
+   *  never (see _tickSearched). */
+  _searchObject(item) {
+    this._searched.set(item.anchor.join(','), item.loot.reset ?? Infinity);
+    this._hidePickup();
+    const def = this._rollLoot(item.loot.pool);
+    if (!def) {
+      this._toast('Nothing inside');
+      return;
+    }
+    // Flight starts at the top centre of the object's footprint — the loot
+    // comes out of the container. Odd quarter turns swap the x/z span.
+    const [ax, ay, az] = item.anchor;
+    const [w, h, d] = item.cells;
+    const [sx, sz] = quarterTurns(item.rotation ?? 0) & 1 ? [d, w] : [w, d];
+    const start = new THREE.Vector3(
+      (ax + sx / 2) * CELL_SIZE,
+      (ay + h) * CELL_SIZE,
+      (az + sz / 2) * CELL_SIZE,
+    );
+    this._pickupQueue.push({ def, start, yaw: item.rotation ?? 0 });
     this._pumpPickupQueue();
+  }
+
+  /** Count searched containers back toward a restock. Authored `reset`
+   *  seconds tick only while playing, like mob respawn timers; Infinity
+   *  entries (no reset authored) never come back. */
+  _tickSearched(dt) {
+    for (const [k, t] of this._searched) {
+      if (t === Infinity) continue;
+      if (t - dt <= 0) this._searched.delete(k);
+      else this._searched.set(k, t - dt);
+    }
   }
 
   /** Blood splatter at the point the shot struck — feedback for WHERE you hit
@@ -1254,7 +1317,8 @@ export class GameApp {
   /** What the E key would act on under the crosshair: a placed equippable
    *  item ({cell, item}), a door voxel ({cell, door}), or null. Pickable
    *  items only come from the equipment registry (F3 editor) — placeable
-   *  objects are world decoration and stay put. Short-range, so the
+   *  objects stay put, though one authored to grant loot answers E as a
+   *  searchable container ({cell, item, search}). Short-range, so the
    *  per-frame aim ray stays cheap; items need arm's reach (PICKUP_RANGE),
    *  doors open from DOOR_RANGE.
    *
@@ -1282,6 +1346,14 @@ export class GameApp {
       if (item && hit.dist <= PICKUP_RANGE) {
         const def = getEquipItem(item.itemId);
         if (def && this._pickable(def)) return { cell: hit.cell, item };
+        // A storage container opens its stash — before search loot, so an
+        // object authored as storage never rolls one-shot loot.
+        if (item.storage) return { cell: hit.cell, item, container: true };
+        // A placed object authored to grant loot is searchable — until it has
+        // been searched and its restock timer (if any) runs out.
+        if (item.loot && !this._searched.has(item.anchor.join(','))) {
+          return { cell: hit.cell, item, search: true };
+        }
       }
       return null;
     }
@@ -1340,6 +1412,24 @@ export class GameApp {
       this._hideOutline();
       if (this.ui.pickup) {
         this.ui.pickup.innerHTML = `Press <kbd>E</kbd> to flip the switch ${isSwitchOn(target.switch) ? 'off' : 'on'}`;
+        this.ui.pickup.classList.remove('hidden');
+      }
+      return;
+    }
+    if (target.container) {
+      // Storage containers highlight like pickups, with their own prompt.
+      this._showItemOutline(target.item);
+      if (this.ui.pickup) {
+        this.ui.pickup.innerHTML = 'Press <kbd>E</kbd> to open';
+        this.ui.pickup.classList.remove('hidden');
+      }
+      return;
+    }
+    if (target.search) {
+      // Searchable objects highlight like pickups, with their own prompt.
+      this._showItemOutline(target.item);
+      if (this.ui.pickup) {
+        this.ui.pickup.innerHTML = 'Press <kbd>E</kbd> to search';
         this.ui.pickup.classList.remove('hidden');
       }
       return;
@@ -1791,6 +1881,14 @@ export class GameApp {
       this._updatePickup();
       return;
     }
+    if (target.container) {
+      this._openContainer(target.item);
+      return;
+    }
+    if (target.search) {
+      this._searchObject(target.item);
+      return;
+    }
     const def = getEquipItem(target.item.itemId);
     if (!def) return;
     this._hidePickup();
@@ -2048,6 +2146,201 @@ export class GameApp {
     this._renderBackpack();
   }
 
+  // --- storage containers (E on an object authored as storage) ---
+
+  /** Open a storage container's stash screen. Like the backpack, the game
+   *  keeps running underneath; pointer lock is released so cells are
+   *  clickable and draggable. */
+  _openContainer(item) {
+    if (this._container || this.mode !== 'playing') return;
+    this._container = { item, key: item.anchor.join(',') };
+    this._firing = false;
+    this._hidePickup();
+    if (document.pointerLockElement) document.exitPointerLock();
+    if (this.ui.containerTitle) this.ui.containerTitle.textContent = getItem(item.itemId)?.name ?? 'Storage';
+    this._renderContainer();
+    this.ui.container?.classList.remove('hidden');
+  }
+
+  _closeContainer() {
+    if (!this._container) return;
+    this._container = null;
+    this._containerDrag = null;
+    this.ui.container?.classList.add('hidden');
+    if (!this.isTouch && this.mode === 'playing' && this.webgl.domElement.requestPointerLock) {
+      this.webgl.domElement.requestPointerLock();
+    }
+  }
+
+  /** Cell list for one side of the container screen: material stacks with
+   *  counts first (split like the backpack grid), then stored items.
+   *  `materials` is a Record<id, count>, `items` [{id, wear, decay}]. */
+  _stashCells(materials, items) {
+    const cells = [];
+    for (const id of Object.keys(materials)) {
+      const def = getEquipItem(id);
+      if (!def || !(materials[id] > 0)) continue;
+      let left = materials[id];
+      while (left > 0) {
+        const n = Math.min(left, MATERIAL_STACK);
+        cells.push({ def, count: n });
+        left -= n;
+      }
+    }
+    items.forEach((entry, index) => {
+      const def = getEquipItem(entry.id) ?? getItem(entry.id);
+      if (def) cells.push({ def, entry, index });
+    });
+    return cells;
+  }
+
+  /** Render the container screen: the stash grid on top, the player's four
+   *  equipment slots and backpack grid below. Click a cell to move it to the
+   *  other side; drag and drop works too — a stored item dropped on an
+   *  equipment slot equips there, swapping the held item into the stash. */
+  _renderContainer() {
+    const key = this._container?.key;
+    const equipEl = this.ui.containerEquip;
+    if (!key || !this.ui.containerGrid || !this.ui.containerPlayerGrid || !equipEl) return;
+    const stash = this.containers.open(key);
+    this._renderStashGrid(this.ui.containerGrid, 'storage', this._stashCells(stash.materials, stash.items));
+    this._renderStashGrid(this.ui.containerPlayerGrid, 'player', this._stashCells(this.stats.materials, this.stats.backpack));
+
+    equipEl.replaceChildren();
+    EQUIPMENT_SLOTS.forEach((slot, i) => {
+      const id = this.stats.equipment[slot];
+      const item = id ? getItem(id) ?? getEquipItem(id) : null;
+      const cell = this.doc.createElement('div');
+      cell.className = `bp-slot bp-equip${i === this.stats.activeSlot ? ' active' : ''}`;
+      cell.title = item
+        ? `${item.name}${this._conditionLabel(id, this.stats.wear[slot], this.stats.decay[slot])} — click or drag to stash`
+        : `Empty slot (${i + 1}) — drop a stored item here to equip it`;
+      const keyEl = this.doc.createElement('span');
+      keyEl.className = 'bp-key';
+      keyEl.textContent = String(i + 1);
+      cell.appendChild(keyEl);
+      if (item) {
+        cell.appendChild(buildItemSwatch(item, 44));
+        cell.classList.add('takeable');
+        const move = { from: 'equip', slot };
+        cell.draggable = true;
+        cell.addEventListener('dragstart', (e) => {
+          this._containerDrag = move;
+          e.dataTransfer?.setData('text/plain', id);
+        });
+        cell.addEventListener('dragend', () => { this._containerDrag = null; });
+        cell.addEventListener('click', () => this._moveStash(move));
+      }
+      // A stored item dropped straight onto a slot equips there.
+      cell.addEventListener('dragover', (e) => {
+        if (this._containerDrag?.from === 'storage') {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      });
+      cell.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const drag = this._containerDrag;
+        this._containerDrag = null;
+        if (drag?.from === 'storage') this._equipFromStash(drag, slot);
+      });
+      equipEl.appendChild(cell);
+    });
+  }
+
+  /** Render one grid of the container screen. `side` names where its cells
+   *  live ('storage' | 'player'); clicking or dragging a cell moves it to
+   *  the other side. */
+  _renderStashGrid(grid, side, cells) {
+    grid.replaceChildren();
+    const COLS = 6;
+    const total = Math.max(COLS * 3, Math.ceil(cells.length / COLS) * COLS);
+    for (let i = 0; i < total; i++) {
+      const c = cells[i];
+      const cell = this.doc.createElement('div');
+      cell.className = 'bp-slot';
+      if (!c) {
+        cell.classList.add('empty');
+        grid.appendChild(cell);
+        continue;
+      }
+      cell.appendChild(buildItemSwatch(c.def, 44));
+      cell.classList.add('takeable');
+      const move = { from: side, id: c.def.id, count: c.count ?? null, index: c.index ?? null };
+      if (c.count != null) {
+        cell.title = `${c.def.name} ×${c.count} — click or drag to move`;
+        const badge = this.doc.createElement('span');
+        badge.className = 'bp-count';
+        badge.textContent = String(c.count);
+        cell.appendChild(badge);
+      } else {
+        cell.title = `${c.def.name}${this._conditionLabel(c.entry.id, c.entry.wear, c.entry.decay)} — click or drag to move`;
+      }
+      cell.draggable = true;
+      cell.addEventListener('dragstart', (e) => {
+        this._containerDrag = move;
+        e.dataTransfer?.setData('text/plain', c.def.id);
+      });
+      cell.addEventListener('dragend', () => { this._containerDrag = null; });
+      cell.addEventListener('click', () => this._moveStash(move));
+      grid.appendChild(cell);
+    }
+  }
+
+  /** Move a container-screen cell to the other side. Storage → player lands
+   *  in the backpack (materials join the pile); player/equip → storage
+   *  stashes it, condition intact. Whole material stacks move at once. */
+  _moveStash(move) {
+    const key = this._container?.key;
+    if (!key) return;
+    if (move.from === 'storage') {
+      if (move.count != null) {
+        const taken = this.containers.takeMaterial(key, move.id, move.count);
+        if (taken) this.stats.addMaterial(move.id, taken);
+      } else {
+        const entry = this.containers.take(key, move.index);
+        if (entry) this.stats.stow(entry.id, entry.wear, entry.decay);
+      }
+    } else if (move.from === 'player') {
+      if (move.count != null) {
+        const taken = this.stats.takeMaterial(move.id, move.count);
+        if (taken) this.containers.addMaterial(key, move.id, taken);
+      } else {
+        const entry = this.stats.backpack.splice(move.index, 1)[0];
+        if (entry) this.containers.stow(key, entry.id, entry.wear, entry.decay);
+      }
+    } else if (move.from === 'equip') {
+      const id = this.stats.equipment[move.slot];
+      if (!id) return;
+      this.containers.stow(key, id, this.stats.wear[move.slot], this.stats.decay[move.slot]);
+      this.stats.unequip(move.slot);
+      this._updateHud();
+    }
+    this._renderContainer();
+  }
+
+  /** Drop a stored item onto an equipment slot: equip it there, stashing any
+   *  displaced item back into the container. Material stacks can't be
+   *  equipped — they fall through to the normal player-side move. */
+  _equipFromStash(move, slot) {
+    const key = this._container?.key;
+    if (!key || move.from !== 'storage') return;
+    if (move.count != null) {
+      this._moveStash(move);
+      return;
+    }
+    const entry = this.containers.take(key, move.index);
+    if (!entry) return;
+    const displacedId = this.stats.equipment[slot];
+    if (displacedId) this.containers.stow(key, displacedId, this.stats.wear[slot], this.stats.decay[slot]);
+    this.stats.equip(slot, entry.id);
+    this.stats.wear[slot] = entry.wear ?? 0;
+    this.stats.decay[slot] = entry.decay ?? 0;
+    this._updateHud();
+    this._renderContainer();
+  }
+
   /** Use the equipped injection (heals, consumes it). */
   _useInjection() {
     if (!this.stats.equipment.injection) {
@@ -2101,6 +2394,7 @@ export class GameApp {
   showMenu() {
     this.mode = 'menu';
     this._closeBackpack();
+    this._closeContainer();
     this.touch?.setEnabled(false);
     this.ui.menu.classList.remove('hidden');
     this.ui.pause.classList.add('hidden');
@@ -2162,6 +2456,7 @@ export class GameApp {
     if (this.mode !== 'playing') return;
     this.mode = 'paused';
     this._closeBackpack();
+    this._closeContainer();
     this._firing = false;
     this.touch?.setEnabled(false);
     this.walk.enabled = false;
@@ -2186,6 +2481,7 @@ export class GameApp {
     this.stats = new PlayerStats();
     this.quests = new QuestLog();
     this.flags = new GameFlags();
+    this.containers = new ContainerStore();
     seedSwitchFlags(this.world, this.flags);
     this._ammo = new Map();
     this._reloading = false;
@@ -2208,37 +2504,62 @@ export class GameApp {
 
   // --- save slots ---
 
-  saveSlot(i) {
-    const player = {
-      x: this.walk.position.x,
-      y: this.walk.position.y,
-      z: this.walk.position.z,
-      yaw: this.walk.yaw,
-      pitch: this.walk.pitch,
-    };
-    const bundle = serializeBundle(this.world);
-    writeSlot(i, makeSlot({ bundle, player, stats: this.stats.serialize(), quests: this.quests.serialize(), flags: this.flags.serialize() }), this.storage);
-    this._toast(`Saved to slot ${i + 1}`);
+  async saveSlot(i) {
+    try {
+      const payload = this._makeSavePayload();
+      await this.saves.write(manualSlotKey(i), payload, { savedAt: payload.savedAt });
+      this._toast(`Saved to slot ${i + 1}`);
+    } catch (e) {
+      // Surface failures (quota, private mode) — a save the player believes
+      // in but that never landed is the worst outcome.
+      console.error('Save failed:', e);
+      this._toast('Save failed');
+    }
     this._renderSlots();
   }
 
+  /** The full v3 save payload: pure player state. The world is static, so
+   *  the save records only which map objects the player picked up — the
+   *  world itself always comes from the current authored map. */
+  _makeSavePayload() {
+    return makeSave({
+      pickedUp: diffPickedUp(this._baseItems ?? [], collectSparse(this.world).items),
+      player: {
+        x: this.walk.position.x,
+        y: this.walk.position.y,
+        z: this.walk.position.z,
+        yaw: this.walk.yaw,
+        pitch: this.walk.pitch,
+      },
+      stats: this.stats.serialize(),
+      quests: this.quests.serialize(),
+      flags: this.flags.serialize(),
+      containers: this.containers.serialize(),
+    });
+  }
+
   async loadSlot(i) {
-    const slot = readSlot(i, this.storage);
+    const slot = await this.saves.read(manualSlotKey(i));
     if (!slot) {
       this._toast(`Slot ${i + 1} is empty`);
       return;
     }
-    const { world } = deserializeBundle(slot.bundle);
+    // The world is static: the CURRENT authored map is always the world —
+    // a save only says which objects the player took off it. Map edits
+    // therefore reach every save, and a tombstone that no longer matches
+    // (its object was moved or removed by an edit) is simply ignored. Old
+    // v2 snapshot saves carry no pickup list: their picked-up objects
+    // respawn once, and the next save records pickups properly.
+    const world = await this._fetchBaseWorld();
+    for (const t of slot.pickedUp ?? []) {
+      const it = world.itemAt(t.x, t.y, t.z);
+      if (it && it.itemId === t.itemId) world.removeItemAt(t.x, t.y, t.z);
+    }
     this._applyWorld(world);
-    // The save's bundle just re-registered the registries as they were when
-    // it was written. The world (geometry, placed items) is the save's to
-    // keep, but authored CONTENT — NPCs and questlines — must be current, so
-    // a dialogue/service/quest edited after the save reaches it too.
-    await this._refreshAuthoredContent();
-    this.npcs.rebuild(this._npcSpawns()); // re-instance NPCs on live defs
     this.stats = PlayerStats.deserialize(slot.stats);
     this.quests = QuestLog.deserialize(slot.quests);
     this.flags = GameFlags.deserialize(slot.flags);
+    this.containers = ContainerStore.deserialize(slot.containers);
     this._restoreQuestMobs();
     this._ammo = new Map();
     this._reloading = false;
@@ -2259,21 +2580,23 @@ export class GameApp {
     this.startPlaying();
   }
 
-  /** Slot metadata for the menu lists. */
-  _slotMeta(i) {
-    const slot = readSlot(i, this.storage);
-    if (!slot) return { empty: true, label: 'Empty' };
-    const d = new Date(slot.savedAt);
+  /** Slot metadata for the menu lists — reads only the tiny meta record,
+   *  never the multi-MB payload. */
+  async _slotMeta(i) {
+    const meta = await this.saves?.readMeta(manualSlotKey(i));
+    if (!meta) return { empty: true, label: 'Empty' };
+    const d = new Date(meta.savedAt);
     const time = d.toLocaleTimeString?.() ?? `${d.getHours()}:${String(d.getMinutes()).padStart(2, '0')}`;
     return { empty: false, label: `Slot ${i + 1} — ${time}` };
   }
 
-  _renderSlots() {
+  async _renderSlots() {
+    const metas = await Promise.all(Array.from({ length: SLOT_COUNT }, (_, i) => this._slotMeta(i)));
     for (const el of [this.ui.slotsMenu, this.ui.slotsPause]) {
       if (!el) continue;
       el.innerHTML = '';
       for (let i = 0; i < SLOT_COUNT; i++) {
-        const meta = this._slotMeta(i);
+        const meta = metas[i];
         const row = document.createElement('div');
         row.className = 'slot-row';
         const label = document.createElement('span');
@@ -2306,6 +2629,23 @@ export class GameApp {
     this.ui.btnRepairFix?.addEventListener('click', () => this._repairFix());
     this.ui.btnRepairClose?.addEventListener('click', () => this._closeRepair());
     this.ui.btnBackpackClose?.addEventListener('click', () => this._closeBackpack());
+    this.ui.btnContainerClose?.addEventListener('click', () => this._closeContainer());
+    // Grid-level drop targets wire once (the grids persist; only their cells
+    // are re-rendered): anything dragged from the other side lands here.
+    const acceptDrop = (el, wantFrom) => {
+      if (!el) return;
+      el.addEventListener('dragover', (e) => {
+        if (this._containerDrag && wantFrom.includes(this._containerDrag.from)) e.preventDefault();
+      });
+      el.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const drag = this._containerDrag;
+        this._containerDrag = null;
+        if (drag && wantFrom.includes(drag.from)) this._moveStash(drag);
+      });
+    };
+    acceptDrop(this.ui.containerGrid, ['player', 'equip']);
+    acceptDrop(this.ui.containerPlayerGrid, ['storage']);
     // Clear the hit-flash when its vignette animation completes (event-driven,
     // so it stays in sync even if the page's timers are throttled).
     const hitFeedback = this.doc.querySelector('#hit-feedback');
@@ -2325,6 +2665,10 @@ export class GameApp {
           this._closeRepair();
           return;
         }
+        if (this._container) {
+          this._closeContainer();
+          return;
+        }
         if (this._backpackOpen) {
           this._closeBackpack();
           return;
@@ -2342,6 +2686,13 @@ export class GameApp {
       // The repair screen is mouse-driven — keys must not leak through to the
       // dialogue replies or the hotbar underneath it.
       if (this._repair) return;
+      // The container screen works like the backpack grid: the legs keep
+      // working, E (or Esc) closes it.
+      if (this._container) {
+        if (e.code === 'KeyE' || e.code === 'KeyB') this._closeContainer();
+        else this.walk.onKeyDown(e.code);
+        return;
+      }
       // The backpack grid leaves the legs alone — you can keep running from
       // the horde while rummaging. B (or Esc) closes it.
       if (this._backpackOpen) {
@@ -2400,7 +2751,7 @@ export class GameApp {
     // enter pointer lock, so they pause on backgrounding instead (below).
     on(this.doc, 'pointerlockchange', () => {
       const locked = document.pointerLockElement === this.webgl.domElement;
-      if (!this.isTouch && this.mode === 'playing' && !locked && !this._repair && !this._backpackOpen) this.pauseGame();
+      if (!this.isTouch && this.mode === 'playing' && !locked && !this._repair && !this._backpackOpen && !this._container) this.pauseGame();
     });
     // Mobile: when the app is backgrounded, auto-pause (there's no Esc and
     // pointer-lock loss never fires) so the player isn't killed while away.
