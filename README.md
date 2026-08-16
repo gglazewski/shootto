@@ -49,9 +49,10 @@ no browser storage in between.
   drop from mobs and searchable objects) into weapons, armor and medical items.
   Field recipes (bandage, glass shiv, nailed plank, scrap vest, first-aid kit)
   craft anywhere; bench recipes (rebar spear, plated vest, trauma kit) need an
-  NPC with the `craft` service — their workbench also skips the homemade wear
-  (self-crafted weapons cap 20% lower on durability). Crafting runs over the
-  live game, like the backpack.
+  NPC with the `craft` service — **Bolek** runs one out of the box (talk to him
+  and pick "Could you make something for me?", same flow as weapon repair).
+  The bench also skips the homemade wear (self-crafted weapons cap 20% lower
+  on durability). Crafting runs over the live game, like the backpack.
 - **Healing items:** crafted consumables (bandage +20, first-aid kit +60,
   trauma kit +100 HP) live in the injection slot and are used with `F` — same
   as the classic injection. Crafting an armor vest straps it on immediately.
@@ -61,6 +62,10 @@ no browser storage in between.
   between the container, your backpack and your equipment slots (drop a stored
   weapon straight onto a slot to equip it). Contents ride with the save slots,
   so furniture in your base works as a persistent hoard.
+- **Full-screen interfaces:** the backpack, storage, crafting, repair and
+  pause screens are full-screen overlays — a transparent vignette over the
+  running world (no floating panel boxes), with a big header, content filling
+  the screen and the main action pinned bottom-right.
 - **Save / Load (3 slots):** `Esc` opens the pause menu with three slots. A
   save snapshots the whole world (map + objects) plus your position/orientation
   **and** health/armor/equipment and every storage container's stash, so

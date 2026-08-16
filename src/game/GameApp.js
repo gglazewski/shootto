@@ -107,6 +107,15 @@ const MATERIAL_DROP_CHANCE = 0.18;
 /** Seconds each menu splash screen plays before the next one is picked. */
 const SPLASH_SECONDS = 3;
 
+/** Square icon buttons for the crafting screen's category tabs (stroke
+ *  icons, currentColor — the tab's active/hover colors drive them). */
+const CRAFT_TAB_ICONS = Object.freeze({
+  all: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>',
+  weapon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="14.5 17.5 3 6 3 3 6 3 17.5 14.5"/><line x1="13" y1="19" x2="19" y2="13"/><line x1="16" y1="16" x2="20" y2="20"/><line x1="19" y1="21" x2="21" y2="19"/><polyline points="14.5 17.5 17.5 14.5"/></svg>',
+  armor: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></svg>',
+  medical: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 2a2 2 0 0 0-2 2v5H4a2 2 0 0 0-2 2v2a2 2 0 0 0 2 2h5v5a2 2 0 0 0 2 2h2a2 2 0 0 0 2-2v-5h5a2 2 0 0 0 2-2v-2a2 2 0 0 0-2-2h-5V4a2 2 0 0 0-2-2h-2z"/></svg>',
+});
+
 /** Seconds of the fade-to-black between menu splash screens — the cut happens
  *  behind full black, then the same time fades the next shot back in. Must
  *  match the #splash-fade CSS transition duration in game.html. */
@@ -389,7 +398,6 @@ export class GameApp {
       backpack: this.doc.querySelector('#backpack'),
       backpackEquip: this.doc.querySelector('#backpack-equip'),
       backpackGrid: this.doc.querySelector('#backpack-grid'),
-      btnBackpackClose: this.doc.querySelector('#btn-backpack-close'),
       container: this.doc.querySelector('#container'),
       containerTitle: this.doc.querySelector('#container-title'),
       containerGrid: this.doc.querySelector('#container-grid'),
@@ -408,7 +416,6 @@ export class GameApp {
       craftList: this.doc.querySelector('#craft-list'),
       craftDetail: this.doc.querySelector('#craft-detail'),
       btnCraftMake: this.doc.querySelector('#btn-craft-make'),
-      btnCraftClose: this.doc.querySelector('#btn-craft-close'),
       quest: this.doc.querySelector('#quest'),
       questList: this.doc.querySelector('#quest-list'),
       qtoasts: this.doc.querySelector('#qtoasts'),
@@ -1956,14 +1963,16 @@ export class GameApp {
         : 'Scrap in, survival out. The game keeps running!';
     }
 
-    // Tabs: All + one per category.
+    // Tabs: All + one per category — square icon buttons (label on hover).
     const tabs = this.ui.craftTabs;
     if (tabs) {
       tabs.replaceChildren();
       for (const t of [{ id: 'all', label: 'All' }, ...CRAFT_CATEGORIES]) {
         const btn = this.doc.createElement('button');
         btn.className = `craft-tab${c.tab === t.id ? ' active' : ''}`;
-        btn.textContent = t.label;
+        btn.innerHTML = CRAFT_TAB_ICONS[t.id] ?? '';
+        btn.title = t.label;
+        btn.setAttribute('aria-label', t.label);
         btn.addEventListener('click', () => {
           c.tab = t.id;
           c.recipeId = null;
@@ -1989,15 +1998,18 @@ export class GameApp {
       name.className = 'cr-name';
       name.textContent = recipe.name;
       row.appendChild(name);
-      // Mini cost chips — red when short.
+      // Mini cost chips — the material's swatch + have/need, red when short,
+      // so the row says WHAT it wants without picking it first.
       const costs = this.doc.createElement('span');
       costs.className = 'cr-costs';
       for (const input of recipe.inputs) {
-        const chip = this.doc.createElement('span');
+        const matDef = getEquipItem(input.id);
         const have = this.stats.materialCount(input.id);
+        const chip = this.doc.createElement('span');
         chip.className = `cr-chip${have < input.count ? ' short' : ''}`;
-        chip.textContent = `${have}/${input.count}`;
-        chip.title = `${getEquipItem(input.id)?.name ?? input.id} ×${input.count}`;
+        if (matDef) chip.appendChild(buildItemSwatch(matDef, 16));
+        chip.append(`${have}/${input.count}`);
+        chip.title = `${matDef?.name ?? input.id} ×${input.count}`;
         costs.appendChild(chip);
       }
       row.appendChild(costs);
@@ -3230,8 +3242,6 @@ export class GameApp {
     this.ui.btnRepairFix?.addEventListener('click', () => this._repairFix());
     this.ui.btnRepairClose?.addEventListener('click', () => this._closeRepair());
     this.ui.btnCraftMake?.addEventListener('click', () => this._craftMake());
-    this.ui.btnCraftClose?.addEventListener('click', () => this._closeCraft());
-    this.ui.btnBackpackClose?.addEventListener('click', () => this._closeBackpack());
     this.ui.btnContainerClose?.addEventListener('click', () => this._closeContainer());
     // Grid-level drop targets wire once (the grids persist; only their cells
     // are re-rendered): anything dragged from the other side lands here.

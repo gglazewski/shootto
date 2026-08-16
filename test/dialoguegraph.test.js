@@ -323,6 +323,28 @@ test('a spawned NPC carries its services into the conversation', () => {
   assert.deepEqual(labels(d), ['Fix my axe?', BYE_LABEL]);
 });
 
+test('picking a craft service reply hands it back to the caller', () => {
+  // GameApp routes the returned { service } to the workbench screen — the
+  // same hand-off repair uses. The hub drops back underneath so the chat
+  // continues when the screen closes.
+  const type = normalizeNpc({
+    id: 'bolek',
+    dialog: ['Hello.'],
+    services: [{ type: 'craft', label: 'Forge me something.' }],
+  });
+  const spawned = new NPC({ type, feet: { x: 0, y: 0, z: 0 } });
+  const quests = new QuestLog({});
+  quests.markMet('bolek');
+  const d = new Dialogue({ npc: spawned, quests });
+  toHub(d);
+  assert.deepEqual(labels(d), ['Forge me something.', BYE_LABEL]);
+  const result = d.choose(d.choices()[0].id);
+  assert.deepEqual(result, { service: { type: 'craft', label: 'Forge me something.' } });
+  // The conversation sits back on its hub after the hand-off.
+  assert.deepEqual(labels(d), ['Forge me something.', BYE_LABEL]);
+  assert.equal(d.done, false);
+});
+
 test('a chat tree without a prompt gets the stock hub label', () => {
   const quests = new QuestLog({});
   quests.markMet('granny');

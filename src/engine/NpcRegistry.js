@@ -70,6 +70,13 @@ export const BUILTIN_NPCS = Object.freeze({
         ]),
       }),
     ]),
+    // The workshop survives him: Bolek patches weapons and runs the only
+    // proper workbench around, so repair AND bench-quality crafting are
+    // reachable out of the box (see engine/Crafting.js).
+    services: Object.freeze([
+      Object.freeze({ type: 'craft' }),
+      Object.freeze({ type: 'repair' }),
+    ]),
   }),
   granny: Object.freeze({
     id: 'granny',

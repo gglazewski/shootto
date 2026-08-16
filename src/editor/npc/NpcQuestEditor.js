@@ -4,7 +4,7 @@
 // QuestRegistry:
 //   NPCs   — define characters in collapsible sections: identity, the
 //            first-meeting chit-chat + greeting, lore topics, an optional
-//            small-talk dialogue tree, and services (repair).
+//            small-talk dialogue tree, and services (repair, craft).
 //   Quests — per NPC giver, an ordered chain of quest tiers. The sidebar
 //            draws the chain (how each tier starts: offered in dialogue or
 //            auto-started) with reorder controls. The form proper is:
@@ -569,9 +569,11 @@ export class NpcQuestEditor {
 
     // --- Services ---
     const secSvc = this._section(scroll, 'services', 'Services',
-      'Repair restores worn melee weapons. The signal gates the talk option: a game flag name ' +
+      'Repair restores worn melee weapons; craft opens the NPC’s workbench (bench-quality crafting — no homemade wear). ' +
+      'The signal gates the talk option: a game flag name ' +
       '(raised e.g. by a quest on accept/complete, "!name" inverts), blank = always offered:');
-    const existingRepair = (existing?.services ?? []).find((s) => s.type === 'repair') ?? null;
+    const svc = (type) => (existing?.services ?? []).find((s) => s.type === type) ?? null;
+    const existingRepair = svc('repair');
     const repairChk = this._input('', 'checkbox');
     repairChk.checked = !!existingRepair;
     this._row(secSvc, 'Offers repair', repairChk);
@@ -579,6 +581,15 @@ export class NpcQuestEditor {
     repairLabelIn.placeholder = `“${NPC_SERVICE_TYPES.repair.label}” when empty`;
     const repairFlagIn = this._row(secSvc, 'Signal', this._input(existingRepair?.flag ?? ''));
     repairFlagIn.placeholder = 'e.g. workshop-open — blank = always';
+
+    const existingCraft = svc('craft');
+    const craftChk = this._input('', 'checkbox');
+    craftChk.checked = !!existingCraft;
+    this._row(secSvc, 'Offers crafting', craftChk);
+    const craftLabelIn = this._row(secSvc, 'Player asks', this._input(existingCraft?.label ?? ''));
+    craftLabelIn.placeholder = `“${NPC_SERVICE_TYPES.craft.label}” when empty`;
+    const craftFlagIn = this._row(secSvc, 'Signal', this._input(existingCraft?.flag ?? ''));
+    craftFlagIn.placeholder = 'e.g. workshop-open — blank = always';
 
     const foot = this._foot(form);
     const save = el(doc, 'button', 'primary', existing ? 'Save NPC' : 'Create NPC');
@@ -595,9 +606,10 @@ export class NpcQuestEditor {
           const g = chatEd.value();
           return g ? { ...g, prompt: chatPromptIn.value } : null;
         })(),
-        services: repairChk.checked
-          ? [{ type: 'repair', label: repairLabelIn.value, flag: repairFlagIn.value }]
-          : [],
+        services: [
+          ...(repairChk.checked ? [{ type: 'repair', label: repairLabelIn.value, flag: repairFlagIn.value }] : []),
+          ...(craftChk.checked ? [{ type: 'craft', label: craftLabelIn.value, flag: craftFlagIn.value }] : []),
+        ],
       });
       if (!def) {
         idIn.classList.add('invalid');

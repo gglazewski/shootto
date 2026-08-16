@@ -87,6 +87,19 @@ test('services normalize: unknown types drop, labels default, flags trim', () =>
   assert.ok(!('services' in none), 'empty services stay off the def');
 });
 
+test('Bolek runs the workbench out of the box: craft + repair services', () => {
+  fresh();
+  const bolek = getNpc('bolek');
+  assert.ok(bolek.services?.some((s) => s.type === 'craft'), 'craft service offered');
+  assert.ok(bolek.services?.some((s) => s.type === 'repair'), 'repair service offered');
+  // The services normalize cleanly too (an author re-saving him keeps both).
+  const reSaved = normalizeNpc({ ...bolek });
+  assert.deepEqual(
+    reSaved.services.map((s) => s.type).sort(),
+    ['craft', 'repair'],
+  );
+});
+
 test('services survive the registry round-trip', () => {
   fresh();
   registerNpc({ id: 'smith', skin: 'granny', dialog: ['hi'], services: [{ type: 'repair', flag: 'workshop-open' }] });
