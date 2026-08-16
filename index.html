@@ -715,12 +715,12 @@
     body.equip-mode #ui-crosshair { display: none; }
 
     /* ---- catalogues & settings modals --------------------------- */
-    #item-catalogue, #equip-catalogue, #world-browser, #splash-motion, #door-settings, #light-settings, #switch-settings, #mob-settings, #object-settings, #prefab-browser {
+    #item-catalogue, #equip-catalogue, #decal-catalogue, #world-browser, #splash-motion, #door-settings, #light-settings, #switch-settings, #mob-settings, #object-settings, #prefab-browser {
       position: fixed; z-index: 25; inset: 0; display: none;
       align-items: center; justify-content: center; background: rgba(4, 6, 9, 0.6);
     }
-    #item-catalogue.open, #equip-catalogue.open, #world-browser.open, #splash-motion.open, #door-settings.open, #light-settings.open, #switch-settings.open, #mob-settings.open, #object-settings.open, #prefab-browser.open { display: flex; }
-    #item-catalogue .panel, #equip-catalogue .panel, #world-browser .panel, #splash-motion .panel, #door-settings .panel, #light-settings .panel, #switch-settings .panel, #mob-settings .panel, #object-settings .panel, #prefab-browser .panel {
+    #item-catalogue.open, #equip-catalogue.open, #decal-catalogue.open, #world-browser.open, #splash-motion.open, #door-settings.open, #light-settings.open, #switch-settings.open, #mob-settings.open, #object-settings.open, #prefab-browser.open { display: flex; }
+    #item-catalogue .panel, #equip-catalogue .panel, #decal-catalogue .panel, #world-browser .panel, #splash-motion .panel, #door-settings .panel, #light-settings .panel, #switch-settings .panel, #mob-settings .panel, #object-settings .panel, #prefab-browser .panel {
       position: relative;
       background: var(--surface-0); border: 1px solid var(--stroke);
       border-radius: var(--r-l); box-shadow: var(--shadow-pop);
@@ -1110,6 +1110,10 @@
   </div>
 
   <div id="item-catalogue">
+    <div class="panel"></div>
+  </div>
+
+  <div id="decal-catalogue">
     <div class="panel"></div>
   </div>
 

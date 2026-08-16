@@ -1,7 +1,7 @@
 // SaveSlots.js — LEGACY v1 save slots (localStorage + embedded WorldBundle).
 //
 // Kept as a reader forever so old saves keep loading: LegacySaves.js imports
-// v1 slots into the v2 SaveStore (IndexedDB + WorldSnapshot) on startup.
+// v1 slots into the SaveStore (IndexedDB, player state only) on startup.
 // Do not write new saves through this module — the game saves via
 // persistence/SaveStore.js. Storage is injected (localStorage in the
 // browser, a stub in tests) so this module stays pure and testable.

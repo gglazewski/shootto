@@ -1854,6 +1854,11 @@ export function hasRuntimeTile(name) {
   return RUNTIME_TILES.has(name);
 }
 
+/** Remove a runtime tile (paired with unregisterDecal; rebuild the atlas after). */
+export function unregisterRuntimeTile(name) {
+  return RUNTIME_TILES.delete(name);
+}
+
 /** Names of every registered tile, in deterministic order. */
 export function listTileNames() {
   return [...Object.keys(GENERATORS), ...RUNTIME_TILES.keys()];

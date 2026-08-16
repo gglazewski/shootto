@@ -34,6 +34,8 @@ export class Inventory {
     this.onCreateSign = null;
     /** Called when the "New Decal…" card in the Decals section is clicked. */
     this.onCreateDecal = null;
+    /** Called when the "Catalogue…" card in the Decals section is clicked. */
+    this.onOpenDecalCatalogue = null;
     /** Called whenever the panel closes (selection, E, or backdrop click). */
     this.onClose = null;
     /** The block/object currently under the cursor: { kind, id } or null. */
@@ -185,6 +187,25 @@ export class Inventory {
       }
     });
     this.decalGrid.appendChild(draw);
+    // "Catalogue" card: manage (select / delete) custom decals.
+    const cat = document.createElement('button');
+    cat.className = 'inv-item inv-item-add';
+    cat.title = 'Browse and delete custom decals (drawn + signs)';
+    const book = document.createElement('span');
+    book.textContent = '☰';
+    book.style.fontSize = '28px';
+    book.style.lineHeight = '48px';
+    cat.appendChild(book);
+    const catLabel = document.createElement('span');
+    catLabel.textContent = 'Catalogue…';
+    cat.appendChild(catLabel);
+    cat.addEventListener('click', () => {
+      if (this.onOpenDecalCatalogue) {
+        this.hide();
+        this.onOpenDecalCatalogue();
+      }
+    });
+    this.decalGrid.appendChild(cat);
   }
 
   /** Replace the list of registered equippable items and re-render. */

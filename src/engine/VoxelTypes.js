@@ -462,3 +462,9 @@ export function isClimbableDecal(id) {
 export function registerDecal(def) {
   DECAL_REGISTRY.set(def.id, def);
 }
+
+/** Remove a runtime-registered decal (drawn decals, text signs). The caller
+ *  strips world placements first, so no map ends up referencing the id. */
+export function unregisterDecal(id) {
+  return DECAL_REGISTRY.delete(id);
+}

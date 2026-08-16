@@ -14,7 +14,8 @@ import {
   generateTilePixels, tileSpan, renderAtlasRGBA, tilesForBlocks,
   hasRuntimeTile, TILE_SIZE,
 } from '../src/textures/TextureAtlas.js';
-import { getDecal, isDecalId, SIZE } from '../src/engine/VoxelTypes.js';
+import { getDecal, isDecalId, unregisterDecal, SIZE } from '../src/engine/VoxelTypes.js';
+import { unregisterRuntimeTile } from '../src/textures/TextureAtlas.js';
 import { World } from '../src/engine/World.js';
 import { serialize, deserialize } from '../src/persistence/WorldSerializer.js';
 import { serializePrefab, deserializePrefab } from '../src/persistence/PrefabSerializer.js';
@@ -144,6 +145,24 @@ test('malformed pixel decal entries are skipped with an error', () => {
   ];
   const { errors } = deserialize(JSON.stringify(base));
   assert.equal(errors.length, 3);
+});
+
+test('deleting a drawn decal (catalogue flow) leaves no trace in saves', () => {
+  const made = createPixelDecal({ name: 'Doomed', span: [1, 1], px: encodePixels(makeArt(1, 1, [9, 9, 9])) });
+  const world = new World();
+  world.place('panel', SIZE.SMALL, 0, 0, 0);
+  world.placeDecal(made.id, 0, 0, 0, 'pz', 0);
+  // the app's delete flow: strip placements, then unregister def + tile
+  const d = world.decalAt(0, 0, 0, 'pz');
+  world.removeDecal(d.cell[0], d.cell[1], d.cell[2], d.face);
+  unregisterRuntimeTile(made.id);
+  unregisterDecal(made.id);
+  assert.ok(!isDecalId(made.id));
+  assert.ok(!hasRuntimeTile(made.id));
+  assert.ok(!listPixelDecalIds().includes(made.id));
+  const data = JSON.parse(serialize(world));
+  assert.ok(!('pixelDecals' in data), 'no orphaned spec in the save');
+  assert.equal(data.decals.length, 0, 'no orphaned placement in the save');
 });
 
 // --- prefabs ---

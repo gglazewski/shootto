@@ -8,7 +8,7 @@ import * as THREE from '../vendor/three.module.js';
 import { World } from './engine/World.js';
 import { Renderer } from './engine/Renderer.js';
 import { CELL_SIZE } from './engine/Space.js';
-import { listBlockIds, getBlock, SIZE, listDecalIds, getDecal, isPassable } from './engine/VoxelTypes.js';
+import { listBlockIds, getBlock, SIZE, listDecalIds, getDecal, isPassable, unregisterDecal } from './engine/VoxelTypes.js';
 import { getItem, listItems, registerItem, removeItem, isItemId } from './engine/ItemRegistry.js';
 import {
   getEquipItem,
@@ -21,6 +21,7 @@ import {
 import { MICRO_SIZE, gridOf, lightLevelForMeters, slugifyName, deserializeItem, rotateMicroPoint } from './engine/ItemTypes.js';
 import { objectToEquip, equipToObject } from './engine/itemConvert.js';
 import { createAtlasTexture } from './textures/AtlasTexture.three.js';
+import { unregisterRuntimeTile } from './textures/TextureAtlas.js';
 import { Blinkers } from './engine/Blinkers.js';
 import { FlyControls } from './editor/FlyControls.js';
 import { WalkControls } from './editor/WalkControls.js';
@@ -75,6 +76,7 @@ import { ToolRing } from './editor/ToolRing.js';
 import { Notice, onNotice } from './editor/Notice.js';
 import { SignModal } from './editor/SignModal.js';
 import { DecalEditor } from './editor/DecalEditor.js';
+import { DecalCatalogue } from './editor/items/DecalCatalogue.js';
 import { WorldBrowser } from './editor/WorldBrowser.js';
 import { PrefabTool } from './editor/tools/PrefabTool.js';
 import { PaintTool } from './editor/tools/PaintTool.js';
@@ -506,6 +508,24 @@ export class App {
       Notice.info(`Decal ready — click a surface to place it`);
     };
     this.decalEditor.onClose = () => {
+      if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
+    };
+
+    // --- decal catalogue (manage custom decals, from the Decals section) ---
+    this.decalCatalogue = new DecalCatalogue({
+      doc,
+      container: this.doc.querySelector('#decal-catalogue'),
+      world: this.world,
+      callbacks: {
+        onCard: (id) => {
+          this.decalCatalogue.hide();
+          this.state.set('decalId', id); // in hand, decal tool active
+        },
+        onDelete: (id) => this._deleteCustomDecal(id),
+      },
+    });
+    this.inventory.onOpenDecalCatalogue = () => this.decalCatalogue.show();
+    this.decalCatalogue.onClose = () => {
       if (this.mode === 'edit' && this.webgl.domElement.requestPointerLock) this.webgl.domElement.requestPointerLock();
     };
     // Closing the inventory (selection, E, or backdrop click) re-locks the
@@ -1475,6 +1495,25 @@ export class App {
       .filter((id) => !getDecal(id).hidden)
       .map((id) => ({ id, name: getDecal(id).name }));
     this.inventory.updateDecalItems(buildDecalSwatchList(decalItems));
+  }
+
+  /** Remove a custom decal (drawn / text sign) from the registry, the
+   *  inventory and the world. Placements are stripped first, so no saved
+   *  map ends up referencing an unknown id. Built-in decals stay. */
+  _deleteCustomDecal(id) {
+    const decal = getDecal(id);
+    if (!decal || (!decal.pixelSpec && !decal.textSpec)) return;
+    const doomed = [];
+    this.world.forEachDecal((d) => { if (d.decalId === id) doomed.push(d); });
+    for (const d of doomed) this.world.removeDecal(d.cell[0], d.cell[1], d.cell[2], d.face);
+    unregisterRuntimeTile(decal.tile);
+    unregisterDecal(id);
+    if (this.state.get('decalId') === id) this.state.set('decalId', null);
+    if (doomed.length) this._markDirty();
+    this.rebuildAtlas();
+    this._refreshDecalItems();
+    this.decalCatalogue.refresh();
+    this.ui.toast(`Deleted "${decal.name}"${doomed.length ? ` (${doomed.length} placed)` : ''}`);
   }
 
   /** Hotbar entry for a decal id (fresh preview canvas). */

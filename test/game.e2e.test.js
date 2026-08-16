@@ -202,33 +202,35 @@ T('player can walk in the world', async () => {
   assert.ok(moved.y >= 1.0 - 0.01, `player must stay on the floor, got y=${moved.y}`);
 });
 
-T('save then load slots round-trips world + position', async () => {
-  // Move somewhere, then save to slot 0 (v2: async, snapshot in IndexedDB).
+T('save/load: position + pickups persist, map edits reach the save', async () => {
+  // Pick up the lamp, move somewhere, then save to slot 0. The world is
+  // static, so the save stores only player state + pickup tombstones.
   const saved = await page.evaluate(async () => {
-    const { walk } = window.__voxelgame;
-    walk.position.set(3.5, 1.0, 1.5);
-    walk.yaw = 0.7;
-    await window.__voxelgame.saveSlot(0);
-    const slot = await window.__voxelgame.saves.read('slot0');
+    const g = window.__voxelgame;
+    g.walk.position.set(3.5, 1.0, 1.5);
+    g.walk.yaw = 0.7;
+    g.world.removeItemAt(0, 2, 0); // pick up the lamp (state-level)
+    await g.saveSlot(0);
+    const slot = await g.saves.read('slot0');
     return {
       pos: [slot.player.x, slot.player.y, slot.player.z],
       yaw: slot.player.yaw,
       format: slot.format,
-      worldFormat: slot.world?.format,
+      pickedUp: slot.pickedUp,
       savedAt: !!slot.savedAt,
     };
   });
   assert.deepEqual(saved.pos, [3.5, 1.0, 1.5]);
   assert.equal(saved.yaw, 0.7);
   assert.equal(saved.format, 'voxelsave');
-  assert.equal(saved.worldFormat, 'voxelsnap', 'slot must snapshot the world');
+  assert.deepEqual(saved.pickedUp, [{ itemId: 'lamp', x: 0, y: 2, z: 0 }], 'the pickup must be tombstoned');
   assert.equal(saved.savedAt, true);
 
-  // Overwrite the authored map, reload, then load slot 0: the saved world wins.
-  // The game now boots from the world file, so blank it; the init script keeps
-  // the cumulative localStorage state in step for later __syncNewGame calls.
-  await writeWorld({ map: EMPTY_MAP });
-  await page.addInitScript(({ map }) => localStorage.setItem('voxelmap.save', map), { map: JSON.stringify(EMPTY_MAP) });
+  // Edit the authored map (one extra block), reload, then load slot 0: the
+  // EDITED map must win — plus the pickup stays gone and position restores.
+  const edited = JSON.parse(MAP);
+  edited.blocks = [...edited.blocks, { x: 10, y: 0, z: 10, size: 'big', type: 'grass' }];
+  await writeWorld({ map: edited });
   await loadGame();
   await page.evaluate(() => window.__voxelgame.loadSlot(0));
   await page.waitForTimeout(200);
@@ -238,14 +240,21 @@ T('save then load slots round-trips world + position', async () => {
     return {
       mode,
       count: world.count,
+      lampThere: !!world.itemAt(0, 2, 0),
       pos: [walk.position.x, walk.position.y, walk.position.z],
       yaw: walk.yaw,
     };
   });
   assert.equal(loaded.mode, 'playing', 'loading a slot must enter play');
-  assert.equal(loaded.count, 16, 'slot must restore the saved world, not the new map');
+  assert.equal(loaded.count, 17, 'map edits must reach the loaded save');
+  assert.equal(loaded.lampThere, false, 'the picked-up lamp must stay gone');
   assert.ok(Math.abs(loaded.pos[0] - 3.5) < 1e-6, `position x restored, got ${loaded.pos[0]}`);
   assert.ok(Math.abs(loaded.yaw - 0.7) < 1e-6, `yaw restored, got ${loaded.yaw}`);
+
+  // Blank the world file for the tests that follow; the init script keeps
+  // the cumulative localStorage state in step for later __syncNewGame calls.
+  await writeWorld({ map: EMPTY_MAP });
+  await page.addInitScript(({ map }) => localStorage.setItem('voxelmap.save', map), { map: JSON.stringify(EMPTY_MAP) });
 });
 
 T('HUD shows health, armor, equipment slots and fists by default', async () => {

@@ -32,8 +32,9 @@ export const FORMAT = 'voxelmap';
 export const VERSION = 1;
 
 /** Everything in a world EXCEPT blocks and paint — the sections that stay
- *  small (dozens of entries) however big the map grows. Shared between the
- *  JSON map format and the binary game-save snapshot (WorldSnapshot.js). */
+ *  small (dozens of entries) however big the map grows. Also the source of
+ *  the object-placement lists that save-slot pickup tombstones diff against
+ *  (SaveStore.diffPickedUp). */
 export function collectSparse(world) {
   const items = [];
   world.forEachItem((it) => {
@@ -165,10 +166,9 @@ export function deserialize(text) {
   return deserializeData(data);
 }
 
-/** The same tolerant loader, from an already-parsed data object — used by
- *  game-save snapshots (WorldSnapshot.js) so multi-MB worlds never round-trip
- *  through JSON text. Renamed content ids are mapped through the alias table
- *  (idAliases.js) here, so every load path — maps and saves — benefits. */
+/** The same tolerant loader, from an already-parsed data object. Renamed
+ *  content ids are mapped through the alias table (idAliases.js) here, so
+ *  every load path benefits. */
 export function deserializeData(data) {
   const errors = [];
   if (!data || data.format !== FORMAT) {

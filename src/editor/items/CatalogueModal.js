@@ -78,21 +78,24 @@ export class CatalogueModal {
       bar.appendChild(chip);
     }
 
-    const importBtn = doc.createElement('button');
-    importBtn.className = 'cat-btn';
-    importBtn.textContent = 'Import item file';
-    importBtn.addEventListener('click', () => this._file.click());
-    bar.appendChild(importBtn);
-    this._file = doc.createElement('input');
-    this._file.type = 'file';
-    this._file.accept = '.json,application/json';
-    this._file.multiple = true;
-    this._file.style.display = 'none';
-    this._file.addEventListener('change', (e) => {
-      this._importFiles(e.target.files);
-      e.target.value = '';
-    });
-    bar.appendChild(this._file);
+    // Import (button + file drop) only for catalogues that can take files.
+    if (this.cb.onImport) {
+      const importBtn = doc.createElement('button');
+      importBtn.className = 'cat-btn';
+      importBtn.textContent = 'Import item file';
+      importBtn.addEventListener('click', () => this._file.click());
+      bar.appendChild(importBtn);
+      this._file = doc.createElement('input');
+      this._file.type = 'file';
+      this._file.accept = '.json,application/json';
+      this._file.multiple = true;
+      this._file.style.display = 'none';
+      this._file.addEventListener('change', (e) => {
+        this._importFiles(e.target.files);
+        e.target.value = '';
+      });
+      bar.appendChild(this._file);
+    }
     panel.appendChild(bar);
 
     this.grid = doc.createElement('div');
@@ -119,7 +122,7 @@ export class CatalogueModal {
     // dragleave fire for every child crossed, so a depth counter tracks when
     // the pointer has actually left the modal.
     let dragDepth = 0;
-    const hasFiles = (e) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    const hasFiles = (e) => this.cb.onImport && Array.from(e.dataTransfer?.types ?? []).includes('Files');
     this.container.addEventListener('dragenter', (e) => {
       if (!hasFiles(e)) return;
       e.preventDefault();
@@ -185,6 +188,11 @@ export class CatalogueModal {
    *  engine/itemConvert.js), or null to leave the action off the cards. */
   _convertLabel() {
     return null;
+  }
+
+  /** Card preview element. Default: the 3D micro-voxel item swatch. */
+  _swatch(item) {
+    return buildItemSwatch(item, 56);
   }
 
   /** Read each .json file and hand its text to the import callback. */
@@ -255,7 +263,7 @@ export class CatalogueModal {
     card.tabIndex = 0;
     card.setAttribute('role', 'button');
     card.title = `${item.name} — ${this.cardHint}`;
-    card.appendChild(buildItemSwatch(item, 56));
+    card.appendChild(this._swatch(item));
 
     const name = doc.createElement('div');
     name.className = 'cat-name';
@@ -280,8 +288,8 @@ export class CatalogueModal {
       actions.appendChild(b);
       return b;
     };
-    mk('Edit', () => this.cb.onEdit?.(item.id));
-    mk('Export', () => this.cb.onExport?.(item.id));
+    if (this.cb.onEdit) mk('Edit', () => this.cb.onEdit(item.id));
+    if (this.cb.onExport) mk('Export', () => this.cb.onExport(item.id));
     const convertLabel = this._convertLabel();
     if (convertLabel && this.cb.onConvert) mk(convertLabel, () => this.cb.onConvert(item.id));
 
