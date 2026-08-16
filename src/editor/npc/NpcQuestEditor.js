@@ -2,15 +2,20 @@
 //
 // A modal overlay with two tabs working directly against the NpcRegistry and
 // QuestRegistry:
-//   NPCs   — define characters: id, display name, skin (drawn character
-//            sheet), height, the first-meeting chit-chat, the return-visit
-//            greeting, and lore topics the player can ask about.
+//   NPCs   — define characters in collapsible sections: identity, the
+//            first-meeting chit-chat + greeting, lore topics, an optional
+//            small-talk dialogue tree, and services (repair).
 //   Quests — per NPC giver, an ordered chain of quest tiers. The sidebar
 //            draws the chain (how each tier starts: offered in dialogue or
-//            auto-started) with reorder controls; the form groups a tier
-//            into sections — title, objectives (kill / collect / visit),
-//            flow & chaining (the autoAccept/autoComplete flags as start/end
-//            choices), the conversations the flow keeps, and the reward.
+//            auto-started) with reorder controls. The form proper is:
+//            an always-visible header (tier tag, the title field, and the
+//            FLOW strip — start/end segmented controls inline in the run
+//            preview), then collapsible sections below (Objectives,
+//            Dialogue, Rewards, Flags), and a sticky footer (Save / Delete)
+//            that never scrolls away. Section collapses are pure DOM
+//            toggles — no re-render, so typed text survives them — while
+//            structural changes re-render off a whole-tier draft that
+//            _syncDraft keeps fed from every field.
 //
 // The panel builds its own DOM into document.body (styles live in
 // index.html). Every mutation calls onChange() so the App can persist the
@@ -87,6 +92,14 @@ export class NpcQuestEditor {
      *  registry until Save. Keyed so switching tiers re-seeds it. */
     this._draftObjectives = [];
     this._draftFor = null;
+    /** Working copy of the whole tier form (scalars, rewards, flags) — see
+     *  _syncDraft; same draftFor key as the objectives above. */
+    this._draftTier = null;
+    /** Live field refs _syncDraft reads (Quests tab only, per render). */
+    this._f = null;
+    /** Ids of the collapsible sections standing open (per tab). */
+    this._open = new Set(['objectives', 'dialogue']);
+    this._openTab = 'quests';
     /** Unsaved edits in the tier form (see _markDirty / _confirmDiscard). */
     this._dirty = false;
 
@@ -123,6 +136,13 @@ export class NpcQuestEditor {
 
   open() {
     this._dirty = false;
+    // The panel is built at App start, when the registry still holds the
+    // built-in roster — a world load may swap it since. Revalidate the
+    // selection: land on the first listed NPC instead of a stale id (or a
+    // blank "new character" form).
+    const npcs = listNpcs();
+    if (!npcs.some((n) => n.id === this.npcId)) this.npcId = npcs[0]?.id ?? null;
+    if (!npcs.some((n) => n.id === this.giverId)) this.giverId = this.npcId;
     this._render();
     this.root.classList.add('open');
     this.doc.addEventListener('keydown', this._onKey, true);
@@ -172,6 +192,15 @@ export class NpcQuestEditor {
 
     const body = el(doc, 'div', 'npcq-body');
     this.panel.appendChild(body);
+    // Which collapsible sections stand open (ids from _section calls). The
+    // set survives re-renders (Save must not snap the form shut) and is
+    // reseeded only when the tab itself changes.
+    if (this._openTab !== this.tab) {
+      this._openTab = this.tab;
+      this._open = this.tab === 'npcs'
+        ? new Set(['identity'])
+        : new Set(['objectives', 'dialogue']);
+    }
     if (this.tab === 'npcs') this._renderNpcs(body);
     else this._renderQuests(body);
   }
@@ -225,13 +254,40 @@ export class NpcQuestEditor {
     return ok;
   }
 
-  /** Titled form section box. @returns {HTMLElement} the section container */
-  _section(parent, title, hint) {
-    const sec = el(this.doc, 'div', 'npcq-section');
-    sec.appendChild(el(this.doc, 'div', 'npcq-section-title', title));
-    if (hint) sec.appendChild(el(this.doc, 'div', 'npcq-hint', hint));
+  /** Titled form section box — collapsible: the title row is a toggle that
+   *  hides the section body with a mere class flip (NO re-render, so typed
+   *  text survives). Open-state is remembered per section id across renders
+   *  (this._open); the default set is seeded per tab on render.
+   *  @returns {HTMLElement} the section BODY — append fields here */
+  _section(parent, id, title, hint) {
+    const doc = this.doc;
+    const sec = el(doc, 'div', 'npcq-section');
+    const head = el(doc, 'button', 'npcq-section-head');
+    head.type = 'button';
+    head.appendChild(el(doc, 'span', 'npcq-chev', '▸'));
+    head.appendChild(el(doc, 'span', 'npcq-section-title', title));
+    const badge = el(doc, 'span', 'npcq-section-badge');
+    head.appendChild(badge);
+    head.addEventListener('click', () => {
+      const collapsed = sec.classList.toggle('collapsed');
+      if (collapsed) this._open.delete(id);
+      else this._open.add(id);
+    });
+    if (!this._open.has(id)) sec.classList.add('collapsed');
+    sec.appendChild(head);
+    const body = el(doc, 'div', 'npcq-section-body');
+    if (hint) body.appendChild(el(doc, 'div', 'npcq-hint', hint));
+    sec.appendChild(body);
     parent.appendChild(sec);
-    return sec;
+    return body;
+  }
+
+  /** The always-visible action bar under a form: Save (and Delete when there
+   *  is something to delete) never scroll away. */
+  _foot(parent) {
+    const foot = el(this.doc, 'div', 'npcq-foot');
+    parent.appendChild(foot);
+    return foot;
   }
 
   /** Segmented switch — a radio group styled as adjoining buttons.
@@ -253,8 +309,9 @@ export class NpcQuestEditor {
     return { el: wrap, value: () => current };
   }
 
-  /** Copy the objective form fields back into the draft objects, so a
-   *  structural re-render (add/remove/type switch) keeps what was typed. */
+  /** Copy every form field back into the tier draft, so a structural
+   *  re-render (add/remove objective, type switch) or a later commit sees
+   *  exactly what's on screen — nothing typed gets dropped. */
   _syncDraft() {
     for (const b of this._objBlocks ?? []) {
       const o = b.o;
@@ -269,6 +326,31 @@ export class NpcQuestEditor {
     // (add/remove objective) keep their unsaved edits too.
     if (this._aboutEd) this._draftAbout = this._aboutEd.snapshot();
     if (this._debriefEd) this._draftDebrief = this._debriefEd.snapshot();
+    // The scalar fields (only present while the Quests tab is rendered).
+    const f = this._f;
+    if (!f || !this._draftTier) return;
+    const d = this._draftTier;
+    d.title = f.titleIn.value;
+    d.autoAccept = f.startSeg.value() === 'auto';
+    d.autoComplete = f.endSeg.value() === 'auto';
+    d.offerPrompt = f.offerPromptIn.value;
+    d.offer = f.offerTa.value;
+    d.progressLine = f.progressIn.value;
+    d.turninPrompt = f.turninPromptIn.value;
+    d.ready = f.readyTa.value;
+    if (f.epilogueTa) d.epilogue = f.epilogueTa.value;
+    d.startReward = {
+      health: f.sHealthIn.value, armor: f.sArmorIn.value,
+      ammoType: f.sAmmoSel.value, ammoAmount: f.sAmmoAmountIn.value,
+      items: f.startItems.value(),
+    };
+    d.reward = {
+      health: f.healthIn.value, armor: f.armorIn.value,
+      ammoType: f.ammoSel.value, ammoAmount: f.ammoAmountIn.value,
+      items: f.rewardItems.value(),
+    };
+    d.acceptFlags = f.acceptFlagsIn.value;
+    d.completeFlags = f.completeFlagsIn.value;
   }
 
   /** One objective's editor block: type selector plus the fields that type
@@ -430,6 +512,10 @@ export class NpcQuestEditor {
     const list = el(doc, 'div', 'npcq-list');
     const form = el(doc, 'div', 'npcq-form');
     body.append(list, form);
+    const scroll = el(doc, 'div', 'npcq-scroll');
+    form.appendChild(scroll);
+    // Any typing in the form area flags the NPC dirty for the discard guard.
+    scroll.addEventListener('input', () => this._markDirty());
 
     for (const def of listNpcs()) {
       const entry = el(doc, 'button', `npcq-entry${def.id === this.npcId ? ' active' : ''}`, `${def.name} (${def.id})`);
@@ -447,44 +533,54 @@ export class NpcQuestEditor {
     list.appendChild(add);
 
     const existing = this.npcId ? getNpc(this.npcId) : null;
-    const idIn = this._row(form, 'Id', this._input(existing?.id ?? ''));
+
+    // --- Identity ---
+    const secId = this._section(scroll, 'identity', existing ? `Identity — ${existing.name}` : 'Identity — new character');
+    const idIn = this._row(secId, 'Id', this._input(existing?.id ?? ''));
     idIn.placeholder = 'lowercase-with-dashes';
     idIn.disabled = !!existing; // ids are identity — placed spawns reference them
-    const nameIn = this._row(form, 'Name', this._input(existing?.name ?? ''));
-    const skinSel = this._row(form, 'Skin', this._select(MOB_SKINS.map((s) => ({ value: s, label: s })), existing?.skin));
-    const heightIn = this._row(form, 'Height (m)', this._input(existing?.height ?? 1.65, 'number'));
-    form.appendChild(el(doc, 'div', 'npcq-hint', 'Chit-chat — one line per row, played on first meeting:'));
+    const nameIn = this._row(secId, 'Name', this._input(existing?.name ?? ''));
+    const skinSel = this._row(secId, 'Skin', this._select(MOB_SKINS.map((s) => ({ value: s, label: s })), existing?.skin));
+    const heightIn = this._row(secId, 'Height (m)', this._input(existing?.height ?? 1.65, 'number'));
+
+    // --- First meeting ---
+    const secMeet = this._section(scroll, 'meet', 'First meeting',
+      'Chit-chat — one line per row, played when the player first talks to this character:');
     const dialogTa = this._textarea(existing?.dialog, 8);
-    form.appendChild(dialogTa);
-    const greetIn = this._row(form, 'Greeting', this._input(existing?.greeting ?? ''));
+    secMeet.appendChild(dialogTa);
+    const greetIn = this._row(secMeet, 'Greeting', this._input(existing?.greeting ?? ''));
     greetIn.placeholder = 'opens every later talk — "Hello again." when empty';
-    form.appendChild(el(doc, 'div', 'npcq-hint',
-      'Lore topics — blocks separated by a blank line; block’s first row is the player’s question, the rest is the answer:'));
+
+    // --- Lore topics ---
+    const secTopics = this._section(scroll, 'topics', 'Lore topics',
+      'Blocks separated by a blank line; block’s first row is the player’s question, the rest is the answer:');
     const topicsTa = this._textarea(null, 10);
     topicsTa.value = topicsToText(existing?.topics);
     topicsTa.placeholder = 'What happened here?\nNobody rightly knows, love.\nOne day the sirens went...\n\nWho are you?\nJust an old woman minding her tea.';
-    form.appendChild(topicsTa);
+    secTopics.appendChild(topicsTa);
 
-    form.appendChild(el(doc, 'div', 'npcq-hint',
-      'Small talk — an optional branching conversation the player can open from the talk menu:'));
-    const chatPromptIn = this._row(form, 'Player asks', this._input(existing?.chat?.prompt ?? ''));
+    // --- Small talk ---
+    const secChat = this._section(scroll, 'chat', 'Small talk',
+      'An optional branching conversation the player can open from the talk menu:');
+    const chatPromptIn = this._row(secChat, 'Player asks', this._input(existing?.chat?.prompt ?? ''));
     chatPromptIn.placeholder = '“Can we talk?” when empty';
     const chatEd = new DialogueGraphEditor({ doc, graph: existing?.chat ?? null });
-    form.appendChild(chatEd.el);
+    secChat.appendChild(chatEd.el);
 
-    form.appendChild(el(doc, 'div', 'npcq-hint',
-      'Services — repair restores worn melee weapons. The signal gates the talk option: a game flag name ' +
-      '(raised e.g. by a quest on accept/complete, "!name" inverts), blank = always offered:'));
+    // --- Services ---
+    const secSvc = this._section(scroll, 'services', 'Services',
+      'Repair restores worn melee weapons. The signal gates the talk option: a game flag name ' +
+      '(raised e.g. by a quest on accept/complete, "!name" inverts), blank = always offered:');
     const existingRepair = (existing?.services ?? []).find((s) => s.type === 'repair') ?? null;
     const repairChk = this._input('', 'checkbox');
     repairChk.checked = !!existingRepair;
-    this._row(form, 'Offers repair', repairChk);
-    const repairLabelIn = this._row(form, 'Player asks', this._input(existingRepair?.label ?? ''));
+    this._row(secSvc, 'Offers repair', repairChk);
+    const repairLabelIn = this._row(secSvc, 'Player asks', this._input(existingRepair?.label ?? ''));
     repairLabelIn.placeholder = `“${NPC_SERVICE_TYPES.repair.label}” when empty`;
-    const repairFlagIn = this._row(form, 'Signal', this._input(existingRepair?.flag ?? ''));
+    const repairFlagIn = this._row(secSvc, 'Signal', this._input(existingRepair?.flag ?? ''));
     repairFlagIn.placeholder = 'e.g. workshop-open — blank = always';
 
-    const buttons = el(doc, 'div', 'npcq-buttons');
+    const foot = this._foot(form);
     const save = el(doc, 'button', 'primary', existing ? 'Save NPC' : 'Create NPC');
     save.addEventListener('click', () => {
       const def = registerNpc({
@@ -512,10 +608,13 @@ export class NpcQuestEditor {
       this.onChange();
       this._render();
     });
-    buttons.appendChild(save);
+    foot.appendChild(save);
     if (existing) {
       const del = el(doc, 'button', 'danger', 'Delete NPC');
       del.addEventListener('click', () => {
+        const ok = doc.defaultView?.confirm(
+          `Delete NPC "${existing.name}"? Its questline and any placed spawns go with it.`) ?? true;
+        if (!ok) return;
         removeNpc(existing.id);
         setQuestline(existing.id, []); // its questline goes with it
         this.npcId = listNpcs()[0]?.id ?? null;
@@ -523,9 +622,8 @@ export class NpcQuestEditor {
         this.onChange();
         this._render();
       });
-      buttons.appendChild(del);
+      foot.appendChild(del);
     }
-    form.appendChild(buttons);
   }
 
   // --- Quests tab ---
@@ -622,9 +720,6 @@ export class NpcQuestEditor {
     const side = el(doc, 'div', 'npcq-list');
     const form = el(doc, 'div', 'npcq-form');
     body.append(side, form);
-    // Any typing in the form makes the tier dirty; Save (or a pick-flow
-    // commit) clears it, and navigation asks before discarding.
-    form.addEventListener('input', () => this._markDirty());
 
     const giverSel = this._select(npcs.map((n) => ({ value: n.id, label: n.name })), this.giverId);
     giverSel.className = 'npcq-giver';
@@ -654,16 +749,11 @@ export class NpcQuestEditor {
     const quest = this._newTier ? null : tiers[this.tierIndex] ?? null;
     const isLast = this._newTier || this.tierIndex === tiers.length - 1;
 
-    // --- the tier ---
-    const secTier = this._section(form, this._newTier
-      ? `New tier — becomes #${tiers.length + 1}`
-      : `Tier ${this.tierIndex + 1} of ${tiers.length}`);
-    const titleIn = this._row(secTier, 'Title', this._input(quest?.title ?? ''));
-    titleIn.placeholder = 'shown in the HUD quest log';
-
-    // --- objectives (multi-goal) ---
-    // The draft is a working copy of the tier's objectives: field edits sync
-    // back on every structural change and on Save; switching tiers re-seeds.
+    // --- the whole-tier draft ---
+    // The draft is a working copy of EVERYTHING the form edits: scalar fields
+    // too, not just objectives — so a structural re-render (add/remove
+    // objective, type switch) or a section collapse never drops typed text.
+    // Switching tiers/givers re-seeds it from the registry.
     const draftKey = `${this.giverId}:${this._newTier ? 'new' : this.tierIndex}`;
     if (this._draftFor !== draftKey) {
       this._draftFor = draftKey;
@@ -672,18 +762,83 @@ export class NpcQuestEditor {
         : [{ type: 'kill', target: 'any', count: 3, noun: '' }];
       this._draftAbout = quest?.about ? JSON.parse(JSON.stringify(quest.about)) : null;
       this._draftDebrief = quest?.debrief ? JSON.parse(JSON.stringify(quest.debrief)) : null;
+      const r = (x) => ({ health: x?.health ?? 0, armor: x?.armor ?? 0, ammoType: x?.ammo?.type ?? '', ammoAmount: x?.ammo?.amount ?? 0, items: [...(x?.items ?? [])] });
+      this._draftTier = {
+        title: quest?.title ?? '',
+        autoAccept: !!quest?.autoAccept,
+        autoComplete: !!quest?.autoComplete,
+        offer: (quest?.offer ?? []).join('\n'),
+        offerPrompt: quest?.offerPrompt ?? '',
+        progressLine: quest?.progressLine ?? 'How goes it? {n} of {count} so far.',
+        ready: (quest?.ready ?? []).join('\n'),
+        turninPrompt: quest?.turninPrompt ?? '',
+        epilogue: (quest?.epilogue ?? []).join('\n'),
+        startReward: r(quest?.startReward),
+        reward: r(quest?.reward),
+        acceptFlags: (quest?.flags?.accept ?? []).join(', '),
+        completeFlags: (quest?.flags?.complete ?? []).join(', '),
+      };
     }
+    const d = this._draftTier;
+    // Field refs _syncDraft reads back into the draft before re-renders.
+    this._f = {};
+
+    // --- header: title + flow, always visible ---
+    const head = el(doc, 'div', 'npcq-formhead');
+    form.appendChild(head);
+    head.appendChild(el(doc, 'div', 'npcq-tier-tag', this._newTier ? `NEW — becomes #${tiers.length + 1}` : `TIER ${this.tierIndex + 1} / ${tiers.length}`));
+    const titleIn = this._input(d.title);
+    titleIn.className = 'npcq-title-input';
+    titleIn.placeholder = 'quest title — shown in the HUD quest log';
+    head.appendChild(titleIn);
+    const flowBar = el(doc, 'div', 'npcq-flowbar');
+    head.appendChild(flowBar);
+    const startSeg = this._segmented([
+      { value: 'talk', label: 'Offered in dialogue', title: 'The giver pitches it; the player accepts in conversation' },
+      { value: 'auto', label: 'Starts by itself', title: 'Begins the moment it unlocks (previous tier done, or game start) — the offer conversation never plays' },
+    ], d.autoAccept ? 'auto' : 'talk', () => applyFlow(true));
+    const endSeg = this._segmented([
+      { value: 'talk', label: 'Turned in', title: 'The player returns to hand the job in; the reward is paid in conversation' },
+      { value: 'auto', label: 'On the spot', title: 'Finishes in the field the moment every objective is met — reward granted immediately, no turn-in conversation' },
+    ], d.autoComplete ? 'auto' : 'talk', () => applyFlow(true));
+    const chipEl = (text, isAuto) => el(doc, 'span', `npcq-chip${isAuto ? ' auto' : ''}`, text);
+    const arrowEl = () => el(doc, 'span', 'npcq-flow-arrow', '→');
+    const first = this._newTier ? tiers.length === 0 : this.tierIndex === 0;
+    flowBar.append(
+      chipEl(first ? 'game start' : 'previous tier done'),
+      arrowEl(),
+      startSeg.el,
+      arrowEl(),
+      chipEl('objectives'),
+      arrowEl(),
+      endSeg.el,
+      arrowEl(),
+      chipEl('reward'),
+    );
+    head.appendChild(el(doc, 'div', 'npcq-hint',
+      'Chain tip: "On the spot" followed by a tier that "Starts by itself" plays as one continuous story beat.'));
+
+    const scroll = el(doc, 'div', 'npcq-scroll');
+    form.appendChild(scroll);
+    // Any typing in the form area makes the tier dirty; Save (or a pick-flow
+    // commit) clears it, and navigation asks before discarding.
+    scroll.addEventListener('input', () => this._markDirty());
+
     /** Late-bound so objective-block handlers can call the commit defined
      *  below (clicks happen long after this render pass). */
     const doCommit = () => commit();
-    const secObj = this._section(form, 'Objectives',
+
+    // --- objectives (multi-goal) ---
+    const objSec = this._section(scroll, 'objectives', 'Objectives',
       'The quest is fulfilled only when ALL of them are met.');
     const objWrap = el(doc, 'div', 'npcq-objectives');
-    secObj.appendChild(objWrap);
+    objSec.appendChild(objWrap);
+    const objBadge = objSec.closest('.npcq-section').querySelector('.npcq-section-badge');
     this._objBlocks = [];
     this._draftObjectives.forEach((o, i) => {
       this._objBlocks.push(this._renderObjective(objWrap, o, i, doCommit));
     });
+    objBadge.textContent = `${this._draftObjectives.length} goal${this._draftObjectives.length === 1 ? '' : 's'}`;
     const addObj = el(doc, 'button', 'npcq-entry npcq-add', '+ Add objective');
     addObj.addEventListener('click', () => {
       this._markDirty();
@@ -693,40 +848,22 @@ export class NpcQuestEditor {
     });
     objWrap.appendChild(addObj);
 
-    // --- flow & chaining ---
-    // The autoAccept/autoComplete flags surface as start/end choices; the
-    // dialogue groups below dim to match, and the strip previews the run.
-    const secFlow = this._section(form, 'Flow & chaining');
-    const startSeg = this._segmented([
-      { value: 'talk', label: 'Offered in dialogue', title: 'The giver pitches it; the player accepts in conversation' },
-      { value: 'auto', label: 'Starts by itself', title: 'Begins the moment it unlocks (previous tier done, or game start) — the offer conversation never plays' },
-    ], quest?.autoAccept ? 'auto' : 'talk', () => applyFlow(true));
-    this._row(secFlow, 'Starts', startSeg.el);
-    const endSeg = this._segmented([
-      { value: 'talk', label: 'Turned in to the giver', title: 'The player returns to hand the job in; the reward is paid in conversation' },
-      { value: 'auto', label: 'Completes on the spot', title: 'Finishes in the field the moment every objective is met — reward granted immediately, no turn-in conversation' },
-    ], quest?.autoComplete ? 'auto' : 'talk', () => applyFlow(true));
-    this._row(secFlow, 'Ends', endSeg.el);
-    const flowStrip = el(doc, 'div', 'npcq-flow');
-    secFlow.appendChild(flowStrip);
-    secFlow.appendChild(el(doc, 'div', 'npcq-hint',
-      'Chain tip: "completes on the spot" followed by a tier that "starts by itself" plays as one continuous story beat.'));
-
     // --- dialogue ---
-    const secDlg = this._section(form, 'Dialogue');
+    const secDlg = this._section(scroll, 'dialogue', 'Dialogue');
     const offerGroup = el(doc, 'div', 'npcq-subgroup');
     secDlg.appendChild(offerGroup);
     offerGroup.appendChild(el(doc, 'div', 'npcq-subtitle', 'Offer'));
     offerGroup.appendChild(el(doc, 'div', 'npcq-skipnote',
       'Never plays — this tier starts by itself. The lines are kept in case you switch back.'));
-    const offerPromptIn = this._row(offerGroup, 'Player asks', this._input(quest?.offerPrompt ?? ''));
+    const offerPromptIn = this._row(offerGroup, 'Player asks', this._input(d.offerPrompt));
     offerPromptIn.placeholder = '"Do you need help?" when empty';
     offerGroup.appendChild(el(doc, 'div', 'npcq-hint',
       'The giver’s pitch — one line per row; the player then picks "I’ll do it" to accept:'));
-    const offerTa = this._textarea(quest?.offer, 5);
+    const offerTa = this._textarea(null, 5);
+    offerTa.value = d.offer;
     offerGroup.appendChild(offerTa);
 
-    const progressIn = this._row(secDlg, 'Progress line', this._input(quest?.progressLine ?? 'How goes it? {n} of {count} so far.'));
+    const progressIn = this._row(secDlg, 'Progress line', this._input(d.progressLine));
     progressIn.placeholder = 'mid-quest talk — may use {n} and {count}';
 
     const aboutGroup = el(doc, 'div', 'npcq-subgroup');
@@ -746,11 +883,12 @@ export class NpcQuestEditor {
     turninGroup.appendChild(el(doc, 'div', 'npcq-subtitle', 'Turn-in'));
     turninGroup.appendChild(el(doc, 'div', 'npcq-skipnote',
       'Never plays — this tier completes on the spot. The lines are kept in case you switch back.'));
-    const turninPromptIn = this._row(turninGroup, 'Player reports', this._input(quest?.turninPrompt ?? ''));
+    const turninPromptIn = this._row(turninGroup, 'Player reports', this._input(d.turninPrompt));
     turninPromptIn.placeholder = '"It’s done." when empty';
     turninGroup.appendChild(el(doc, 'div', 'npcq-hint',
       'The giver’s thanks — picking the report line pays the reward:'));
-    const readyTa = this._textarea(quest?.ready, 5);
+    const readyTa = this._textarea(null, 5);
+    readyTa.value = d.ready;
     turninGroup.appendChild(readyTa);
     turninGroup.appendChild(el(doc, 'div', 'npcq-hint',
       'Debrief — optional dialogue tree: when authored, it plays instead of the thanks lines above once the job is handed in — the giver can ask what happened and the player picks their account of it. The reward is already paid when it starts.'));
@@ -765,55 +903,67 @@ export class NpcQuestEditor {
     if (isLast) {
       secDlg.appendChild(el(doc, 'div', 'npcq-hint',
         'Epilogue (last tier only) — idle talk once the whole questline is finished:'));
-      epilogueTa = this._textarea(quest?.epilogue, 3);
+      epilogueTa = this._textarea(null, 3);
+      epilogueTa.value = d.epilogue;
       secDlg.appendChild(epilogueTa);
     }
 
-    // --- starting gear ---
-    const sr = quest?.startReward ?? {};
-    const secStart = this._section(form, 'Starting gear',
-      'Handed over the moment the quest starts — accepted in dialogue or auto-started. Equip the player for the job (say, a baseball bat to go scout the area).');
+    // --- rewards (starting gear + completion reward) ---
+    const secReward = this._section(scroll, 'rewards', 'Rewards');
+    const startGroup = el(doc, 'div', 'npcq-subgroup');
+    secReward.appendChild(startGroup);
+    startGroup.appendChild(el(doc, 'div', 'npcq-subtitle', 'Starting gear'));
+    startGroup.appendChild(el(doc, 'div', 'npcq-hint',
+      'Handed over the moment the quest starts — accepted in dialogue or auto-started. Equip the player for the job (say, a baseball bat to go scout the area).'));
     const startGrid = el(doc, 'div', 'npcq-reward-grid');
-    secStart.appendChild(startGrid);
-    const sHealthIn = this._row(startGrid, 'Health', this._input(sr.health ?? 0, 'number'));
-    const sArmorIn = this._row(startGrid, 'Armor', this._input(sr.armor ?? 0, 'number'));
+    startGroup.appendChild(startGrid);
+    const sHealthIn = this._row(startGrid, 'Health', this._input(d.startReward.health, 'number'));
+    const sArmorIn = this._row(startGrid, 'Armor', this._input(d.startReward.armor, 'number'));
     const sAmmoSel = this._row(startGrid, 'Ammo', this._select(
       [{ value: '', label: 'None' }, ...listAmmoTypes().map((a) => ({ value: a.id, label: a.name }))],
-      sr.ammo?.type ?? '',
+      d.startReward.ammoType,
     ));
-    const sAmmoAmountIn = this._row(startGrid, 'Rounds', this._input(sr.ammo?.amount ?? 0, 'number'));
-    const startItems = this._itemPicker(secStart, sr.items ?? [],
+    const sAmmoAmountIn = this._row(startGrid, 'Rounds', this._input(d.startReward.ammoAmount, 'number'));
+    const startItems = this._itemPicker(startGroup, d.startReward.items,
       'Starting items — they fly over from the giver the moment the quest begins:', () => this._markDirty());
 
-    // --- reward ---
-    const r = quest?.reward ?? {};
-    const secReward = this._section(form, 'Reward');
+    const rewardGroup = el(doc, 'div', 'npcq-subgroup');
+    secReward.appendChild(rewardGroup);
+    rewardGroup.appendChild(el(doc, 'div', 'npcq-subtitle', 'Completion reward'));
     const rewardHint = el(doc, 'div', 'npcq-hint', '');
-    secReward.appendChild(rewardHint);
+    rewardGroup.appendChild(rewardHint);
     const rewardGrid = el(doc, 'div', 'npcq-reward-grid');
-    secReward.appendChild(rewardGrid);
-    const healthIn = this._row(rewardGrid, 'Health', this._input(r.health ?? 0, 'number'));
-    const armorIn = this._row(rewardGrid, 'Armor', this._input(r.armor ?? 0, 'number'));
+    rewardGroup.appendChild(rewardGrid);
+    const healthIn = this._row(rewardGrid, 'Health', this._input(d.reward.health, 'number'));
+    const armorIn = this._row(rewardGrid, 'Armor', this._input(d.reward.armor, 'number'));
     const ammoSel = this._row(rewardGrid, 'Ammo', this._select(
       [{ value: '', label: 'None' }, ...listAmmoTypes().map((a) => ({ value: a.id, label: a.name }))],
-      r.ammo?.type ?? '',
+      d.reward.ammoType,
     ));
-    const ammoAmountIn = this._row(rewardGrid, 'Rounds', this._input(r.ammo?.amount ?? 0, 'number'));
-    const rewardItems = this._itemPicker(secReward, r.items ?? [],
+    const ammoAmountIn = this._row(rewardGrid, 'Rounds', this._input(d.reward.ammoAmount, 'number'));
+    const rewardItems = this._itemPicker(rewardGroup, d.reward.items,
       'Item grants — pick any number; they fly over from the giver:', () => this._markDirty());
 
     // --- flags (action/reaction) ---
-    const secFlags = this._section(form, 'Flags',
+    const secFlags = this._section(scroll, 'flags', 'Flags',
       'Game flags this tier raises — anything listening reacts (a door whose “Unlocks when flag” names one clicks open). Comma-separate several; prefix ! to clear a flag instead.');
-    const acceptFlagsIn = this._row(secFlags, 'On accept', this._input((quest?.flags?.accept ?? []).join(', ')));
+    const acceptFlagsIn = this._row(secFlags, 'On accept', this._input(d.acceptFlags));
     acceptFlagsIn.placeholder = 'e.g. cellar-open';
-    const completeFlagsIn = this._row(secFlags, 'On complete', this._input((quest?.flags?.complete ?? []).join(', ')));
+    const completeFlagsIn = this._row(secFlags, 'On complete', this._input(d.completeFlags));
     completeFlagsIn.placeholder = 'e.g. bridge-down, !cellar-open';
 
-    /** Dim the conversations the chosen flow skips and redraw the preview
-     *  strip; a user-driven change also marks the tier dirty. */
-    const chipEl = (text, isAuto) => el(doc, 'span', `npcq-chip${isAuto ? ' auto' : ''}`, text);
-    const arrowEl = () => el(doc, 'span', 'npcq-flow-arrow', '→');
+    // Field refs for _syncDraft (everything above, minus the pickers which
+    // expose .value() instead of .value).
+    this._f = {
+      titleIn, startSeg, endSeg, offerPromptIn, offerTa, progressIn,
+      turninPromptIn, readyTa, epilogueTa,
+      sHealthIn, sArmorIn, sAmmoSel, sAmmoAmountIn, startItems,
+      healthIn, armorIn, ammoSel, ammoAmountIn, rewardItems,
+      acceptFlagsIn, completeFlagsIn,
+    };
+
+    /** Dim the conversations the chosen flow skips; a user-driven change
+     *  also marks the tier dirty. */
     const applyFlow = (fromUser) => {
       if (fromUser) this._markDirty();
       const startAuto = startSeg.value() === 'auto';
@@ -823,56 +973,44 @@ export class NpcQuestEditor {
       rewardHint.textContent = endAuto
         ? 'Granted in the field the moment the last objective is met.'
         : 'Paid by the giver at turn-in.';
-      flowStrip.textContent = '';
-      const first = this._newTier ? tiers.length === 0 : this.tierIndex === 0;
-      flowStrip.append(
-        chipEl(first ? 'game start' : 'previous tier done'),
-        arrowEl(),
-        chipEl(startAuto ? 'starts by itself' : 'offer conversation', startAuto),
-        arrowEl(),
-        chipEl('objectives'),
-        arrowEl(),
-        chipEl(endAuto ? 'completes in the field' : 'turn-in conversation', endAuto),
-        arrowEl(),
-        chipEl('reward'),
-      );
     };
     applyFlow(false);
 
-    const buttons = el(doc, 'div', 'npcq-buttons');
+    const foot = this._foot(form);
     const save = el(doc, 'button', `primary${this._dirty ? ' dirty' : ''}`, this._newTier ? 'Add tier' : 'Save tier');
     this._saveBtn = save;
-    /** Build the tier from the form + the objectives draft and store it.
+    /** Build the tier from the draft (synced first) and store it.
      *  @returns quest|null */
     const commit = () => {
       this._syncDraft();
+      const dd = this._draftTier;
       const built = normalizeQuest({
         id: quest?.id ?? this._freshTierId(tiers),
-        title: titleIn.value,
+        title: dd.title,
         objectives: this._draftObjectives,
-        autoAccept: startSeg.value() === 'auto',
-        autoComplete: endSeg.value() === 'auto',
-        offer: splitLines(offerTa.value),
-        offerPrompt: offerPromptIn.value,
-        progressLine: progressIn.value,
-        ready: splitLines(readyTa.value),
-        turninPrompt: turninPromptIn.value,
-        epilogue: epilogueTa ? splitLines(epilogueTa.value) : quest?.epilogue,
+        autoAccept: dd.autoAccept,
+        autoComplete: dd.autoComplete,
+        offer: splitLines(dd.offer),
+        offerPrompt: dd.offerPrompt,
+        progressLine: dd.progressLine,
+        ready: splitLines(dd.ready),
+        turninPrompt: dd.turninPrompt,
+        epilogue: epilogueTa ? splitLines(dd.epilogue) : quest?.epilogue,
         about: this._aboutEd.value(),
         debrief: this._debriefEd.value(),
         startReward: {
-          health: sHealthIn.value,
-          armor: sArmorIn.value,
-          ammo: { type: sAmmoSel.value, amount: sAmmoAmountIn.value },
-          items: startItems.value(),
+          health: dd.startReward.health,
+          armor: dd.startReward.armor,
+          ammo: { type: dd.startReward.ammoType, amount: dd.startReward.ammoAmount },
+          items: dd.startReward.items,
         },
         reward: {
-          health: healthIn.value,
-          armor: armorIn.value,
-          ammo: { type: ammoSel.value, amount: ammoAmountIn.value },
-          items: rewardItems.value(),
+          health: dd.reward.health,
+          armor: dd.reward.armor,
+          ammo: { type: dd.reward.ammoType, amount: dd.reward.ammoAmount },
+          items: dd.reward.items,
         },
-        flags: { accept: acceptFlagsIn.value, complete: completeFlagsIn.value },
+        flags: { accept: dd.acceptFlags, complete: dd.completeFlags },
       }, this.giverId);
       if (!built) return null;
       const next = [...tiers];
@@ -888,7 +1026,7 @@ export class NpcQuestEditor {
       return built;
     };
     save.addEventListener('click', () => commit());
-    buttons.appendChild(save);
+    foot.appendChild(save);
     if (quest) {
       const del = el(doc, 'button', 'danger', 'Delete tier');
       del.addEventListener('click', () => {
@@ -901,8 +1039,7 @@ export class NpcQuestEditor {
         this.onChange();
         this._render();
       });
-      buttons.appendChild(del);
+      foot.appendChild(del);
     }
-    form.appendChild(buttons);
   }
 }

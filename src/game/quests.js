@@ -296,6 +296,8 @@ export class QuestLog {
         return { text: `${o.noun} ${n}/${o.count}`, done: n >= o.count };
       });
       out.push({
+        id: quest.id,
+        giver: giverId,
         title: quest.title,
         text: ready ? `Return to ${giverName}` : (lines.find((l) => !l.done) ?? lines.at(-1)).text,
         lines: ready ? [{ text: `Return to ${giverName}`, done: false }] : lines,

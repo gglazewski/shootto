@@ -257,6 +257,70 @@ T('save/load: position + pickups persist, map edits reach the save', async () =>
   await page.addInitScript(({ map }) => localStorage.setItem('voxelmap.save', map), { map: JSON.stringify(EMPTY_MAP) });
 });
 
+T('death is canon: staged slow-mo sequence, respawn empty-handed', async () => {
+  await loadGame();
+  await page.evaluate(() => window.__syncNewGame());
+  await page.waitForTimeout(150);
+
+  const dead = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    g.stats.equip('primary', 'sword');
+    g.stats.addMaterial('scrap', 5);
+    g.stats.damage(1000);
+    g.gameOver();
+    return {
+      mode: g.mode,
+      dying: g.container.classList.contains('dying'),
+      titleShown: g.ui.deathTitle.classList.contains('show'),
+    };
+  });
+  assert.equal(dead.mode, 'dead');
+  assert.equal(dead.dying, true, 'the canvas desaturation class must be on');
+  assert.equal(dead.titleShown, false, 'the title must not pop in instantly');
+
+  // Drive the sequence clock by hand — swiftshader frame times can exceed the
+  // loop's dt clamp, so waiting real seconds under-accumulates sequence time.
+  const staged = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    g._updateDeath(1.2); // past the title delay, before the button delay
+    const midway = {
+      titleShown: g.ui.deathTitle.classList.contains('show'),
+      buttonShown: g.ui.btnRespawn.classList.contains('show'),
+    };
+    g._updateDeath(1.6); // past the button delay
+    return {
+      midway,
+      titleShown: g.ui.deathTitle.classList.contains('show'),
+      buttonShown: g.ui.btnRespawn.classList.contains('show'),
+    };
+  });
+  assert.equal(staged.midway.titleShown, true, 'YOU DIED must fade in first');
+  assert.equal(staged.midway.buttonShown, false, 'the respawn button must come later');
+  assert.equal(staged.titleShown, true);
+  assert.equal(staged.buttonShown, true, 'the respawn button must have faded in');
+
+  const respawned = await page.evaluate(() => {
+    const g = window.__voxelgame;
+    g.respawn();
+    return {
+      mode: g.mode,
+      health: g.stats.health,
+      primary: g.stats.equipment.primary,
+      scrap: g.stats.materialCount('scrap'),
+      dying: g.container.classList.contains('dying'),
+      deathHidden: g.ui.death.classList.contains('hidden'),
+      roll: g.renderer.camera.rotation.z,
+    };
+  });
+  assert.equal(respawned.mode, 'playing');
+  assert.equal(respawned.health, 100, 'respawn restores full health');
+  assert.equal(respawned.primary, null, 'carried gear is gone forever');
+  assert.equal(respawned.scrap, 0, 'carried materials are gone forever');
+  assert.equal(respawned.dying, false, 'desaturation must be torn down');
+  assert.equal(respawned.deathHidden, true);
+  assert.equal(respawned.roll, 0, 'camera tilt must reset');
+});
+
 T('HUD shows health, armor, equipment slots and fists by default', async () => {
   await loadGame();
   await page.evaluate(() => window.__syncNewGame());
@@ -1381,7 +1445,7 @@ T('a melee weapon wears out on mobs and breaks — wall hits cost nothing', asyn
     const afterTwo = {
       item: g.stats.equipment.primary,
       hud: hud(),
-      toast: document.querySelector('#toast').textContent,
+      brokeCard: document.querySelector('#qtoasts .qt.q-broke')?.textContent ?? null,
     };
     document.pointerLockElement = null;
     return { wall, afterOne, afterTwo, mobAlive: !mob.dead };
@@ -1390,7 +1454,7 @@ T('a melee weapon wears out on mobs and breaks — wall hits cost nothing', asyn
   assert.deepEqual(out.afterOne, { wear: 1, item: 'bat', hud: '1/2' }, 'a landed hit costs one durability');
   assert.equal(out.afterTwo.item, null, 'the bat breaks and the slot empties');
   assert.equal(out.afterTwo.hud, '∞/∞', 'back to fists after the break');
-  assert.equal(out.afterTwo.toast, 'Your Bat broke!');
+  assert.equal(out.afterTwo.brokeCard, 'BrokenBat', 'the break announces as a card');
   assert.equal(out.mobAlive, true, 'the 1-damage swings must not have killed the imp');
 });
 

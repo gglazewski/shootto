@@ -590,6 +590,39 @@ const decalPoop = (x, y, s, rng) => {
   return [0, 0, 0, 0];
 };
 
+// 32x32 pool of piss: an irregular puddle under a relief spot — a thin
+// bright film at the rim, deeper amber toward the middle where it pools
+// thick, and stray drops splashed past the edge.
+const decalPissPool = (x, y, s, rng) => {
+  const c = s / 2;
+  const d = Math.hypot((x - c) * 1.05, (y - c) * 1.25) + hash2(x, y) * 2.6;
+  if (d > s * 0.42) {
+    if (d < s * 0.55 && hash2(x * 3, y * 3) < 0.04) return [208, 176, 48, 255];
+    return [0, 0, 0, 0];
+  }
+  const core = 1 - d / (s * 0.42);
+  const n = (rng() - 0.5) * 14;
+  return [238 - core * 64 + n, 206 - core * 62 + n, 70 - core * 34 + n, 255];
+};
+
+// Piss on a wall: a splashed blot at hip height with streaks running down
+// the face and thinning out, plus a few stray flecks around the impact.
+const decalPissWall = (x, y, s, rng) => {
+  const d = Math.hypot((x - 8) * 1.15, (y - 4) * 1.2);
+  const blob = d < 3 + hash2(x, y) * 1.6;
+  let run = false;
+  for (const [rx, len] of [[6, 9], [8, 12], [10, 6]]) {
+    if (Math.abs(x - rx) < 0.8 && y >= 4 && y < 4 + len && hash2(rx * 3, y) < 0.8) run = true;
+  }
+  if (blob || run) {
+    const n = (rng() - 0.5) * 16;
+    const wet = y < 6 ? 12 : 0;
+    return [216 + wet + n, 184 + wet + n, 48 + n * 0.4, 255];
+  }
+  if (hash2(x * 5, y * 5) < 0.03 && d < 7) return [206, 172, 40, 255];
+  return [0, 0, 0, 0];
+};
+
 // Sunflower seed husks: the bench-side scatter — each shell two pixels, a
 // pale striped fat end and a dark tip, strewn at mixed orientations.
 const decalSeeds = (x, y, s, rng) => {
@@ -1809,6 +1842,8 @@ const GENERATORS = Object.freeze({
   decal_food: decalFood,
   decal_cigs: decalCigs,
   decal_poop: decalPoop,
+  decal_piss_pool: decalPissPool,
+  decal_piss_wall: decalPissWall,
   decal_seeds: decalSeeds,
   decal_graffiti: decalGraffiti,
   decal_stop: decalStop,

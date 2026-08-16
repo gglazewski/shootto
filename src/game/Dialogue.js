@@ -121,8 +121,8 @@ export class Dialogue {
       case 'offer':
         this._play([...quest.offer], () => {
           this._choices = [
-            { id: 'accept', label: ACCEPT_LABEL },
-            { id: 'decline', label: DECLINE_LABEL },
+            { id: 'accept', label: ACCEPT_LABEL, kind: 'accept' },
+            { id: 'decline', label: DECLINE_LABEL, kind: 'decline' },
           ];
         });
         return null;
@@ -214,7 +214,7 @@ export class Dialogue {
     this._play(node.say.map((l) => this._mapLine(l)), () => {
       if (node.choices.length) {
         this._graphChoices = node.choices;
-        this._choices = node.choices.map((c, i) => ({ id: `node:${i}`, label: c.label }));
+        this._choices = node.choices.map((c, i) => ({ id: `node:${i}`, label: c.label, kind: 'node' }));
       } else {
         this._exitGraph();
       }
@@ -236,19 +236,21 @@ export class Dialogue {
   }
 
   /** The conversation hub: build the reply menu from quest state + topics.
-   *  Reaching it means the intro played out, so the NPC counts as met. */
+   *  Reaching it means the intro played out, so the NPC counts as met.
+   *  Each reply carries a `kind` (offer/progress/turnin/topic/service/chat/
+   *  bye) so the UI can flag quest actions without guessing from labels. */
   _hub() {
     this.quests.markMet(this.giverId);
     const status = this.quests.statusFor(this.giverId);
     const quest = this.quests.questFor(this.giverId);
     const choices = [];
-    if (status === 'available') choices.push({ id: 'offer', label: quest.offerPrompt });
-    if (status === 'active') choices.push({ id: 'progress', label: `About “${quest.title}”…` });
-    if (status === 'ready') choices.push({ id: 'turnin', label: quest.turninPrompt });
-    (this.npc.topics ?? []).forEach((t, i) => choices.push({ id: `topic:${i}`, label: t.label }));
-    this._services().forEach((s, i) => choices.push({ id: `service:${i}`, label: s.label }));
-    if (this.npc.chat) choices.push({ id: 'chat', label: this.npc.chat.prompt ?? 'Can we talk?' });
-    choices.push({ id: 'bye', label: BYE_LABEL });
+    if (status === 'available') choices.push({ id: 'offer', label: quest.offerPrompt, kind: 'offer' });
+    if (status === 'active') choices.push({ id: 'progress', label: `About “${quest.title}”…`, kind: 'progress' });
+    if (status === 'ready') choices.push({ id: 'turnin', label: quest.turninPrompt, kind: 'turnin' });
+    (this.npc.topics ?? []).forEach((t, i) => choices.push({ id: `topic:${i}`, label: t.label, kind: 'topic' }));
+    this._services().forEach((s, i) => choices.push({ id: `service:${i}`, label: s.label, kind: 'service' }));
+    if (this.npc.chat) choices.push({ id: 'chat', label: this.npc.chat.prompt ?? 'Can we talk?', kind: 'chat' });
+    choices.push({ id: 'bye', label: BYE_LABEL, kind: 'bye' });
     this._choices = choices;
     this._onHub = true;
   }

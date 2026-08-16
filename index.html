@@ -427,13 +427,13 @@
     }
     .npcq-title { font-size: 15px; font-weight: 600; flex: 1; }
     .npcq-tabs { display: flex; gap: 2px; padding: 3px; border-radius: var(--r-m); background: var(--surface-1); }
-    .npcq-tabs button, .npcq-buttons button, .npcq-close { padding: 5px 12px; font-size: 12px; }
+    .npcq-tabs button, .npcq-foot button, .npcq-close { padding: 5px 12px; font-size: 12px; }
     .npcq-tabs button { background: transparent; border-color: transparent; color: var(--text-dim); }
     .npcq-tabs button:hover { background: var(--surface-2); border-color: transparent; }
     .npcq-tabs button.active { background: var(--surface-3); color: #fff; border-color: var(--stroke); }
-    .npcq-buttons button.primary { border-color: var(--accent-strong); background: var(--accent-soft); color: var(--accent); }
-    .npcq-buttons button.primary:hover { background: rgba(87, 217, 163, 0.24); color: #eafff5; }
-    .npcq-buttons button.danger:hover { background: var(--danger-soft); border-color: var(--danger); color: #ffd9d6; }
+    .npcq-foot button.primary { border-color: var(--accent-strong); background: var(--accent-soft); color: var(--accent); }
+    .npcq-foot button.primary:hover { background: rgba(87, 217, 163, 0.24); color: #eafff5; }
+    .npcq-foot button.danger:hover { background: var(--danger-soft); border-color: var(--danger); color: #ffd9d6; }
     .npcq-body { display: flex; gap: 16px; padding: 14px 18px; overflow: hidden; flex: 1; }
     .npcq-list {
       width: 210px; flex-shrink: 0; display: flex; flex-direction: column; gap: 3px;
@@ -448,7 +448,32 @@
     .npcq-entry.active { background: var(--accent-soft); border-color: rgba(87, 217, 163, 0.3); color: #fff; }
     .npcq-entry.npcq-add { border: 1px dashed var(--stroke-strong); color: var(--accent); }
     .npcq-giver { margin-bottom: 6px; padding: 6px 9px; width: 100%; }
-    .npcq-form { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 4px; }
+    .npcq-form { flex: 1; min-width: 0; overflow: hidden; display: flex; flex-direction: column; }
+    /* the form's three bands: a fixed header (tier title + flow strip), the
+       scrolling section stack, and a sticky action footer */
+    .npcq-formhead {
+      display: flex; flex-direction: column; gap: 7px;
+      padding: 12px 2px 10px; border-bottom: 1px solid var(--stroke);
+    }
+    .npcq-tier-tag {
+      align-self: flex-start; font-size: 9.5px; font-weight: 700; letter-spacing: 1.6px;
+      text-transform: uppercase; color: var(--accent);
+      padding: 2px 8px; border-radius: 999px; background: var(--accent-soft);
+      border: 1px solid rgba(87, 217, 163, 0.3);
+    }
+    .npcq-title-input {
+      font-size: 16px; font-weight: 600; color: #fff; width: 100%;
+      padding: 7px 10px;
+    }
+    .npcq-flowbar { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+    .npcq-scroll {
+      flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;
+      padding: 10px 4px 4px 0;
+    }
+    .npcq-foot {
+      display: flex; gap: 8px; padding: 10px 2px 8px;
+      border-top: 1px solid var(--stroke); margin-top: 4px;
+    }
     .npcq-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .npcq-label { color: var(--text-dim); flex-shrink: 0; }
     .npcq-form input, .npcq-form select { width: 240px; }
@@ -491,19 +516,41 @@
     .npcq-mini:hover:not(:disabled) { color: var(--text); }
     .npcq-mini:disabled { opacity: 0.35; }
     .npcq-section {
-      border: 1px solid var(--stroke); border-radius: var(--r-m); padding: 10px 12px;
-      background: rgba(255, 255, 255, 0.015); display: flex; flex-direction: column; gap: 7px;
+      border: 1px solid var(--stroke); border-radius: var(--r-m);
+      background: rgba(255, 255, 255, 0.015); display: flex; flex-direction: column;
     }
+    /* the section title row is the collapse toggle — a class flip hides the
+       body without re-rendering, so typed text survives */
+    .npcq-section-head {
+      display: flex; align-items: center; gap: 7px; width: 100%;
+      padding: 9px 12px; background: transparent; border-color: transparent;
+      color: var(--text-dim); cursor: pointer; text-align: left;
+    }
+    .npcq-section-head:hover { background: var(--surface-2); border-color: transparent; }
+    .npcq-section.collapsed .npcq-section-body { display: none; }
+    .npcq-chev {
+      font-size: 10px; color: var(--text-faint); transition: transform 0.12s;
+      display: inline-block;
+    }
+    .npcq-section:not(.collapsed) .npcq-chev { transform: rotate(90deg); }
+    .npcq-section-body { display: flex; flex-direction: column; gap: 7px; padding: 2px 12px 10px; }
     .npcq-section-title {
       font-size: 10px; font-weight: 600; letter-spacing: 1.4px; text-transform: uppercase;
-      color: var(--text-faint);
+      color: var(--text-faint); flex: 1;
     }
+    .npcq-section-badge {
+      font-size: 10px; color: var(--text-faint); white-space: nowrap;
+      padding: 1px 7px; border-radius: 999px; border: 1px solid var(--stroke);
+      background: var(--surface-1);
+    }
+    .npcq-section-badge:empty { display: none; }
     .npcq-seg { display: inline-flex; padding: 2px; gap: 2px; border-radius: var(--r-s); background: var(--surface-1); }
     .npcq-seg button { padding: 3px 10px; border: none; background: transparent; color: var(--text-dim); font-size: 12px; border-radius: 4px; }
     .npcq-seg button + button { border-left: none; }
     .npcq-seg button:hover { background: var(--surface-2); }
     .npcq-seg button.active { background: var(--surface-3); color: #fff; }
     .npcq-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 11px; padding-top: 2px; }
+    /* legacy alias — the action bar moved into .npcq-foot */
     .npcq-chip {
       padding: 2px 8px; border-radius: 999px; border: 1px solid var(--stroke);
       background: var(--surface-1); color: var(--text-dim); white-space: nowrap;
@@ -520,7 +567,7 @@
     .npcq-dim > :not(.npcq-subtitle):not(.npcq-skipnote) { opacity: 0.4; }
     .npcq-reward-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; }
     .npcq-reward-grid input, .npcq-reward-grid select { width: 110px; }
-    .npcq-buttons button.primary.dirty { border-color: rgba(226, 178, 74, 0.6); background: var(--warn-soft); color: var(--warn); }
+    .npcq-foot button.primary.dirty { border-color: rgba(226, 178, 74, 0.6); background: var(--warn-soft); color: var(--warn); }
     .npcq-spawn { display: flex; align-items: center; gap: 6px; }
     .npcq-spawn-label { font-size: 12px; color: var(--accent); white-space: nowrap; }
     .npcq-spawn button { padding: 3px 8px; font-size: 11px; }
@@ -542,7 +589,6 @@
       border: 1px dashed var(--danger); border-radius: 4px; color: var(--danger);
     }
     .npcq-item-name { max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .npcq-buttons { display: flex; gap: 8px; margin-top: 10px; padding-bottom: 4px; }
     .npcq-graph { display: flex; flex-direction: column; gap: 6px; }
     .npcq-graph-bar { display: flex; align-items: center; gap: 10px; }
     .npcq-graph-bar .npcq-hint { margin-top: 0; }

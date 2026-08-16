@@ -113,6 +113,16 @@ const SPLASH_FADE_SECONDS = 0.35;
  *  behind the cover before the fade-in reveals it. */
 const SPLASH_BLACK_SECONDS = 0.25;
 
+/** The death sequence: the kill plays out in slow motion while the camera
+ *  keels over, then "YOU DIED" fades in, then the respawn button. Delays are
+ *  real seconds (the slow-mo factor only scales the world simulation). */
+const DEATH_SLOWMO = 0.3;
+const DEATH_FALL_SECONDS = 1.4;
+const DEATH_ROLL = 0.35; // radians of camera tilt at rest
+const DEATH_REST_EYE = 0.25; // camera height above the feet once fallen
+const DEATH_TITLE_SECONDS = 1.1;
+const DEATH_BUTTON_SECONDS = 2.6;
+
 export class GameApp {
   /**
    * @param {object} [deps]
@@ -251,6 +261,10 @@ export class GameApp {
     });
     this._talkNpc = null; // NPC in talk range this frame (E starts the chat)
     this._dialog = null; // open conversation: { npc, convo: Dialogue }
+    this._typeTimer = null; // typewriter tick while an NPC line reveals
+    this._typeFull = ''; // the full line being revealed
+    this._typePos = 0; // characters revealed so far
+    this._qt = new Map(); // live gain-card key (quest id, item:<id>, reward:<stat>) -> { el, timer, amount }
     // Open NPC repair screen: { npc, slot } — slot is the picked equipment
     // slot name (null until the player clicks a weapon). See _openRepair.
     this._repair = null;
@@ -358,6 +372,7 @@ export class GameApp {
       pickup: this.doc.querySelector('#pickup'),
       dialog: this.doc.querySelector('#dialog'),
       dialogName: this.doc.querySelector('#dialog-name'),
+      dialogMarker: this.doc.querySelector('#dialog-marker'),
       dialogText: this.doc.querySelector('#dialog-text'),
       dialogChoices: this.doc.querySelector('#dialog-choices'),
       dialogHint: this.doc.querySelector('#dialog-hint'),
@@ -378,6 +393,7 @@ export class GameApp {
       btnRepairClose: this.doc.querySelector('#btn-repair-close'),
       quest: this.doc.querySelector('#quest'),
       questList: this.doc.querySelector('#quest-list'),
+      qtoasts: this.doc.querySelector('#qtoasts'),
       crosshair: this.doc.querySelector('#crosshair'),
       slotsMenu: this.doc.querySelector('#slots-menu'),
       slotsPause: this.doc.querySelector('#slots-pause'),
@@ -393,7 +409,8 @@ export class GameApp {
       btnResume: this.doc.querySelector('#btn-resume'),
       btnQuit: this.doc.querySelector('#btn-quit'),
       btnRespawn: this.doc.querySelector('#btn-respawn'),
-      btnDeathMenu: this.doc.querySelector('#btn-death-menu'),
+      deathTitle: this.doc.querySelector('#death-title'),
+      deathSub: this.doc.querySelector('#death-sub'),
       loading: this.doc.querySelector('#loading'),
       loadingFill: this.doc.querySelector('#loading-fill'),
       loadingStatus: this.doc.querySelector('#loading-status'),
@@ -524,6 +541,8 @@ export class GameApp {
         const p = this.walk.position;
         if (Math.hypot(p.x - npc.pos.x, p.z - npc.pos.z) > TALK_BREAK_RANGE) this._closeDialog();
       }
+    } else if (this.mode === 'dead' && this._death) {
+      this._updateDeath(dt);
     } else {
       // The menu hovers over a slow flyover of the map instead of a frozen
       // first-person view.
@@ -986,7 +1005,7 @@ export class GameApp {
       return;
     }
     this.stats.unequip(slot);
-    this._toast(`Your ${weapon.name} broke!`);
+    this._gainCard({ key: `broke:${slot}`, kicker: 'Broken', title: weapon.name, cls: 'q-broke', ms: 4500 });
     this._refillFromBackpack(slot);
     this._updateHud();
   }
@@ -1173,11 +1192,16 @@ export class GameApp {
     body.classList.add('hurt');
   }
 
-  /** Transition to the death screen (mobs finally can kill you). */
+  /** Start the death sequence: the world drops into slow motion while the
+   *  camera keels over, then _updateDeath stages the "YOU DIED" title and
+   *  the respawn button in. */
   gameOver() {
     if (this.mode === 'dead') return;
     this.mode = 'dead';
     this._closeBackpack();
+    this._closeContainer();
+    this._closeDialog();
+    this._firing = false;
     this.touch?.setEnabled(false);
     this.walk.enabled = false;
     this.walk.keys.clear();
@@ -1187,8 +1211,53 @@ export class GameApp {
     this.ui.pause.classList.add('hidden');
     this.ui.hud.classList.add('hidden');
     this.ui.death.classList.remove('hidden');
+    this._death = { t: 0, eyeY: this.renderer.camera.position.y };
+    this.container.classList.add('dying');
+    this.hand.group.visible = false; // no floating fists over the corpse
     this._hidePickup();
     this._closeRepair();
+  }
+
+  /** One dead-mode frame: the horde shambles on in slow motion, the camera
+   *  sinks and tilts, and the death UI fades in staged on the real clock. */
+  _updateDeath(dt) {
+    const d = this._death;
+    d.t += dt;
+    this.mobs.update(dt * DEATH_SLOWMO, this.walk.position, this._viewFacing());
+    const p = Math.min(1, d.t / DEATH_FALL_SECONDS);
+    const ease = 1 - (1 - p) * (1 - p);
+    const cam = this.renderer.camera;
+    cam.position.y = d.eyeY - ease * (d.eyeY - (this.walk.position.y + DEATH_REST_EYE));
+    cam.rotation.z = ease * DEATH_ROLL;
+    if (d.t >= DEATH_TITLE_SECONDS) this.ui.deathTitle?.classList.add('show');
+    if (d.t >= DEATH_BUTTON_SECONDS) {
+      this.ui.deathSub?.classList.add('show');
+      this.ui.btnRespawn?.classList.add('show');
+    }
+  }
+
+  /** Tear the death presentation down (any path back into play or menu). */
+  _endDeathSequence() {
+    if (!this._death) return;
+    this._death = null;
+    this.container.classList.remove('dying');
+    this.renderer.camera.rotation.z = 0;
+    for (const el of [this.ui.deathTitle, this.ui.deathSub, this.ui.btnRespawn]) {
+      el?.classList.remove('show');
+    }
+  }
+
+  /** Death is canon: everything the player carried is gone forever. The
+   *  world, quests, flags and stashes stay exactly as they are — only the
+   *  player restarts, empty-handed, at the map's spawn point. */
+  respawn() {
+    this.stats = new PlayerStats();
+    this._ammo = new Map();
+    this._reloading = false;
+    const [cx, cy, cz] = this._spawnCell();
+    this.walk.spawnAt(cx, cy, cz, ((this.world.spawnYaw ?? 0) * Math.PI) / 180);
+    this.mobs.rebuild(); // a fresh horde from its spawners — no aggro follows you home
+    this.startPlaying();
   }
 
   /** Ammo counter for a weapon's magazine, seeded full on first use — a found
@@ -1389,7 +1458,13 @@ export class GameApp {
       if (this._talkNpc) {
         this._hideOutline();
         if (this.ui.pickup) {
-          this.ui.pickup.innerHTML = `Press <kbd>E</kbd> to talk to ${this._talkNpc.name}`;
+          // Quest-state pip beside the key hint: ! = the NPC has work on
+          // offer, ? = a job is ready to hand in — readable at a glance.
+          const st = this.quests.statusFor(this._talkNpc.type.id);
+          const pip = st === 'available'
+            ? '<span class="pip avail">!</span>'
+            : st === 'ready' ? '<span class="pip ready">?</span>' : '';
+          this.ui.pickup.innerHTML = `${pip}Press <kbd>E</kbd> to talk to ${this._talkNpc.name}`;
           this.ui.pickup.classList.remove('hidden');
         }
       } else {
@@ -1478,11 +1553,16 @@ export class GameApp {
 
   // --- NPC dialog (proximity, press E; replies pick with 1-9 or tap) ---
 
-  /** The E key / touch PICK button: advance an open dialog, start one with a
-   *  nearby NPC, or fall through to the aimed pickup/door. While replies are
-   *  on screen E does nothing — picking is deliberate (digits or tap). */
+  /** The E key / touch PICK button: finish a typewriting line, advance an
+   *  open dialog, start one with a nearby NPC, or fall through to the aimed
+   *  pickup/door. While replies are on screen E does nothing — picking is
+   *  deliberate (digits, click, or tap). */
   _interact() {
     if (this._dialog) {
+      if (this._typing()) {
+        this._finishTypewriter();
+        return;
+      }
       if (!this._dialog.convo.choices()) {
         this._dialog.convo.advance();
         this._renderDialog();
@@ -1498,24 +1578,34 @@ export class GameApp {
 
   /** Open a conversation — a Dialogue state machine over the quest log: the
    *  NPC speaks, then the player picks replies (quest offer/turn-in, lore
-   *  topics, bye). See Dialogue.js. */
+   *  topics, bye). See Dialogue.js. The pointer is freed so replies are
+   *  clickable; closing the chat re-locks it. */
   _startDialog(npc) {
     this._dialog = { npc, convo: new Dialogue({ npc, quests: this.quests, flags: this.flags }) };
-    if (this.isTouch && this.ui.dialogHint) this.ui.dialogHint.textContent = 'Tap PICK to continue';
     this._hidePickup();
+    if (!this.isTouch && document.pointerLockElement) document.exitPointerLock();
     this._renderDialog();
   }
 
   _renderDialog() {
     const { npc, convo } = this._dialog;
     if (this.ui.dialogName) this.ui.dialogName.textContent = npc.name;
-    if (this.ui.dialogText) this.ui.dialogText.textContent = convo.line() ?? '';
+    // Quest-state marker on the name bar: ! = work on offer, ? = ready to
+    // hand in — the player reads the NPC's business before picking a reply.
+    const status = this.quests.statusFor(npc.type.id);
+    if (this.ui.dialogMarker) {
+      this.ui.dialogMarker.dataset.state = status === 'available' || status === 'ready' ? status : '';
+      this.ui.dialogMarker.textContent = status === 'available' ? '!' : status === 'ready' ? '?' : '';
+    }
+    this._startTypewriter(convo.line() ?? '');
     const choices = convo.choices();
     const box = this.ui.dialogChoices;
     if (box) {
       box.replaceChildren();
       for (const [i, choice] of (choices ?? []).entries()) {
         const btn = this.doc.createElement('button');
+        btn.className = `c-${choice.kind ?? 'node'}`;
+        btn.style.animationDelay = `${Math.min(i * 30, 150)}ms`;
         const key = this.doc.createElement('kbd');
         key.textContent = String(i + 1);
         btn.append(key, this.doc.createTextNode(choice.label));
@@ -1524,8 +1614,48 @@ export class GameApp {
       }
       box.classList.toggle('hidden', !choices);
     }
-    this.ui.dialogHint?.classList.toggle('hidden', !!choices);
+    if (this.ui.dialogHint) {
+      this.ui.dialogHint.innerHTML = choices
+        ? (this.isTouch ? 'Tap a reply' : '<kbd>1</kbd>–<kbd>9</kbd> pick a reply&ensp;·&ensp;<kbd>Esc</kbd> leave')
+        : (this.isTouch ? 'Tap <b>PICK</b> to continue' : 'Press <kbd>E</kbd> to continue');
+    }
     this.ui.dialog?.classList.remove('hidden');
+  }
+
+  /** Reveal the NPC's current line letter by letter (fast — a beat, not a
+   *  slog). Re-renders restart it; E / PICK finishes it instantly. */
+  _startTypewriter(text) {
+    this._stopTypewriter();
+    const el = this.ui.dialogText;
+    if (!el) return;
+    this._typeFull = text;
+    this._typePos = 0;
+    if (!text) {
+      el.textContent = '';
+      return;
+    }
+    el.textContent = '';
+    this._typeTimer = setInterval(() => {
+      this._typePos += 2;
+      if (this._typePos >= this._typeFull.length) this._finishTypewriter();
+      else el.textContent = this._typeFull.slice(0, this._typePos);
+    }, 16);
+  }
+
+  _typing() {
+    return !!this._typeTimer;
+  }
+
+  /** Dump the whole line at once and stop the tick. */
+  _finishTypewriter() {
+    if (!this._typeTimer) return;
+    this._stopTypewriter();
+    if (this.ui.dialogText) this.ui.dialogText.textContent = this._typeFull ?? '';
+  }
+
+  _stopTypewriter() {
+    clearInterval(this._typeTimer);
+    this._typeTimer = null;
   }
 
   /** The player picked reply `i` (digit key or tap). Quest effects commit
@@ -1537,7 +1667,7 @@ export class GameApp {
     if (!choice) return;
     const result = convo.choose(choice.id);
     if (result?.accepted) {
-      this._toast(`New quest: ${result.accepted.title}`);
+      this._questToast(result.accepted, 'new');
       applyFlagList(this.flags, result.accepted.flags?.accept);
       // Starting gear changes hands the moment the player signs up — the
       // giver equips them for the job (items fly over like a turn-in reward).
@@ -1547,7 +1677,7 @@ export class GameApp {
       this._spawnQuestPacks(result.accepted);
     }
     if (result?.completed) {
-      this._toast(`Quest complete: ${result.completed.title}`);
+      this._questToast(result.completed, 'done');
       applyFlagList(this.flags, result.completed.flags?.complete);
       if (result.reward) this._grantReward(result.reward, npc);
       // A turn-in may unlock a chained (auto-starting) next tier.
@@ -1565,13 +1695,27 @@ export class GameApp {
     else this._renderDialog();
   }
 
-  /** Close without applying anything — walking away or pausing mid-chat
-   *  leaves unpicked offers and turn-ins for next time. */
+  /** Close without applying anything — Esc, walking away, or pausing mid-chat
+   *  leaves unpicked offers and turn-ins for next time. The pointer re-locks
+   *  so play resumes seamlessly. */
   _closeDialog() {
     if (!this._dialog) return;
     this._dialog = null;
+    this._stopTypewriter();
     this.ui.dialog?.classList.add('hidden');
     this._closeRepair();
+    if (!this._repair) this._relockPointer();
+  }
+
+  /** Ask for the pointer lock back. Browsers may refuse without a fresh user
+   *  gesture (e.g. the chat closed by walking away, not a keypress) — then
+   *  the next canvas click retries it (see the mousedown wiring). */
+  _relockPointer() {
+    if (this.isTouch || this.mode !== 'playing') return;
+    try {
+      const p = this.webgl.domElement.requestPointerLock?.();
+      p?.catch?.(() => {});
+    } catch { /* refusal is non-fatal — the click retry covers it */ }
   }
 
   // --- NPC repair service (see NpcRegistry `services`) ---
@@ -1729,32 +1873,48 @@ export class GameApp {
     this._updateAmmoHud();
   }
 
-  /** Close the repair screen back into the conversation. */
+  /** Close the repair screen back into the conversation. The pointer stays
+   *  free while a chat is open underneath — its replies are mouse-driven. */
   _closeRepair() {
     if (!this._repair) return;
     this._repair = null;
     this.ui.repair?.classList.add('hidden');
-    if (!this.isTouch && this.mode === 'playing' && this.webgl.domElement.requestPointerLock) {
-      this.webgl.domElement.requestPointerLock();
-    }
+    if (!this._dialog) this._relockPointer();
   }
 
-  /** Quest reward: flat boosts through the usual PlayerStats paths. Item
-   *  rewards ride the pickup queue — each flies from the giver's hands to the
-   *  player (same flight as a floor pickup) and is granted on arrival. */
+  /** Quest reward: flat boosts through the usual PlayerStats paths, announced
+   *  as quest-amber cards. Item rewards ride the pickup queue — each flies
+   *  from the giver's hands to the player (same flight as a floor pickup)
+   *  and is granted on arrival, card marked as a reward. */
   _grantReward(reward, npc = null) {
-    if (reward.health) this.stats.heal(reward.health);
-    if (reward.armor) this.stats.repair(reward.armor);
-    if (reward.ammo?.type) this.stats.addAmmo(reward.ammo.type, reward.ammo.amount ?? 0);
+    if (reward.health) {
+      this.stats.heal(reward.health);
+      this._gainCard({ key: 'reward:health', kicker: 'Quest reward', title: `Health +${reward.health}`, ms: 4500 });
+    }
+    if (reward.armor) {
+      this.stats.repair(reward.armor);
+      this._gainCard({ key: 'reward:armor', kicker: 'Quest reward', title: `Armor +${reward.armor}`, ms: 4500 });
+    }
+    if (reward.ammo?.type) {
+      const amount = reward.ammo.amount ?? 0;
+      this.stats.addAmmo(reward.ammo.type, amount);
+      this._gainCard({
+        key: `item:ammo:${reward.ammo.type}`, // coalesces with picked-up ammo of the same type
+        kicker: 'Quest reward',
+        title: ammoName(reward.ammo.type),
+        amount,
+        ms: 4500,
+      });
+    }
     for (const id of reward.items ?? []) {
       const def = getEquipItem(id);
       if (!def) continue;
       if (npc) {
         // Chest height on the giver, so the item leaves their hands.
         const start = new THREE.Vector3(npc.pos.x, npc.pos.y + npc.height * 0.6, npc.pos.z);
-        this._pickupQueue.push({ def, start, yaw: 0 });
+        this._pickupQueue.push({ def, start, yaw: 0, from: 'reward' });
       } else {
-        this._grantPickup(def); // no giver in sight — grant instantly
+        this._grantPickup(def, 'reward'); // no giver in sight — grant instantly
       }
     }
     this._pumpPickupQueue();
@@ -1762,30 +1922,38 @@ export class GameApp {
   }
 
   /** React to quest events (kills, pickups, area visits, and the chain
-   *  events _advance appends): toast progress, grant field-completion
-   *  rewards, and materialize auto-started quests' packs. */
+   *  events _advance appends): moment toasts bottom-right, tracker refresh
+   *  top-right (the ticked quest's entry bumps), field-completion rewards,
+   *  and auto-started quests' packs. */
   _questEvents(events) {
+    let bumped = null;
     for (const ev of events) {
       if (ev.accepted) {
         // A chained quest started by itself — same ceremony as picking
         // "I'll do it", minus the dialog (starting gear included).
-        this._toast(`New quest: ${ev.quest.title}`);
+        this._questToast(ev.quest, 'new');
         applyFlagList(this.flags, ev.quest.flags?.accept);
         if (ev.quest.startReward) this._grantReward(ev.quest.startReward);
         this._spawnQuestPacks(ev.quest);
         // The player may already be standing in the new quest's visit area —
         // forget the last checked cell so the next frame re-tests it.
         this._visitCell = null;
+        bumped = null;
       } else if (ev.completed) {
-        this._toast(`Quest complete: ${ev.quest.title}`);
+        this._questToast(ev.quest, 'done');
         applyFlagList(this.flags, ev.quest.flags?.complete);
         if (ev.reward) this._grantReward(ev.reward);
+        bumped = null;
       } else if (ev.ready) {
-        const giver = getNpcType(ev.quest.giver)?.name ?? ev.quest.giver;
-        this._toast(`Objective complete — return to ${giver}`);
+        this._questToast(ev.quest, 'ready');
+        bumped = null;
+      } else {
+        // Plain progress: no toast spam — the tracker's counter is the
+        // feedback, with a nudge on the entry that moved.
+        bumped = ev.quest.id;
       }
     }
-    if (events.length) this._updateQuestHud();
+    if (events.length) this._updateQuestHud(bumped);
   }
 
   /** Feed the quest log the player's feet cell whenever it changes — visit
@@ -1801,9 +1969,102 @@ export class GameApp {
     this._questEvents(this.quests.onVisit(cx, cy, cz));
   }
 
-  /** WoW-style objective tracker top-right: every in-flight quest as a gold
-   *  title over an indented objective line. Hidden when nothing is running. */
-  _updateQuestHud() {
+  /** Bottom-right announcement cards — the ONE system for gained things:
+   *  quest moments AND item gains (floor pickups, quest rewards, stat
+   *  boosts). Cards are kicker + name (+ one optional line), keyed so
+   *  repeats coalesce into the existing card — and keyed item cards
+   *  ACCUMULATE their amounts, so scooping a trail of ammo reads as one
+   *  "+24" card ticking up, not a pile of duplicates. The stack is capped;
+   *  the oldest card falls off first. */
+  _gainCard({ key, kicker, title, line = null, amount = 0, cls = '', ms = 3800 }) {
+    const host = this.ui.qtoasts;
+    if (!host) return;
+    const mk = (k, text) => {
+      const el = this.doc.createElement('div');
+      el.className = k;
+      if (text != null) el.textContent = text;
+      return el;
+    };
+    const prev = this._qt.get(key);
+    if (prev) amount += prev.amount ?? 0;
+    const card = mk('qt' + (cls ? ` ${cls}` : ''));
+    card.appendChild(mk('qt-kicker', kicker));
+    card.appendChild(mk('qt-title', title));
+    // The line: caller's static text (Return to X, → backpack), else the
+    // accumulated amount once there is one.
+    const detail = line ?? (amount > 0 ? `+${amount}` : null);
+    if (detail != null) card.appendChild(mk('qt-line', detail));
+    if (prev) {
+      clearTimeout(prev.timer);
+      prev.el.replaceWith(card);
+    } else {
+      host.appendChild(card);
+      while (host.children.length > 4) this._removeQuestToast(host.firstChild);
+    }
+    const timer = setTimeout(() => this._dismissQuestToast(key), ms);
+    this._qt.set(key, { el: card, timer, amount });
+    // Restart the slide-in so an in-place update reads as a bump.
+    card.style.animation = 'none';
+    void card.offsetWidth;
+    card.style.animation = '';
+  }
+
+  /** Quest moment as a card — thin wrapper over _gainCard with the quest
+   *  look (amber business, green success) and the giver nudge when ready. */
+  _questToast(quest, kind) {
+    if (!quest) return;
+    this._gainCard({
+      key: quest.id,
+      kicker: kind === 'new' ? 'New quest' : kind === 'done' ? 'Quest complete' : 'Objective complete',
+      title: quest.title,
+      line: kind === 'ready' ? `Return to ${getNpcType(quest.giver)?.name ?? quest.giver}` : null,
+      cls: kind === 'done' || kind === 'ready' ? `q-${kind}` : '',
+      ms: 4500,
+    });
+  }
+
+  /** Item gain as a card: blue-accented for pickups, quest-amber when the
+   *  item came from a reward. `amount` makes the line a cumulative +N for
+   *  stackables (ammo, materials); equippables show name only. */
+  _itemCard(def, { from = 'pickup', amount = 0, line = null } = {}) {
+    if (!def) return;
+    this._gainCard({
+      key: `item:${def.id}`,
+      kicker: from === 'reward' ? 'Quest reward' : 'Picked up',
+      title: def.name,
+      amount,
+      line,
+      cls: from === 'reward' ? '' : 'q-item',
+    });
+  }
+
+  _dismissQuestToast(questId) {
+    const entry = this._qt.get(questId);
+    if (!entry) return;
+    this._removeQuestToast(entry.el);
+    this._qt.delete(questId);
+  }
+
+  /** Drop a card straight out of the stack (cap overflow or dismissal). */
+  _removeQuestToast(el) {
+    el.classList.add('out');
+    setTimeout(() => el.remove(), 260);
+  }
+
+  /** Clear the whole quest toast stack — menu, or a fresh play start. */
+  _clearQuestToasts() {
+    for (const { timer } of this._qt.values()) clearTimeout(timer);
+    this._qt.clear();
+    this.ui.qtoasts?.replaceChildren();
+  }
+
+  /** Objective tracker (top-right): the PERSISTENT view of what's in flight —
+   *  every active quest as a gold title over indented objective lines with
+   *  tabular n/count counters; ready-to-turn-in quests flip green with a
+   *  pulsing "?" chip. Hidden when nothing is running. `bumpId` names the
+   *  quest an event just ticked — its entry plays a nudge so a counter
+   *  change reads as feedback even in the eye's periphery. */
+  _updateQuestHud(bumpId = null) {
     if (!this.ui.quest || !this.ui.questList) return;
     const entries = this.quests.trackerEntries();
     if (!entries.length) {
@@ -1813,17 +2074,34 @@ export class GameApp {
     this.ui.questList.textContent = '';
     for (const e of entries) {
       const entry = this.doc.createElement('div');
-      entry.className = e.ready ? 'quest-entry ready' : 'quest-entry';
+      entry.className = 'quest-entry' + (e.ready ? ' ready' : '') + (e.id === bumpId ? ' bump' : '');
+      if (e.id === bumpId) setTimeout(() => entry.classList.remove('bump'), 450);
       const title = this.doc.createElement('div');
       title.className = 'q-title';
       title.textContent = e.title;
+      if (e.ready) {
+        const chip = this.doc.createElement('span');
+        chip.className = 'q-chip';
+        chip.textContent = '?';
+        title.appendChild(chip);
+      }
       entry.appendChild(title);
       // One line per objective; met ones stay listed but dimmed, so a
-      // multi-goal quest reads as a checklist.
+      // multi-goal quest reads as a checklist. "noun 3/4" lines get their
+      // counter split out for the chunky gold digits.
       for (const line of e.lines ?? [{ text: e.text, done: false }]) {
         const obj = this.doc.createElement('div');
         obj.className = line.done ? 'q-obj done' : 'q-obj';
-        obj.textContent = line.text;
+        const m = line.text.match(/^(.*) (\d+)\/(\d+)$/);
+        if (m) {
+          obj.append(m[1] + ' ');
+          const count = this.doc.createElement('span');
+          count.className = 'q-count';
+          count.textContent = `${m[2]}/${m[3]}`;
+          obj.appendChild(count);
+        } else {
+          obj.textContent = line.text;
+        }
         entry.appendChild(obj);
       }
       this.ui.questList.appendChild(entry);
@@ -1918,7 +2196,7 @@ export class GameApp {
     if (this.pickupFX.active || this._pickupQueue.length === 0) return;
     const next = this._pickupQueue.shift();
     this.pickupFX.fly(next.def, next.start, next.yaw, () => {
-      this._grantPickup(next.def);
+      this._grantPickup(next.def, next.from ?? 'pickup');
       // Quest hook AFTER the grant, so an "objective complete" toast isn't
       // immediately overwritten by the pickup's own toast.
       this._questEvents(this.quests.onCollect(next.def));
@@ -1929,12 +2207,13 @@ export class GameApp {
   /** Grant a picked-up item that has floated to the player: quest items grant
    *  nothing visible (the quest hook counts them), ammo packs give their
    *  ammo, armor vests add armor points, everything else is equipped into a
-   *  slot. */
-  _grantPickup(def) {
+   *  slot. Gains announce as bottom-right cards (`from` marks provenance —
+   *  quest reward items read "Quest reward" instead of "Picked up"). */
+  _grantPickup(def, from = 'pickup') {
     if (def.kind === 'quest') {
       // Deliberately invisible: no hotbar slot, no stat change — the item
       // only exists for its quest (counted by onCollect in _pumpPickupQueue).
-      this._toast(`Picked up ${def.name}`);
+      this._itemCard(def, { from });
       return;
     }
     if (def.kind === 'armor') {
@@ -1942,13 +2221,14 @@ export class GameApp {
       const before = this.stats.armor;
       this.stats.repair(amount);
       const gained = Math.round(this.stats.armor - before);
-      this._toast(gained > 0 ? `Armor +${gained}` : 'Armor already full');
+      if (gained > 0) this._itemCard(def, { from, line: `Armor +${gained}` });
+      else this._toast('Armor already full');
       this._updateHud();
       return;
     }
     if (def.kind === 'material') {
-      const count = this.stats.addMaterial(def.id, 1);
-      this._toast(`+1 ${def.name} (${count})`);
+      this.stats.addMaterial(def.id, 1);
+      this._itemCard(def, { from, amount: 1 });
       this._updateHud();
       return;
     }
@@ -1958,9 +2238,9 @@ export class GameApp {
       const amount = a.amount ?? 0;
       if (type && amount > 0) {
         this.stats.addAmmo(type, amount);
-        this._toast(`Picked up ${amount}× ${ammoName(type)}`);
+        this._itemCard(def, { from, amount });
       } else {
-        this._toast(`Picked up ${def.name}`);
+        this._itemCard(def, { from });
       }
       this._updateHud();
       return;
@@ -1971,12 +2251,12 @@ export class GameApp {
       // silently replacing what's in hand.
       this.stats.stow(def.id);
       this._updateHud();
-      this._toast(`${def.name} → backpack (${this.stats.backpack.length})`);
+      this._itemCard(def, { from, line: '→ backpack' });
       return;
     }
     this.stats.equip(slot, def.id);
     this._updateHud();
-    this._toast(`Picked up ${def.name}`);
+    this._itemCard(def, { from });
   }
 
   /** Slot a picked-up item lands in: weapons avoid the injection slot, while
@@ -2392,6 +2672,7 @@ export class GameApp {
   // --- modes ---
 
   showMenu() {
+    this._endDeathSequence();
     this.mode = 'menu';
     this._closeBackpack();
     this._closeContainer();
@@ -2401,6 +2682,7 @@ export class GameApp {
     this.ui.death.classList.add('hidden');
     this.ui.hud.classList.add('hidden');
     this.ui.quest?.classList.add('hidden');
+    this._clearQuestToasts();
     this.walk.enabled = false;
     this.walk.keys.clear();
     // The flyover camera is a drone, not the player — no floating fists.
@@ -2416,6 +2698,7 @@ export class GameApp {
   }
 
   startPlaying() {
+    this._endDeathSequence();
     this.mode = 'playing';
     // Leave splash-shot framing behind: the player's camera, the player's fov.
     // Playing mutates the scene world, so the next menu visit must re-apply
@@ -2436,6 +2719,7 @@ export class GameApp {
     this.walk.enabled = true;
     this.hand.group.visible = true;
     this._updateHud();
+    this._clearQuestToasts();
     this._updateQuestHud();
     // Quest lifecycle signals are derived state, not one-shots: replay them
     // from quest history on every play start, so a flag authored onto an
@@ -2457,6 +2741,7 @@ export class GameApp {
     this.mode = 'paused';
     this._closeBackpack();
     this._closeContainer();
+    this._closeDialog();
     this._firing = false;
     this.touch?.setEnabled(false);
     this.walk.enabled = false;
@@ -2624,8 +2909,7 @@ export class GameApp {
     this.ui.btnNew?.addEventListener('click', () => this.newGame());
     this.ui.btnResume?.addEventListener('click', () => this.resumeGame());
     this.ui.btnQuit?.addEventListener('click', () => this.showMenu());
-    this.ui.btnRespawn?.addEventListener('click', () => this.newGame());
-    this.ui.btnDeathMenu?.addEventListener('click', () => this.showMenu());
+    this.ui.btnRespawn?.addEventListener('click', () => this.respawn());
     this.ui.btnRepairFix?.addEventListener('click', () => this._repairFix());
     this.ui.btnRepairClose?.addEventListener('click', () => this._closeRepair());
     this.ui.btnBackpackClose?.addEventListener('click', () => this._closeBackpack());
@@ -2671,6 +2955,12 @@ export class GameApp {
         }
         if (this._backpackOpen) {
           this._closeBackpack();
+          return;
+        }
+        // Esc in a conversation is "leave me be": the chat closes and the
+        // pointer re-locks — pausing stays on a second press.
+        if (this._dialog) {
+          this._closeDialog();
           return;
         }
         if (this.mode === 'playing') this.pauseGame();
@@ -2733,11 +3023,20 @@ export class GameApp {
       if (this.mode === 'playing') this.walk.onKeyUp(e.code);
     });
     on(this.doc, 'mousemove', (e) => {
-      if (this.mode === 'playing') this.walk.onMouseMove(e.movementX, e.movementY);
+      // Only the locked pointer turns the head — a free cursor (dialogue
+      // replies on screen) must be able to cross the screen standstill.
+      if (this.mode === 'playing' && document.pointerLockElement) this.walk.onMouseMove(e.movementX, e.movementY);
     });
     on(this.doc, 'mousedown', (e) => {
       if (this.mode !== 'playing' || e.button !== 0) return;
-      if (!document.pointerLockElement) return;
+      if (this._dialog || this._repair || this._backpackOpen || this._container) return;
+      // A click with no lock (e.g. the browser refused the post-dialog
+      // re-lock) takes the lock back instead of firing — one click, no stray
+      // shots into the menu that was supposed to be gone.
+      if (!document.pointerLockElement) {
+        this._relockPointer();
+        return;
+      }
       // Hold to autofire: _frame keeps attacking while the button is down
       // (the weapon's cooldown sets the fire rate).
       this._firing = true;
@@ -2747,11 +3046,13 @@ export class GameApp {
       if (e.button === 0) this._firing = false;
     });
     // Losing pointer lock while playing (e.g. browser-requested exit) opens
-    // the pause menu instead of leaving the player stuck. Touch devices never
-    // enter pointer lock, so they pause on backgrounding instead (below).
+    // the pause menu instead of leaving the player stuck. A conversation (or
+    // one of its screens) intentionally frees the pointer, so those don't
+    // count. Touch devices never enter pointer lock, so they pause on
+    // backgrounding instead (below).
     on(this.doc, 'pointerlockchange', () => {
       const locked = document.pointerLockElement === this.webgl.domElement;
-      if (!this.isTouch && this.mode === 'playing' && !locked && !this._repair && !this._backpackOpen && !this._container) this.pauseGame();
+      if (!this.isTouch && this.mode === 'playing' && !locked && !this._repair && !this._backpackOpen && !this._container && !this._dialog) this.pauseGame();
     });
     // Mobile: when the app is backgrounded, auto-pause (there's no Esc and
     // pointer-lock loss never fires) so the player isn't killed while away.
@@ -2760,6 +3061,9 @@ export class GameApp {
     });
   }
 
+  /** Center-screen one-liner for moment-to-moment gameplay notes (pickups,
+   *  reloads, breakage). Quest business lives in the bottom-right card
+   *  stack — see _questToast. */
   _toast(text) {
     if (!this.ui.toast) return;
     this.ui.toast.textContent = text;

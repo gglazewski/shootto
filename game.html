@@ -126,7 +126,8 @@
       to { filter: blur(0px); }
     }
 
-    /* pickup prompt (aiming at a placed equippable item) */
+    /* pickup prompt (aiming at a placed equippable item). NPCs get a quest-
+       state pip next to the key hint: ! = work on offer, ? = ready to hand in. */
     #pickup {
       left: 50%; top: calc(50% + 26px); transform: translateX(-50%);
       padding: 5px 14px; border-radius: 20px; background: rgba(0,0,0,0.55);
@@ -138,58 +139,216 @@
       border-bottom-width: 2px; border-radius: 4px; background: rgba(0,0,0,0.4);
       font-family: inherit; font-size: 12px; color: #fff;
     }
-
-    /* quest tracker (top-right): WoW-style objective list — no panel, just
-       text over the world with a hard shadow. Gold header + per-quest gold
-       title with indented grey "- objective x/y" lines; a quest that's ready
-       to turn in gets its line tinted green. */
-    #quest {
-      top: 14px; right: 16px; width: 250px; max-width: 44vw;
-      font-size: 13px; line-height: 1.35; color: #e8e8e8;
-      text-shadow: 1px 1px 0 rgba(0,0,0,0.9), 0 0 4px rgba(0,0,0,0.7);
+    #pickup .pip {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 18px; height: 18px; margin-right: 8px; border-radius: 4px;
+      font-size: 13px; font-weight: 900; vertical-align: -4px;
+      text-shadow: 1px 1px 0 rgba(0,0,0,0.5);
     }
+    #pickup .pip.avail { background: #e8b25c; color: #14100a; }
+    #pickup .pip.ready { background: #9be07a; color: #10230c; }
+
+    /* quest tracker (top-right): WoW-style objective list on a quiet panel —
+       the PERSISTENT view of what's in flight. Amber header, gold titles with
+       a diamond bullet, tabular counters; a ready-to-turn-in quest flips green
+       with a pulsing "?" chip. An objective tick nudges the whole entry
+       (.bump, added by _updateQuestHud when the event names the quest). */
+    #quest {
+      top: 14px; right: 16px; width: 260px; max-width: 44vw;
+      padding: 12px 14px 10px; border-radius: 10px;
+      background: rgba(16,19,17,0.72); border: 1px solid rgba(42,47,43,0.9);
+      backdrop-filter: blur(3px);
+      font-size: 13px; line-height: 1.4; color: #e9e6dc;
+      animation: q-panel-in 0.2s ease-out;
+    }
+    @keyframes q-panel-in { from { opacity: 0; transform: translateX(10px); } }
     #quest-header {
-      color: #ffd100; font-size: 15px; font-weight: 700; letter-spacing: 0.02em;
-      padding-bottom: 3px; margin-bottom: 8px;
+      color: #e8b25c; font-size: 11px; font-weight: 700; letter-spacing: 0.22em;
+      text-transform: uppercase; margin-bottom: 8px; text-shadow: 1px 1px 0 #000;
     }
     #quest-header::after {
-      content: ''; display: block; height: 1px; margin-top: 4px;
-      background: linear-gradient(90deg, rgba(255,209,0,0.55), rgba(255,209,0,0));
+      content: ''; display: block; height: 1px; margin-top: 5px;
+      background: linear-gradient(90deg, rgba(232,178,92,0.55), rgba(232,178,92,0));
     }
     .quest-entry { margin-bottom: 10px; }
-    .quest-entry .q-title { color: #ffd100; font-weight: 600; margin-bottom: 2px; }
+    .quest-entry:last-child { margin-bottom: 2px; }
+    .quest-entry.bump { animation: q-bump 0.4s ease-out; }
+    @keyframes q-bump { 30% { transform: translateX(4px); } }
+    .quest-entry .q-title {
+      display: flex; align-items: center; gap: 7px;
+      color: #ffd100; font-weight: 600; margin-bottom: 3px;
+      text-shadow: 1px 1px 0 rgba(0,0,0,0.8);
+    }
+    .quest-entry .q-title::before {
+      content: ''; width: 6px; height: 6px; flex: none; background: #ffd100;
+      transform: rotate(45deg); box-shadow: 1px 1px 0 rgba(0,0,0,0.6);
+    }
     .quest-entry .q-obj { color: #c8c8c8; padding-left: 14px; }
-    .quest-entry .q-obj::before { content: '- '; }
+    .quest-entry .q-obj::before { content: '· '; }
     /* A met objective of a multi-goal quest: stays on the list as a ticked-off
        checklist row while its siblings are still open. */
     .quest-entry .q-obj.done { color: #7a7a7a; text-decoration: line-through; }
-    .quest-entry .q-obj.done::before { content: '✓ '; color: #9be07a; }
-    .quest-entry.ready .q-obj { color: #9be07a; }
-    .quest-entry.ready .q-obj::before { content: '? '; color: #ffd100; font-weight: 700; }
-
-    /* NPC dialog (walk up to a character, press E; replies pick with 1-9 or tap) */
-    #dialog {
-      left: 50%; bottom: 150px; transform: translateX(-50%);
-      width: min(92vw, 560px); padding: 14px 18px; border-radius: 10px;
-      background: rgba(10,12,16,0.88); border: 1px solid rgba(255,205,130,0.5);
+    .quest-entry .q-obj .q-count {
+      color: #ffd100; font-weight: 700; font-variant-numeric: tabular-nums;
     }
-    #dialog-name { color: #fcb; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
-    #dialog-text { font-size: 15px; line-height: 1.5; }
-    #dialog-choices { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+    .quest-entry .q-obj.done .q-count { color: #7a7a7a; }
+    .quest-entry.ready .q-title { color: #9be07a; }
+    .quest-entry.ready .q-title::before { background: #9be07a; }
+    .quest-entry.ready .q-obj { color: #9be07a; font-weight: 600; }
+    .quest-entry .q-chip {
+      margin-left: auto; width: 16px; height: 16px; flex: none; border-radius: 4px;
+      background: #9be07a; color: #10230c; font-size: 11px; font-weight: 900;
+      display: flex; align-items: center; justify-content: center;
+      animation: q-pulse 1.6s ease-in-out infinite;
+    }
+
+    /* gain toasts (bottom-right): quest moments AND item gains as stacked
+       cards that slide in from the right and auto-dismiss — new quest,
+       objective complete, quest complete, picked-up items, quest rewards.
+       The live quest state lives in the top-right tracker; these are the
+       announcements. Amber = quest business, green = success, blue = items. */
+    #qtoasts {
+      right: 16px; bottom: 96px; width: 264px; max-width: 44vw;
+      display: flex; flex-direction: column; gap: 8px;
+    }
+    .qt {
+      padding: 9px 12px 8px; border-radius: 8px;
+      background: rgba(16,19,17,0.92); border: 1px solid #2a2f2b;
+      border-left: 3px solid #e8b25c;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+      font-size: 13px; line-height: 1.4; color: #e9e6dc;
+      animation: qt-in 0.18s ease-out;
+      transition: opacity 0.25s, transform 0.25s;
+    }
+    .qt.out { opacity: 0; transform: translateX(14px); }
+    @keyframes qt-in { from { opacity: 0; transform: translateX(16px); } }
+    .qt .qt-kicker {
+      font-size: 10px; font-weight: 700; letter-spacing: 0.22em;
+      text-transform: uppercase; color: #e8b25c; margin-bottom: 2px;
+      text-shadow: 1px 1px 0 #000;
+    }
+    .qt .qt-title { font-weight: 700; color: #ffd100; text-shadow: 1px 1px 0 rgba(0,0,0,0.8); }
+    .qt .qt-line { color: #c8c8c8; padding-left: 12px; }
+    .qt .qt-line::before { content: '· '; }
+    /* item pickups: blue accent — the same #6cf family as the pickup prompt,
+       separating "you gained a thing" (blue) from quest business (amber) and
+       success (green) */
+    .qt.q-item { border-left-color: #6cf; }
+    .qt.q-item .qt-kicker { color: #8fd4ff; }
+    .qt.q-item .qt-title { color: #d9efff; }
+    /* breakage: red accent — a loss, not a gain */
+    .qt.q-broke { border-left-color: #e34a3f; }
+    .qt.q-broke .qt-kicker { color: #e34a3f; }
+    .qt.q-broke .qt-title { color: #f0c2be; }
+    .qt.q-done, .qt.q-ready { border-left-color: #9be07a; }
+    .qt.q-done .qt-kicker, .qt.q-ready .qt-kicker { color: #9be07a; }
+    .qt.q-ready .qt-title { color: #9be07a; }
+    .qt.q-ready .qt-line { color: #9be07a; font-weight: 600; }
+    @keyframes q-pulse { 50% { box-shadow: 0 0 0 4px rgba(155,224,122,0.2); } }
+    /* touch screens: tracker narrows; the toast stack stays bottom-right but
+       rides above the FIRE/PICK buttons (higher still in portrait, where the
+       buttons themselves are raised over the hotbar) */
+    @media (pointer: coarse) {
+      #quest { width: 220px; font-size: 12px; }
+      #qtoasts { width: 212px; bottom: 190px; }
+      .qt { font-size: 12px; }
+    }
+    @media (pointer: coarse) and (orientation: portrait) {
+      #qtoasts { bottom: 220px; }
+    }
+
+    /* NPC dialog (walk up to a character, press E; replies pick with 1-9,
+       click, or tap) — same design language as the menu screens: near-black
+       green panel, amber small-caps name bar, CRT scanline whisper, hard
+       shadow. Quest business in the replies is color-flagged: offers amber,
+       turn-ins green, "I'll do it" the big red button. GameApp typewrites the
+       NPC's lines; E (or PICK) finishes then advances. */
+    #dialog {
+      left: 50%; bottom: 160px; transform: translateX(-50%);
+      width: min(92vw, 600px); border-radius: 10px; overflow: hidden;
+      background: rgba(16,19,17,0.92); border: 1px solid #2a2f2b;
+      box-shadow: 0 14px 40px rgba(0,0,0,0.6);
+      backdrop-filter: blur(4px); pointer-events: auto;
+      animation: dlg-in 0.16s ease-out;
+    }
+    @keyframes dlg-in { from { opacity: 0; transform: translate(-50%, 8px); } }
+    #dialog::before {
+      content: ''; display: block; height: 2px;
+      background: linear-gradient(90deg, rgba(232,178,92,0.85), rgba(232,178,92,0.08));
+    }
+    #dialog::after {
+      content: ''; position: absolute; inset: 0; pointer-events: none; opacity: 0.07;
+      background: repeating-linear-gradient(transparent 0 2px, rgba(0,0,0,0.8) 2px 4px);
+    }
+    #dialog .dlg-bar { display: flex; align-items: center; gap: 8px; padding: 10px 16px 0; }
+    #dialog-marker {
+      display: none; width: 18px; height: 18px; border-radius: 4px; flex: none;
+      font-size: 13px; font-weight: 900; line-height: 18px; text-align: center;
+      text-shadow: 1px 1px 0 rgba(0,0,0,0.5);
+    }
+    #dialog-marker[data-state='available'] { display: block; background: #e8b25c; color: #14100a; }
+    #dialog-marker[data-state='ready'] {
+      display: block; background: #9be07a; color: #10230c;
+      animation: q-pulse 1.6s ease-in-out infinite;
+    }
+    #dialog-name {
+      color: #e8b25c; font-size: 12px; font-weight: 700; letter-spacing: 0.18em;
+      text-transform: uppercase; text-shadow: 1px 1px 0 #000;
+    }
+    #dialog-text {
+      padding: 10px 16px 4px; min-height: 68px; font-size: 15px; line-height: 1.5;
+      color: #e9e6dc; text-shadow: 1px 1px 0 rgba(0,0,0,0.75);
+    }
+    #dialog-choices { padding: 8px 10px 6px; display: flex; flex-direction: column; gap: 4px; }
     #dialog-choices.hidden { display: none; }
     #dialog-choices button {
-      pointer-events: auto; display: flex; align-items: baseline; gap: 8px;
-      text-align: left; padding: 7px 10px; border-radius: 6px; cursor: pointer;
-      border: 1px solid rgba(255,205,130,0.25); background: rgba(255,205,130,0.08);
-      color: #ffe9c8; font-family: inherit; font-size: 13px; line-height: 1.4;
+      pointer-events: auto; position: relative; display: flex; align-items: center; gap: 10px;
+      text-align: left; padding: 8px 12px; border-radius: 6px; cursor: pointer;
+      border: 1px solid rgba(232,178,92,0.14); border-left: 3px solid rgba(232,178,92,0.25);
+      background: rgba(232,178,92,0.04); color: #e9e6dc; font-family: inherit;
+      font-size: 13.5px; line-height: 1.4;
+      animation: choice-in 0.15s ease-out backwards;
     }
-    #dialog-choices button:hover { background: rgba(255,205,130,0.22); border-color: rgba(255,205,130,0.5); }
-    #dialog .dialog-hint { margin-top: 8px; font-size: 11px; opacity: 0.6; text-align: right; }
+    @keyframes choice-in { from { opacity: 0; transform: translateX(-6px); } }
+    #dialog-choices button:hover {
+      background: rgba(232,178,92,0.14); border-color: rgba(232,178,92,0.4);
+      border-left-color: #e8b25c;
+    }
+    #dialog-choices button:hover::after {
+      content: '▸'; position: absolute; right: 10px; opacity: 0.7;
+    }
+    #dialog-choices kbd {
+      flex: none; display: inline-block; min-width: 18px; padding: 0 4px;
+      border: 1px solid rgba(233,230,220,0.35); border-bottom-width: 2px; border-radius: 4px;
+      background: rgba(0,0,0,0.4); font-family: inherit; font-size: 10.5px; color: #e9e6dc;
+      text-align: center; line-height: 15px;
+    }
+    #dialog-choices button.c-offer { border-left-color: #e8b25c; color: #f0cd8e; }
+    #dialog-choices button.c-turnin { border-left-color: #9be07a; color: #bfe7a6; }
+    #dialog-choices button.c-progress { border-left-color: #ffd100; }
+    #dialog-choices button.c-service { border-left-color: #6cf; color: #bfe9ff; }
+    #dialog-choices button.c-bye { color: #a8a396; border-left-color: rgba(168,163,150,0.3); }
+    #dialog-choices button.c-accept {
+      border: 1px solid #e86e60; border-left: 3px solid #e34a3f; background: #c9372e; color: #fff;
+      font-weight: 800; letter-spacing: 0.04em;
+      box-shadow: 0 3px 0 #7c1f19; transition: transform 0.07s, box-shadow 0.07s, background 0.15s;
+    }
+    #dialog-choices button.c-accept:hover { background: #e34a3f; }
+    #dialog-choices button.c-accept:active { transform: translateY(2px); box-shadow: 0 1px 0 #7c1f19; }
+    #dialog .dialog-hint {
+      padding: 6px 16px 10px; font-size: 11px; color: rgba(168,163,150,0.85);
+      text-align: right; letter-spacing: 0.04em;
+    }
     #dialog .dialog-hint.hidden { display: none; }
-    #dialog kbd {
-      display: inline-block; min-width: 16px; padding: 0 4px; border: 1px solid #fcb;
-      border-bottom-width: 2px; border-radius: 4px; background: rgba(0,0,0,0.4);
-      font-family: inherit; font-size: 10px; color: #fff; text-align: center;
+    #dialog .dialog-hint kbd {
+      display: inline-block; min-width: 16px; padding: 0 4px;
+      border: 1px solid rgba(168,163,150,0.6); border-bottom-width: 2px; border-radius: 4px;
+      background: rgba(0,0,0,0.4); font-family: inherit; font-size: 10px; color: #e9e6dc;
+      text-align: center;
+    }
+    @media (pointer: coarse) {
+      #dialog-choices kbd { display: none; }
+      #dialog-choices button { padding: 11px 12px; font-size: 14px; }
     }
 
     /* --- menus ---
@@ -381,9 +540,28 @@
     }
     #splash-fade.show { opacity: 1; }
 
-    /* death screen: red-tinted flavour of the same look */
-    #death .box { border-color: rgba(201,55,46,0.5); }
-    #death h1 { color: var(--ui-red-hot); }
+    /* death screen: no panel box — a bare vignette over the slow-motion kill.
+       Title, subtitle and respawn button fade in staged (GameApp._updateDeath
+       adds .show); clicks pass through until the button is offered. */
+    #death {
+      background: radial-gradient(ellipse at center, rgba(8,9,8,0) 30%, rgba(8,9,8,0.78) 100%);
+      pointer-events: none;
+    }
+    #death .death-stage { text-align: center; }
+    #death h1 {
+      font-size: clamp(48px, 10vw, 110px); letter-spacing: 0.18em; margin-bottom: 12px;
+      color: var(--ui-red-hot); text-shadow: 4px 4px 0 #000, 0 0 80px rgba(201,55,46,0.5);
+    }
+    #death .sub { font-size: 15px; letter-spacing: 0.08em; margin-bottom: 30px; }
+    #death #btn-respawn {
+      display: inline-block; width: auto; padding: 13px 46px; pointer-events: none;
+    }
+    #death h1, #death .sub, #death #btn-respawn { opacity: 0; transition: opacity 0.9s ease; }
+    #death h1.show, #death .sub.show, #death #btn-respawn.show { opacity: 1; }
+    #death #btn-respawn.show { pointer-events: auto; }
+    /* the world desaturates and darkens while the kill plays out */
+    #game canvas { transition: filter 2.2s ease; }
+    #game.dying canvas { filter: saturate(0.15) brightness(0.55) contrast(1.15); }
 
     /* --- touch controls (mobile only) ---
        Minecraft-style: floating joystick on the left, drag-to-look on the
@@ -452,15 +630,19 @@
   <div id="toast" class="overlay"></div>
   <div id="pickup" class="overlay hidden"></div>
   <div id="dialog" class="overlay hidden">
-    <div id="dialog-name"></div>
+    <div class="dlg-bar">
+      <span id="dialog-marker" data-state=""></span>
+      <span id="dialog-name"></span>
+    </div>
     <div id="dialog-text"></div>
     <div id="dialog-choices" class="hidden"></div>
-    <div class="dialog-hint" id="dialog-hint">Press <kbd>E</kbd> to continue</div>
+    <div class="dialog-hint" id="dialog-hint"></div>
   </div>
   <div id="quest" class="overlay hidden">
     <div id="quest-header">Objectives</div>
     <div id="quest-list"></div>
   </div>
+  <div id="qtoasts" class="overlay"></div>
 
   <div id="hud" class="overlay">
     <div class="stats">
@@ -554,11 +736,10 @@
   </div>
 
   <div id="death" class="screen hidden">
-    <div class="box">
-      <h1>You Died</h1>
-      <div class="sub">The mobs got you this time</div>
-      <button id="btn-respawn" class="primary">Respawn (New Game)</button>
-      <button id="btn-death-menu">Main Menu</button>
+    <div class="death-stage">
+      <h1 id="death-title">YOU DIED</h1>
+      <div class="sub" id="death-sub">Everything you carried is gone</div>
+      <button id="btn-respawn" class="primary">Respawn</button>
     </div>
   </div>
 

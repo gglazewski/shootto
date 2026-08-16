@@ -371,6 +371,8 @@ const DECALS = [
   { id: 'decal_food', name: 'Food Scraps', tile: 'decal_food' },
   { id: 'decal_cigs', name: 'Cigarette Butts', tile: 'decal_cigs' },
   { id: 'decal_poop', name: 'Dog Poop', tile: 'decal_poop' },
+  { id: 'decal_piss_pool', name: 'Piss Pool', tile: 'decal_piss_pool', span: [2, 2] },
+  { id: 'decal_piss_wall', name: 'Piss on Wall', tile: 'decal_piss_wall' },
   { id: 'decal_seeds', name: 'Sunflower Seeds', tile: 'decal_seeds' },
   { id: 'decal_graffiti', name: 'Graffiti', tile: 'decal_graffiti', span: [4, 2] },
   { id: 'decal_stop', name: 'STOP Marking', tile: 'decal_stop', span: [4, 4] },
