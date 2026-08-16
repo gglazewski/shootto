@@ -19,10 +19,11 @@
 // game/Dialogue.js for how a conversation walks these. `chat` is an optional
 // branching small-talk tree (engine/DialogueGraph.js): its `prompt` becomes a
 // reply on the conversation hub that opens the tree. `services` are things the
-// NPC can do for the player (today: 'repair' — fixing worn melee weapons):
-// each becomes an extra hub reply (`label`), optionally gated by a game flag
-// signal (`flag`, '!' inverts) the same way lights bind their power signal —
-// raised e.g. by finishing a quest (see game/Reactions.js).
+// NPC can do for the player (today: 'repair' — fixing worn melee weapons, and
+// 'craft' — bench-quality crafting, see engine/Crafting.js): each becomes an
+// extra hub reply (`label`), optionally gated by a game flag signal (`flag`,
+// '!' inverts) the same way lights bind their power signal — raised e.g. by
+// finishing a quest (see game/Reactions.js).
 //
 // Pure module (no three.js/DOM) so it unit tests in Node.
 
@@ -34,6 +35,7 @@ export const NPC_HEIGHT_MAX = 2.2;
 /** Service types an NPC can offer, with the default hub reply for each. */
 export const NPC_SERVICE_TYPES = Object.freeze({
   repair: Object.freeze({ label: 'Could you fix up my gear?' }),
+  craft: Object.freeze({ label: 'Could you make something for me?' }),
 });
 
 export const BUILTIN_NPCS = Object.freeze({

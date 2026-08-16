@@ -14,8 +14,8 @@ import {
 test('built-in materials register with kind material and survive normalizeKind', () => {
   clearEquipItems();
   registerBuiltinMaterials();
-  assert.equal(MATERIAL_IDS.length, 5);
-  for (const id of ['duck-tape', 'glue', 'scrap-wood', 'scrap-glass', 'scrap-metal']) {
+  assert.equal(MATERIAL_IDS.length, 6);
+  for (const id of ['duck-tape', 'glue', 'scrap-wood', 'scrap-glass', 'scrap-metal', 'rag']) {
     const def = getEquipItem(id);
     assert.ok(def, `${id} is registered`);
     assert.equal(def.kind, 'material', `${id} keeps its material kind`);

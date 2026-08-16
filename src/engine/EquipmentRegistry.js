@@ -9,8 +9,10 @@
 //            (a resource type a weapon consumes), 'armor' (a vest that
 //            grants armor points when picked up), 'quest' (a fetch-quest
 //            objective: pickable only while a quest wants it, never shown
-//            in the hotbar — see quests.js) or 'material' (a stackable
-//            repair resource — see engine/Materials.js).
+//            in the hotbar — see quests.js), 'material' (a stackable
+//            repair resource — see engine/Materials.js) or 'consumable'
+//            (a one-use healing item kept in the injection slot — see
+//            engine/Crafting.js).
 //   - grip:  the micro-voxel cell where the player's right hand grips the
 //            item; grip2 is the left-hand cell for two-handed weapons,
 //   - yaw:   the item's forward/direction angle (degrees about the vertical
@@ -40,6 +42,9 @@ export const DEFAULT_AMMO = Object.freeze({ type: '', amount: 6 });
 
 /** Default armor fields for an armor-kind item (points granted on pickup). */
 export const DEFAULT_ARMOR_PACK = Object.freeze({ amount: 25 });
+
+/** Default heal fields for a consumable item (applied by `F`, consumed). */
+export const DEFAULT_CONSUMABLE = Object.freeze({ health: 25, armor: 0 });
 
 /** Attack animations available per weapon kind. */
 export const ATTACK_ANIMS = Object.freeze({
@@ -103,6 +108,7 @@ const REGISTRY = new Map();
  * @property {object} weapon       composable attack profile (see normalizeWeapon)
  * @property {{type:string,amount:number}} ammo  ammo pack: type granted + rounds per pickup
  * @property {{amount:number}} armor  armor vest: points granted on pickup (armor kind)
+ * @property {{health:number,armor:number}} consumable  one-use heal pack (consumable kind)
  */
 
 /** A blank equippable item model. */
@@ -120,6 +126,7 @@ export function emptyEquipItem(name = 'New Item') {
     weapon: { ...DEFAULT_WEAPON },
     ammo: { ...DEFAULT_AMMO },
     armor: { ...DEFAULT_ARMOR_PACK },
+    consumable: { ...DEFAULT_CONSUMABLE },
   };
 }
 
@@ -129,16 +136,26 @@ const clampNum = (v, min, max, fallback) => {
 };
 
 /** Normalize the item kind: anything other than 'ammo'/'armor'/'quest'/
- *  'material' is a weapon. Materials are stackable crafting/repair resources
- *  (see engine/Materials.js) — picked up into the backpack, never equipped. */
+ *  'material'/'consumable' is a weapon. Materials are stackable crafting/
+ *  repair resources (see engine/Materials.js) — picked up into the backpack,
+ *  never equipped. Consumables are one-use healing items (see
+ *  engine/Crafting.js) — they prefer the injection slot and `F` uses them. */
 export function normalizeKind(kind) {
-  return kind === 'ammo' || kind === 'armor' || kind === 'quest' || kind === 'material'
+  return kind === 'ammo' || kind === 'armor' || kind === 'quest' || kind === 'material' || kind === 'consumable'
     ? kind : 'weapon';
 }
 
 /** Normalize an armor pack to the canonical {amount} shape (1..100). */
 export function normalizeArmorPack(a = {}) {
   return { amount: Math.round(clampNum(a.amount, 1, 100, DEFAULT_ARMOR_PACK.amount)) };
+}
+
+/** Normalize a consumable's effect pack to the canonical {health, armor}
+ *  shape (each 0..100). A pack with neither effect heals by default. */
+export function normalizeConsumable(a = {}) {
+  const health = Math.round(clampNum(a.health, 0, 100, 0));
+  const armor = Math.round(clampNum(a.armor, 0, 100, 0));
+  return health > 0 || armor > 0 ? { health, armor } : { ...DEFAULT_CONSUMABLE };
 }
 
 /** Normalize an ammo pack to the canonical {type, amount} shape: the granted
@@ -197,10 +214,18 @@ export function registerEquipItem(item) {
   copy.kind = normalizeKind(copy.kind);
   copy.grid = normalizeGrid(copy.grid);
   copy.stats = normalizeStats(copy.stats);
+  // A consumable never fights — its damage is pinned to 0 so slot logic
+  // (and weaponFor) reads it as "not a weapon".
+  if (copy.kind === 'consumable') copy.stats.damage = 0;
   copy.weapon = normalizeWeapon(copy.weapon);
   copy.yaw = clampNum(copy.yaw, 0, 360, 0);
   copy.ammo = normalizeAmmo(copy.ammo);
   copy.armor = normalizeArmorPack(copy.armor);
+  // Only consumable kinds carry a meaningful heal pack; everything else
+  // keeps a zeroed one so the field is always present and inert.
+  copy.consumable = copy.kind === 'consumable'
+    ? normalizeConsumable(copy.consumable)
+    : { health: 0, armor: 0 };
   REGISTRY.set(copy.id, copy);
   return copy;
 }
@@ -274,6 +299,9 @@ export function serializeEquipItem(item) {
       weapon: normalizeWeapon(item.weapon),
       ammo: normalizeAmmo(item.ammo),
       armor: normalizeArmorPack(item.armor),
+      consumable: normalizeKind(item.kind) === 'consumable'
+        ? normalizeConsumable(item.consumable)
+        : { health: 0, armor: 0 },
     },
     null,
     2,
@@ -299,19 +327,25 @@ function parseEquipDef(entry) {
       : null;
   const grip = parseCell(entry.grip);
   const grip2 = parseCell(entry.grip2);
+  const kind = normalizeKind(entry.kind);
+  const stats = normalizeStats(entry.stats);
+  if (kind === 'consumable') stats.damage = 0;
   return {
     id: entry.id,
     name: typeof entry.name === 'string' && entry.name ? entry.name : entry.id,
-    kind: normalizeKind(entry.kind),
+    kind,
     grid,
     microVoxels,
     grip,
     grip2,
     yaw: clampNum(entry.yaw, 0, 360, 0),
-    stats: normalizeStats(entry.stats),
+    stats,
     weapon: normalizeWeapon(entry.weapon),
     ammo: normalizeAmmo(entry.ammo),
     armor: normalizeArmorPack(entry.armor),
+    consumable: kind === 'consumable'
+      ? normalizeConsumable(entry.consumable)
+      : { health: 0, armor: 0 },
   };
 }
 

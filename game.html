@@ -437,6 +437,83 @@
     .rc-chip.rc-missing { border-color: var(--ui-red-hot); color: var(--ui-red-hot); }
     .rc-note { margin-top: 8px; font-size: 12px; color: var(--ui-amber); }
 
+    /* crafting screen (Q in the field, or an NPC's craft service): category
+       tabs, the recipe list, and the selected recipe's detail pane — ledger
+       of what you carry vs what the recipe wants, effect stats, Craft button.
+       Same language as backpack/repair; the game runs underneath. */
+    #craft .box.craft-box {
+      width: min(94vw, 800px); max-height: 92vh; overflow-y: auto;
+      text-align: left;
+    }
+    #craft-tabs { display: flex; gap: 6px; margin: 0 0 12px; flex-wrap: wrap; }
+    .craft-tab {
+      padding: 6px 14px; border: 1px solid var(--ui-line); border-radius: 16px;
+      background: rgba(26,30,27,0.9); color: var(--ui-muted); font-family: inherit;
+      font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; cursor: pointer;
+      transition: color 0.15s, border-color 0.15s, background 0.15s;
+    }
+    .craft-tab:hover { border-color: rgba(232,178,92,0.5); color: var(--ui-text); }
+    .craft-tab.active { border-color: var(--ui-amber); color: var(--ui-amber); background: rgba(232,178,92,0.1); }
+    .craft-body {
+      display: grid; grid-template-columns: minmax(240px, 5fr) minmax(280px, 6fr);
+      gap: 14px; align-items: start;
+    }
+    @media (max-width: 720px) { .craft-body { grid-template-columns: 1fr; } }
+    #craft-list { display: flex; flex-direction: column; gap: 6px; }
+    .craft-row {
+      display: flex; align-items: center; gap: 10px; text-align: left;
+      padding: 8px 10px; margin: 0; width: auto; border-radius: 8px;
+    }
+    .craft-row canvas { flex: none; image-rendering: pixelated; }
+    .craft-row .cr-name { flex: 1; font-size: 14px; }
+    .craft-row .cr-costs { display: flex; gap: 4px; flex-wrap: wrap; }
+    .craft-row .cr-chip {
+      padding: 2px 6px; border-radius: 4px; font-size: 11px;
+      font-variant-numeric: tabular-nums;
+      border: 1px solid rgba(255,255,255,0.14); background: rgba(30,34,40,0.9); color: #9be07a;
+    }
+    .craft-row .cr-chip.short { color: var(--ui-red-hot); border-color: rgba(227,74,63,0.5); }
+    .craft-row .cr-lock { color: var(--ui-amber); font-size: 15px; flex: none; }
+    .craft-row.ready { border-color: rgba(155,224,122,0.3); }
+    .craft-row.selected { border-color: var(--ui-amber); background: rgba(232,178,92,0.1); }
+    .craft-row.locked { opacity: 0.55; }
+    #craft-detail {
+      border: 1px solid rgba(255,255,255,0.1); border-radius: 10px;
+      padding: 14px; background: rgba(24,27,32,0.6);
+      display: flex; flex-direction: column; gap: 12px;
+    }
+    .cd-head { display: flex; gap: 14px; align-items: center; }
+    .cd-head canvas { image-rendering: pixelated; flex: none; }
+    .cd-name { font-size: 18px; font-weight: 800; letter-spacing: 0.04em; text-shadow: 1px 1px 0 #000; }
+    .cd-desc { color: var(--ui-muted); font-size: 13px; line-height: 1.45; margin-top: 4px; }
+    .cd-tags { display: flex; gap: 6px; margin-top: 8px; }
+    .cd-tag {
+      padding: 2px 8px; border-radius: 4px; font-size: 10px; font-weight: 700;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      border: 1px solid rgba(255,255,255,0.16); color: var(--ui-muted);
+    }
+    .cd-tag.t-weapon { color: #f0cd8e; border-color: rgba(232,178,92,0.4); }
+    .cd-tag.t-armor { color: #bfe9ff; border-color: rgba(102,204,255,0.4); }
+    .cd-tag.t-medical { color: #9be07a; border-color: rgba(155,224,122,0.4); }
+    .cd-tag.t-field { color: #9be07a; border-color: rgba(155,224,122,0.4); }
+    .cd-tag.t-bench { color: var(--ui-amber); border-color: rgba(232,178,92,0.45); }
+    .cd-stats { display: flex; flex-direction: column; gap: 3px; font-size: 13px; }
+    .cd-stat::before { content: '· '; color: var(--ui-amber); }
+    .cd-label {
+      font-size: 11px; text-transform: uppercase; letter-spacing: 0.14em;
+      color: var(--ui-muted); margin-bottom: 6px;
+    }
+    .cd-ledger { display: flex; flex-direction: column; }
+    .cd-mat { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+    .cd-mat canvas { image-rendering: pixelated; flex: none; }
+    .cd-mat-name { flex: 1; font-size: 13px; }
+    .cd-mat-count { font-variant-numeric: tabular-nums; font-size: 13px; color: #9be07a; }
+    .cd-mat.short .cd-mat-name { color: #f0c2be; }
+    .cd-mat.short .cd-mat-count { color: var(--ui-red-hot); }
+    .cd-note { font-size: 12px; color: var(--ui-amber); line-height: 1.45; margin: 0; }
+    .cd-note.locked { color: var(--ui-red-hot); }
+    #craft .box button#btn-craft-make { margin-bottom: 0; }
+
     /* backpack grid (B) + storage container screen (E): Minecraft-style
        slots over the running game */
     #backpack .box, #container .box { min-width: 420px; }
@@ -587,6 +664,8 @@
     #btn-attack { right: 14px; bottom: 16px; width: 84px; height: 84px; font-size: 16px;
       border-color: rgba(255,120,120,0.55); }
     #btn-pickup { right: 106px; bottom: 24px; width: 60px; height: 60px; }
+    #btn-craft { right: 106px; bottom: 92px; width: 60px; height: 60px; font-size: 11px;
+      border-color: rgba(232,178,92,0.55); }
     #btn-crouch { left: 14px; bottom: 24px; width: 60px; height: 60px; }
 
     #slots-mobile { position: absolute; left: 50%; transform: translateX(-50%); bottom: 12px;
@@ -609,11 +688,12 @@
       border-radius: 50%; background: rgba(255,255,255,0.4);
     }
 
-    /* portrait phones: raise fire/pickup above the hotbar so they never
+    /* portrait phones: raise fire/pickup/craft above the hotbar so they never
        overlap the slot bar (crouch stays bottom-left, clear of it) */
     @media (orientation: portrait) {
       #btn-attack { right: 12px; bottom: 96px; }
       #btn-pickup { right: 100px; bottom: 104px; }
+      #btn-craft { right: 100px; bottom: 172px; }
     }
   </style>
 </head>
@@ -735,6 +815,23 @@
     </div>
   </div>
 
+  <!-- Crafting (Q in the field; an NPC's craft service opens the bench —
+       every recipe, full quality): tabs, recipe list and the selected
+       recipe's detail pane with the materials ledger. Game keeps running. -->
+  <div id="craft" class="screen hidden">
+    <div class="box craft-box">
+      <h1 id="craft-title">Crafting</h1>
+      <div class="sub" id="craft-sub">Scrap in, survival out — the game keeps running!</div>
+      <div id="craft-tabs"></div>
+      <div class="craft-body">
+        <div id="craft-list"></div>
+        <div id="craft-detail"></div>
+      </div>
+      <button id="btn-craft-make" class="primary" disabled>Craft</button>
+      <button id="btn-craft-close">Done <kbd>Q</kbd></button>
+    </div>
+  </div>
+
   <div id="death" class="screen hidden">
     <div class="death-stage">
       <h1 id="death-title">YOU DIED</h1>
@@ -750,6 +847,7 @@
   <div id="touch-layer">
     <button id="btn-attack" class="tc-btn">FIRE</button>
     <button id="btn-pickup" class="tc-btn">PICK</button>
+    <button id="btn-craft" class="tc-btn">CRAFT</button>
     <button id="btn-crouch" class="tc-btn">CROUCH</button>
     <div id="slots-mobile">
       <button class="slot-btn" data-index="0">1</button>

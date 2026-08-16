@@ -184,6 +184,7 @@ export class TouchControls {
   _bindButtons() {
     this._bindButton('btn-attack', () => { this.attacking = true; }, () => { this.attacking = false; });
     this._bindButton('btn-pickup', () => this.cb.pickup?.());
+    this._bindButton('btn-craft', () => this.cb.craft?.());
     this._bindButton('btn-crouch', () => {
       this._crouch = !this._crouch;
       this._toggleClass('btn-crouch', 'on', this._crouch);

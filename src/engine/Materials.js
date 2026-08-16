@@ -112,12 +112,32 @@ function scrapMetalVoxels() {
   return out;
 }
 
+/** A folded strip of cloth — crumpled layers with a hanging tail. */
+function ragVoxels() {
+  const cloth = [206, 198, 178];
+  const shade = [178, 168, 146];
+  const out = [];
+  // Three folded layers, each a bit offset like it was crumpled by hand.
+  for (let x = 1; x <= 6; x++) {
+    for (let z = 1; z <= 5; z++) put(out, x, 0, z, (x + z) % 5 === 0 ? shade : cloth);
+  }
+  for (let x = 2; x <= 6; x++) {
+    for (let z = 2; z <= 5; z++) put(out, x, 1, z, x === 2 ? shade : cloth);
+  }
+  for (let x = 3; x <= 5; x++) put(out, x, 2, 3, cloth);
+  // A corner of the strip hanging off the side.
+  put(out, 7, 0, 4, shade);
+  put(out, 7, 0, 5, cloth);
+  return out;
+}
+
 export const BUILTIN_MATERIALS = Object.freeze([
   { id: 'duck-tape', name: 'Duck Tape', voxels: duckTapeVoxels },
   { id: 'glue', name: 'Glue', voxels: glueVoxels },
   { id: 'scrap-wood', name: 'Scrap Wood', voxels: scrapWoodVoxels },
   { id: 'scrap-glass', name: 'Scrap Glass', voxels: scrapGlassVoxels },
   { id: 'scrap-metal', name: 'Scrap Metal', voxels: scrapMetalVoxels },
+  { id: 'rag', name: 'Cloth Rag', voxels: ragVoxels },
 ].map((m) => Object.freeze({
   id: m.id,
   name: m.name,

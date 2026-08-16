@@ -37,10 +37,12 @@ export const FISTS = Object.freeze({
   durability: 0, // landed hits before breaking (0 = unbreakable — fists never wear)
 });
 
-/** Weapon profile for an equipped item (equipment profile when available). */
+/** Weapon profile for an equipped item (equipment profile when available).
+ *  Consumables (bandages, kits) never fight — they read as fists. */
 export function weaponFor(itemId) {
   if (!itemId) return FISTS;
   const item = getItem(itemId) ?? getEquipItem(itemId);
+  if (item?.kind === 'consumable') return { ...FISTS, id: itemId, name: item.name ?? itemId };
   if (item?.stats) {
     const w = item.weapon ?? {};
     return {

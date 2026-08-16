@@ -34,6 +34,11 @@ import {
   registerBuiltinMaterials, MATERIAL_IDS, REPAIR_COST, REPAIR_DECAY_FRACTION,
   ADHESIVE_IDS, SCRAP_IDS, MATERIAL_STACK,
 } from '../engine/Materials.js';
+import { registerBuiltinCraftables } from '../engine/Craftables.js';
+import {
+  registerBuiltinRecipes, listRecipes, getRecipe, craftPlan, applyCraft,
+  selfCraftDecay, recipeAvailable, CRAFT_CATEGORIES,
+} from '../engine/Crafting.js';
 import { ammoName } from '../engine/AmmoTypes.js';
 import { MICRO_SIZE, gridOf, lightLevelForMeters, rotateMicroPoint, quarterTurns } from '../engine/ItemTypes.js';
 import { layFlat } from '../engine/LayFlat.js';
@@ -179,6 +184,7 @@ export class GameApp {
         callbacks: {
           pickup: () => this._interact(),
           selectSlot: (i) => this._selectSlot(i),
+          craft: () => (this._craft ? this._closeCraft() : this._openCraft()),
         },
       });
     }
@@ -268,6 +274,10 @@ export class GameApp {
     // Open NPC repair screen: { npc, slot } — slot is the picked equipment
     // slot name (null until the player clicks a weapon). See _openRepair.
     this._repair = null;
+    // Open crafting screen (Q, or an NPC's 'craft' service): { npc, tab,
+    // recipeId }. npc null = self-crafting (field recipes only, homemade
+    // wear); an NPC works at their bench (every recipe, full quality).
+    this._craft = null;
     // Backpack grid (B): open state — the game keeps running underneath.
     this._backpackOpen = false;
     // Storage containers (E on an object authored as storage): persistent
@@ -391,6 +401,14 @@ export class GameApp {
       repairList: this.doc.querySelector('#repair-list'),
       btnRepairFix: this.doc.querySelector('#btn-repair-fix'),
       btnRepairClose: this.doc.querySelector('#btn-repair-close'),
+      craft: this.doc.querySelector('#craft'),
+      craftTitle: this.doc.querySelector('#craft-title'),
+      craftSub: this.doc.querySelector('#craft-sub'),
+      craftTabs: this.doc.querySelector('#craft-tabs'),
+      craftList: this.doc.querySelector('#craft-list'),
+      craftDetail: this.doc.querySelector('#craft-detail'),
+      btnCraftMake: this.doc.querySelector('#btn-craft-make'),
+      btnCraftClose: this.doc.querySelector('#btn-craft-close'),
       quest: this.doc.querySelector('#quest'),
       questList: this.doc.querySelector('#quest-list'),
       qtoasts: this.doc.querySelector('#qtoasts'),
@@ -635,6 +653,8 @@ export class GameApp {
     // Built-in quest items first — an authored def under the same id wins.
     registerBuiltinQuestItems();
     registerBuiltinMaterials();
+    registerBuiltinCraftables(); // craftable weapons / vests / healing items
+    registerBuiltinRecipes();
     const text = await this._fetchWorldFile();
     this._setLoadProgress(0.4, 'Reading map…');
     let world = null;
@@ -1050,9 +1070,11 @@ export class GameApp {
 
     let dropId = null;
     if (Math.random() < LOOT_DROP_CHANCE) {
+      // The default pool is authored weapons only — built-in craftables
+      // (shiv, plank, spear) exist to be MADE, not found on a corpse.
       const weapons = authored
         ? authored.filter((id) => isMelee(getEquipItem(id) ?? {}))
-        : listEquipItems().filter(isMelee).map((i) => i.id);
+        : listEquipItems().filter((i) => isMelee(i) && !i.builtin).map((i) => i.id);
       if (weapons.length) dropId = pick(weapons);
     }
     if (!dropId && Math.random() < MATERIAL_DROP_CHANCE) {
@@ -1686,6 +1708,7 @@ export class GameApp {
     // A picked service reply: the conversation drops back to its hub and the
     // matching screen opens on top of the chat.
     if (result?.service?.type === 'repair') this._openRepair();
+    if (result?.service?.type === 'craft') this._openCraft(npc);
     if (result) this._updateQuestHud();
     // The flags above landed after choose() ran — if the conversation is
     // already back on its hub, rebuild it so a service gated on a flag this
@@ -1704,7 +1727,8 @@ export class GameApp {
     this._stopTypewriter();
     this.ui.dialog?.classList.add('hidden');
     this._closeRepair();
-    if (!this._repair) this._relockPointer();
+    this._closeCraft();
+    if (!this._repair && !this._craft) this._relockPointer();
   }
 
   /** Ask for the pointer lock back. Browsers may refuse without a fresh user
@@ -1879,7 +1903,293 @@ export class GameApp {
     if (!this._repair) return;
     this._repair = null;
     this.ui.repair?.classList.add('hidden');
-    if (!this._dialog) this._relockPointer();
+    if (!this._dialog && !this._craft) this._relockPointer();
+  }
+
+  // --- crafting (Q anywhere; an NPC's 'craft' service opens the bench) ---
+
+  /** Open the crafting screen (Q). `npc` null = self-crafting in the field
+   *  (only 'field' recipes, homemade weapons wear in faster); an NPC works at
+   *  their bench — every recipe, full quality. The game keeps running
+   *  underneath like the backpack grid; the pointer is freed so the rows are
+   *  clickable. */
+  _openCraft(npc = null) {
+    if (this._craft || this.mode !== 'playing') return;
+    this._craft = { npc, tab: 'all', recipeId: null };
+    this._firing = false;
+    if (document.pointerLockElement) document.exitPointerLock();
+    this._renderCraft();
+    this.ui.craft?.classList.remove('hidden');
+  }
+
+  /** Close the crafting screen — back into the conversation when an NPC's
+   *  service opened it, else straight back to play. */
+  _closeCraft() {
+    if (!this._craft) return;
+    this._craft = null;
+    this.ui.craft?.classList.add('hidden');
+    if (!this._dialog && !this._repair) this._relockPointer();
+  }
+
+  /** The recipes the open screen lists: the active tab's slice (or all). */
+  _craftRecipes() {
+    if (!this._craft) return [];
+    const tab = this._craft.tab;
+    return listRecipes().filter((r) => tab === 'all' || r.category === tab);
+  }
+
+  /** Render the crafting screen: category tabs, the recipe list (swatch,
+   *  name, cost chips; locked recipes show a padlock until you find a bench)
+   *  and the detail pane of the selected recipe — big swatch, stats, the
+   *  ingredient ledger (have/need) and the Craft button. */
+  _renderCraft() {
+    const c = this._craft;
+    if (!c || !this.ui.craftList || !this.ui.craftDetail) return;
+    const byNpc = !!c.npc;
+
+    if (this.ui.craftTitle) {
+      this.ui.craftTitle.textContent = byNpc ? `${c.npc.name}'s Workbench` : 'Crafting';
+    }
+    if (this.ui.craftSub) {
+      this.ui.craftSub.textContent = byNpc
+        ? 'Proper tools, proper results — no homemade wear.'
+        : 'Scrap in, survival out. The game keeps running!';
+    }
+
+    // Tabs: All + one per category.
+    const tabs = this.ui.craftTabs;
+    if (tabs) {
+      tabs.replaceChildren();
+      for (const t of [{ id: 'all', label: 'All' }, ...CRAFT_CATEGORIES]) {
+        const btn = this.doc.createElement('button');
+        btn.className = `craft-tab${c.tab === t.id ? ' active' : ''}`;
+        btn.textContent = t.label;
+        btn.addEventListener('click', () => {
+          c.tab = t.id;
+          c.recipeId = null;
+          this._renderCraft();
+        });
+        tabs.appendChild(btn);
+      }
+    }
+
+    // Recipe list.
+    const list = this.ui.craftList;
+    list.replaceChildren();
+    const recipes = this._craftRecipes();
+    if (c.recipeId && !recipes.some((r) => r.id === c.recipeId)) c.recipeId = null;
+    for (const recipe of recipes) {
+      const def = getEquipItem(recipe.output.id);
+      const locked = !recipeAvailable(recipe, byNpc);
+      const plan = craftPlan(recipe, this.stats);
+      const row = this.doc.createElement('button');
+      row.className = `craft-row${recipe.id === c.recipeId ? ' selected' : ''}${locked ? ' locked' : plan.ok ? ' ready' : ''}`;
+      if (def) row.appendChild(buildItemSwatch(def, 40));
+      const name = this.doc.createElement('span');
+      name.className = 'cr-name';
+      name.textContent = recipe.name;
+      row.appendChild(name);
+      // Mini cost chips — red when short.
+      const costs = this.doc.createElement('span');
+      costs.className = 'cr-costs';
+      for (const input of recipe.inputs) {
+        const chip = this.doc.createElement('span');
+        const have = this.stats.materialCount(input.id);
+        chip.className = `cr-chip${have < input.count ? ' short' : ''}`;
+        chip.textContent = `${have}/${input.count}`;
+        chip.title = `${getEquipItem(input.id)?.name ?? input.id} ×${input.count}`;
+        costs.appendChild(chip);
+      }
+      row.appendChild(costs);
+      if (locked) {
+        const lock = this.doc.createElement('span');
+        lock.className = 'cr-lock';
+        lock.textContent = '⚒';
+        lock.title = 'Needs a craftsman with a workbench';
+        row.appendChild(lock);
+      }
+      row.addEventListener('click', () => {
+        c.recipeId = recipe.id;
+        this._renderCraft();
+      });
+      list.appendChild(row);
+    }
+
+    // Detail pane.
+    const detail = this.ui.craftDetail;
+    detail.replaceChildren();
+    const recipe = recipes.find((r) => r.id === c.recipeId) ?? recipes[0];
+    if (recipe) c.recipeId = recipe.id;
+    if (recipe) {
+      const def = getEquipItem(recipe.output.id);
+      const locked = !recipeAvailable(recipe, byNpc);
+      const plan = craftPlan(recipe, this.stats);
+
+      const head = this.doc.createElement('div');
+      head.className = 'cd-head';
+      if (def) head.appendChild(buildItemSwatch(def, 88));
+      const headText = this.doc.createElement('div');
+      headText.className = 'cd-headtext';
+      const nameEl = this.doc.createElement('div');
+      nameEl.className = 'cd-name';
+      nameEl.textContent = recipe.name;
+      headText.appendChild(nameEl);
+      if (recipe.desc) {
+        const desc = this.doc.createElement('div');
+        desc.className = 'cd-desc';
+        desc.textContent = recipe.desc;
+        headText.appendChild(desc);
+      }
+      const tags = this.doc.createElement('div');
+      tags.className = 'cd-tags';
+      const cat = CRAFT_CATEGORIES.find((k) => k.id === recipe.category);
+      const tagCat = this.doc.createElement('span');
+      tagCat.className = `cd-tag t-${recipe.category}`;
+      tagCat.textContent = cat?.label ?? recipe.category;
+      tags.appendChild(tagCat);
+      const tagStation = this.doc.createElement('span');
+      tagStation.className = `cd-tag t-${recipe.station === 'npc' ? 'bench' : 'field'}`;
+      tagStation.textContent = recipe.station === 'npc' ? 'Workbench' : 'Field';
+      tags.appendChild(tagStation);
+      headText.appendChild(tags);
+      head.appendChild(headText);
+      detail.appendChild(head);
+
+      const statsEl = this.doc.createElement('div');
+      statsEl.className = 'cd-stats';
+      for (const line of this._craftStatsLines(def)) {
+        const row = this.doc.createElement('div');
+        row.className = 'cd-stat';
+        row.textContent = line;
+        statsEl.appendChild(row);
+      }
+      detail.appendChild(statsEl);
+
+      // Ingredient ledger.
+      const ledger = this.doc.createElement('div');
+      ledger.className = 'cd-ledger';
+      const ledgerLabel = this.doc.createElement('div');
+      ledgerLabel.className = 'cd-label';
+      ledgerLabel.textContent = 'Materials';
+      ledger.appendChild(ledgerLabel);
+      for (const input of recipe.inputs) {
+        const matDef = getEquipItem(input.id);
+        const have = this.stats.materialCount(input.id);
+        const row = this.doc.createElement('div');
+        row.className = `cd-mat${have < input.count ? ' short' : ''}`;
+        if (matDef) row.appendChild(buildItemSwatch(matDef, 28));
+        const matName = this.doc.createElement('span');
+        matName.className = 'cd-mat-name';
+        matName.textContent = matDef?.name ?? input.id;
+        const matCount = this.doc.createElement('span');
+        matCount.className = 'cd-mat-count';
+        matCount.textContent = `${have} / ${input.count}`;
+        row.append(matName, matCount);
+        ledger.appendChild(row);
+      }
+      detail.appendChild(ledger);
+
+      // Homemade wear note — only self-crafted weapons pay it.
+      const decay = byNpc ? 0 : selfCraftDecay(def);
+      if (decay > 0) {
+        const note = this.doc.createElement('p');
+        note.className = 'cd-note';
+        note.textContent = `Homemade: max durability ${decay} lower. A craftsman's bench version doesn't wear in.`;
+        detail.appendChild(note);
+      }
+      if (locked) {
+        const note = this.doc.createElement('p');
+        note.className = 'cd-note locked';
+        note.textContent = 'Needs a craftsman with a proper workbench — ask around.';
+        detail.appendChild(note);
+      }
+
+      if (this.ui.btnCraftMake) {
+        this.ui.btnCraftMake.textContent = locked ? 'Locked' : 'Craft';
+        this.ui.btnCraftMake.disabled = locked || !plan.ok;
+      }
+    } else {
+      const empty = this.doc.createElement('p');
+      empty.className = 'cd-note';
+      empty.textContent = 'Nothing to make here yet.';
+      detail.appendChild(empty);
+      if (this.ui.btnCraftMake) this.ui.btnCraftMake.disabled = true;
+    }
+  }
+
+  /** Human-readable effect lines for the detail pane, by item kind. */
+  _craftStatsLines(def) {
+    if (!def) return [];
+    if (def.kind === 'consumable') {
+      const lines = [];
+      if (def.consumable?.health > 0) lines.push(`Heals ${def.consumable.health} HP (use with F)`);
+      if (def.consumable?.armor > 0) lines.push(`+${def.consumable.armor} armor`);
+      return lines.length ? lines : ['One-use medical item'];
+    }
+    if (def.kind === 'armor') return [`+${def.armor?.amount ?? 25} armor — strapped on the spot`];
+    const s = def.stats ?? {};
+    const lines = [`${s.damage ?? '?'} damage · ${s.cooldown ?? '?'}s swing · ${s.reach ?? '?'} m reach`];
+    if (s.durability > 0) lines.push(`${s.durability} hits before it breaks`);
+    return lines;
+  }
+
+  /** Craft the selected recipe: consume the materials, grant the output.
+   *  Armor vests strap on immediately; weapons/consumables take a slot (or
+   *  the backpack); self-crafted weapons carry their homemade decay. */
+  _craftMake() {
+    const c = this._craft;
+    if (!c) return;
+    const recipe = getRecipe(c.recipeId);
+    if (!recipe || !recipeAvailable(recipe, !!c.npc)) return;
+    const plan = craftPlan(recipe, this.stats);
+    if (!plan.ok) {
+      const names = plan.missing.map(
+        (m) => `${getEquipItem(m.id)?.name ?? m.id} ×${m.short}`,
+      );
+      this._toast(`Missing ${names.join(' + ')}`);
+      return;
+    }
+    if (!applyCraft(recipe, this.stats)) return;
+    const def = getEquipItem(recipe.output.id);
+    for (let i = 0; i < (recipe.output.count || 1); i++) this._grantCrafted(def, { byNpc: !!c.npc });
+    this._updateHud();
+    this._renderCraft();
+  }
+
+  /** Hand over a crafted item: armor vests grant their points straight away
+   *  (same as a pickup), weapons and consumables land in a slot — the
+   *  homemade decay rides along — or the backpack when everything's full. */
+  _grantCrafted(def, { byNpc = false } = {}) {
+    if (!def) return;
+    if (def.kind === 'armor') {
+      const before = this.stats.armor;
+      this.stats.repair(def.armor?.amount ?? 25);
+      const gained = Math.round(this.stats.armor - before);
+      this._itemCard(def, {
+        from: 'craft',
+        line: gained > 0 ? `Armor +${gained}` : 'Armor already full',
+      });
+      return;
+    }
+    if (def.kind === 'material') {
+      this._itemCard(def, { from: 'craft', amount: 1 });
+      return;
+    }
+    const decay = byNpc ? 0 : selfCraftDecay(def);
+    // A crafted consumable goes straight to the injection slot (its F-use
+    // home) when free; everything else follows the usual pickup preference.
+    const slot = def.kind === 'consumable' && !this.stats.equipment.injection
+      ? 'injection'
+      : this._pickupSlot(def);
+    if (!slot) {
+      this.stats.stow(def.id, 0, decay);
+      this._itemCard(def, { from: 'craft', line: '→ backpack' });
+      return;
+    }
+    this.stats.equip(slot, def.id);
+    this.stats.decay[slot] = decay;
+    this._updateHeldItem();
+    this._itemCard(def, { from: 'craft' });
   }
 
   /** Quest reward: flat boosts through the usual PlayerStats paths, announced
@@ -2024,17 +2334,18 @@ export class GameApp {
   }
 
   /** Item gain as a card: blue-accented for pickups, quest-amber when the
-   *  item came from a reward. `amount` makes the line a cumulative +N for
-   *  stackables (ammo, materials); equippables show name only. */
+   *  item came from a reward, green "Crafted" when it left a workbench.
+   *  `amount` makes the line a cumulative +N for stackables (ammo,
+   *  materials); equippables show name only. */
   _itemCard(def, { from = 'pickup', amount = 0, line = null } = {}) {
     if (!def) return;
     this._gainCard({
       key: `item:${def.id}`,
-      kicker: from === 'reward' ? 'Quest reward' : 'Picked up',
+      kicker: from === 'reward' ? 'Quest reward' : from === 'craft' ? 'Crafted' : 'Picked up',
       title: def.name,
       amount,
       line,
-      cls: from === 'reward' ? '' : 'q-item',
+      cls: from === 'reward' || from === 'craft' ? '' : 'q-item',
     });
   }
 
@@ -2621,14 +2932,18 @@ export class GameApp {
     this._renderContainer();
   }
 
-  /** Use the equipped injection (heals, consumes it). */
+  /** Use the equipped consumable (heals — and patches armor if the item's
+   *  pack says so — then consumes it). Works for the classic injection and
+   *  for crafted medical items alike; see engine/Craftables.js. */
   _useInjection() {
-    if (!this.stats.equipment.injection) {
+    const id = this.stats.equipment.injection;
+    if (!id) {
       this._toast('No injection equipped');
       return;
     }
-    if (this.stats.useInjection()) {
-      this._toast('Injection used');
+    const def = getEquipItem(id);
+    if (this.stats.useInjection(def?.consumable ?? null)) {
+      this._toast(`${def?.name ?? 'Injection'} used`);
       this._refillFromBackpack('injection');
       this._updateHud();
     }
@@ -2676,6 +2991,7 @@ export class GameApp {
     this.mode = 'menu';
     this._closeBackpack();
     this._closeContainer();
+    this._closeCraft();
     this.touch?.setEnabled(false);
     this.ui.menu.classList.remove('hidden');
     this.ui.pause.classList.add('hidden');
@@ -2741,6 +3057,7 @@ export class GameApp {
     this.mode = 'paused';
     this._closeBackpack();
     this._closeContainer();
+    this._closeCraft();
     this._closeDialog();
     this._firing = false;
     this.touch?.setEnabled(false);
@@ -2912,6 +3229,8 @@ export class GameApp {
     this.ui.btnRespawn?.addEventListener('click', () => this.respawn());
     this.ui.btnRepairFix?.addEventListener('click', () => this._repairFix());
     this.ui.btnRepairClose?.addEventListener('click', () => this._closeRepair());
+    this.ui.btnCraftMake?.addEventListener('click', () => this._craftMake());
+    this.ui.btnCraftClose?.addEventListener('click', () => this._closeCraft());
     this.ui.btnBackpackClose?.addEventListener('click', () => this._closeBackpack());
     this.ui.btnContainerClose?.addEventListener('click', () => this._closeContainer());
     // Grid-level drop targets wire once (the grids persist; only their cells
@@ -2949,6 +3268,10 @@ export class GameApp {
           this._closeRepair();
           return;
         }
+        if (this._craft) {
+          this._closeCraft();
+          return;
+        }
         if (this._container) {
           this._closeContainer();
           return;
@@ -2976,6 +3299,13 @@ export class GameApp {
       // The repair screen is mouse-driven — keys must not leak through to the
       // dialogue replies or the hotbar underneath it.
       if (this._repair) return;
+      // The crafting screen works like the backpack grid: the legs keep
+      // working, Q (or Esc) closes it.
+      if (this._craft) {
+        if (e.code === 'KeyQ') this._closeCraft();
+        else this.walk.onKeyDown(e.code);
+        return;
+      }
       // The container screen works like the backpack grid: the legs keep
       // working, E (or Esc) closes it.
       if (this._container) {
@@ -2992,6 +3322,10 @@ export class GameApp {
       }
       if (e.code === 'KeyB') {
         this._openBackpack();
+        return;
+      }
+      if (e.code === 'KeyQ') {
+        this._openCraft();
         return;
       }
       const digit = parseInt(e.code.slice(-1), 10);
@@ -3029,7 +3363,7 @@ export class GameApp {
     });
     on(this.doc, 'mousedown', (e) => {
       if (this.mode !== 'playing' || e.button !== 0) return;
-      if (this._dialog || this._repair || this._backpackOpen || this._container) return;
+      if (this._dialog || this._repair || this._backpackOpen || this._container || this._craft) return;
       // A click with no lock (e.g. the browser refused the post-dialog
       // re-lock) takes the lock back instead of firing — one click, no stray
       // shots into the menu that was supposed to be gone.
@@ -3052,7 +3386,7 @@ export class GameApp {
     // backgrounding instead (below).
     on(this.doc, 'pointerlockchange', () => {
       const locked = document.pointerLockElement === this.webgl.domElement;
-      if (!this.isTouch && this.mode === 'playing' && !locked && !this._repair && !this._backpackOpen && !this._container && !this._dialog) this.pauseGame();
+      if (!this.isTouch && this.mode === 'playing' && !locked && !this._repair && !this._backpackOpen && !this._container && !this._craft && !this._dialog) this.pauseGame();
     });
     // Mobile: when the app is backgrounded, auto-pause (there's no Esc and
     // pointer-lock loss never fires) so the player isn't killed while away.

@@ -215,10 +215,18 @@ export class PlayerStats {
     return true;
   }
 
-  /** Heal with the injection if one is equipped; consumes it. @returns {boolean} */
-  useInjection() {
+  /** Heal with the equipped consumable if one is in the injection slot;
+   *  consumes it. `effects` overrides the classic injection heal — the item's
+   *  consumable pack (see engine/Craftables.js), e.g. { health: 60 }.
+   *  @param {{health?:number, armor?:number}|null} [effects]
+   *  @returns {boolean} true when something was used */
+  useInjection(effects = null) {
     if (!this.equipment.injection) return false;
-    this.heal(INJECTION_HEAL);
+    const fx = effects && typeof effects === 'object' ? effects : {};
+    const health = Math.max(0, Math.round(Number(fx.health)));
+    this.heal(Number.isFinite(health) && health > 0 ? health : INJECTION_HEAL);
+    const armor = Math.max(0, Math.round(Number(fx.armor)));
+    if (Number.isFinite(armor) && armor > 0) this.repair(armor);
     this.equipment.injection = null;
     return true;
   }

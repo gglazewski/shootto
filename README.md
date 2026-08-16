@@ -45,6 +45,16 @@ no browser storage in between.
   **fists**; `LMB` attacks with whatever is in hand (a melee swing — blocks are
   not destructible). `F` uses the injection if one is equipped (heals, consumes
   it).
+- **Crafting (`Q`):** turn scavenged materials (scrap, rags, tape, glue — they
+  drop from mobs and searchable objects) into weapons, armor and medical items.
+  Field recipes (bandage, glass shiv, nailed plank, scrap vest, first-aid kit)
+  craft anywhere; bench recipes (rebar spear, plated vest, trauma kit) need an
+  NPC with the `craft` service — their workbench also skips the homemade wear
+  (self-crafted weapons cap 20% lower on durability). Crafting runs over the
+  live game, like the backpack.
+- **Healing items:** crafted consumables (bandage +20, first-aid kit +60,
+  trauma kit +100 HP) live in the injection slot and are used with `F` — same
+  as the classic injection. Crafting an armor vest straps it on immediately.
 - **Storage containers:** in the editor, click a placed object and tick
   **Storage container** — in game `E` opens its stash: a grid like the
   backpack (`B`) where you click or drag items and whole material stacks
